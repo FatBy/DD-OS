@@ -74,10 +74,45 @@ export interface MemoryEntry {
   role?: 'user' | 'assistant'
 }
 
-// 灵魂维度 (映射自 Health/Presence)
+// 灵魂维度 (用于雷达图可视化)
 export interface SoulDimension {
   name: string
   value: number
+}
+
+// OpenClaw 灵魂 (基于 SOUL.md/IDENTITY.md)
+export interface SoulIdentity {
+  name: string           // 名字 (如 dreaming_donkey)
+  essence: string        // 本质 (如 "被梦见的电子驴 AI 助手")
+  vibe: string           // 氛围 (如 "温暖、聪明、有趣")
+  symbol: string         // 符号 (如 🐴)
+}
+
+export interface SoulTruth {
+  id: string
+  title: string          // 标题 (如 "真诚帮助，不敷衍")
+  principle: string      // 原则 (如 "Be genuinely helpful...")
+  description: string    // 描述
+}
+
+export interface SoulBoundary {
+  id: string
+  rule: string           // 规则描述
+}
+
+export interface SoulConfig {
+  identity: SoulIdentity
+  coreTruths: SoulTruth[]
+  boundaries: SoulBoundary[]
+  vibeStatement: string  // 氛围宣言
+  continuityNote: string // 连续性说明
+  // 旧版兼容
+  dimensions: SoulDimension[]
+  prompts: {
+    identity: string
+    constraints: string
+    goals: string
+  }
 }
 
 // ============================================
@@ -246,13 +281,4 @@ export interface Toast {
   title: string
   message?: string
   duration?: number
-}
-
-export interface SoulConfig {
-  dimensions: SoulDimension[]
-  prompts: {
-    identity: string
-    constraints: string
-    goals: string
-  }
 }

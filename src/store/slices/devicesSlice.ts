@@ -1,5 +1,5 @@
 import type { StateCreator } from 'zustand'
-import type { Device, PresenceSnapshot, HealthSnapshot, SoulDimension, SoulConfig, AgentIdentity } from '@/types'
+import type { Device, PresenceSnapshot, HealthSnapshot, SoulDimension, SoulConfig, AgentIdentity, SoulIdentity, SoulTruth, SoulBoundary } from '@/types'
 import { generateSoulConfig } from '@/utils/dataMapper'
 
 export interface DevicesSlice {
@@ -10,7 +10,12 @@ export interface DevicesSlice {
   health: HealthSnapshot | null
   devicesLoading: boolean
   
-  // 映射后的 UI 数据 (灵魂)
+  // 映射后的 UI 数据 (灵魂 - 基于 SOUL.md)
+  soulIdentity: SoulIdentity | null
+  soulCoreTruths: SoulTruth[]
+  soulBoundaries: SoulBoundary[]
+  soulVibeStatement: string
+  soulContinuityNote: string
   soulDimensions: SoulDimension[]
   soulPrompts: { identity: string; constraints: string; goals: string }
   soulDirty: boolean
@@ -33,6 +38,11 @@ export const createDevicesSlice: StateCreator<DevicesSlice> = (set, get) => ({
   nodes: [],
   health: null,
   devicesLoading: true,
+  soulIdentity: null,
+  soulCoreTruths: [],
+  soulBoundaries: [],
+  soulVibeStatement: '',
+  soulContinuityNote: '',
   soulDimensions: [],
   soulPrompts: { identity: '', constraints: '', goals: '' },
   soulDirty: false,
@@ -44,6 +54,11 @@ export const createDevicesSlice: StateCreator<DevicesSlice> = (set, get) => ({
       operators: snapshot.operators,
       nodes: snapshot.nodes,
       devicesLoading: false,
+      soulIdentity: soulConfig.identity,
+      soulCoreTruths: soulConfig.coreTruths,
+      soulBoundaries: soulConfig.boundaries,
+      soulVibeStatement: soulConfig.vibeStatement,
+      soulContinuityNote: soulConfig.continuityNote,
       soulDimensions: soulConfig.dimensions,
       soulPrompts: soulConfig.prompts,
     }
@@ -78,6 +93,11 @@ export const createDevicesSlice: StateCreator<DevicesSlice> = (set, get) => ({
     )
     return {
       health,
+      soulIdentity: soulConfig.identity,
+      soulCoreTruths: soulConfig.coreTruths,
+      soulBoundaries: soulConfig.boundaries,
+      soulVibeStatement: soulConfig.vibeStatement,
+      soulContinuityNote: soulConfig.continuityNote,
       soulDimensions: soulConfig.dimensions,
       soulPrompts: soulConfig.prompts,
     }
@@ -92,6 +112,11 @@ export const createDevicesSlice: StateCreator<DevicesSlice> = (set, get) => ({
       identity
     )
     return {
+      soulIdentity: soulConfig.identity,
+      soulCoreTruths: soulConfig.coreTruths,
+      soulBoundaries: soulConfig.boundaries,
+      soulVibeStatement: soulConfig.vibeStatement,
+      soulContinuityNote: soulConfig.continuityNote,
       soulDimensions: soulConfig.dimensions,
       soulPrompts: soulConfig.prompts,
     }
