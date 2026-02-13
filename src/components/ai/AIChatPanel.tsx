@@ -7,6 +7,7 @@ import { useStore } from '@/store'
 import { isLLMConfigured } from '@/services/llmService'
 import { getQuickCommands } from '@/services/contextBuilder'
 import { ChatMessage, StreamingMessage } from './ChatMessage'
+import { ChatErrorBoundary } from './ChatErrorBoundary'
 
 export function AIChatPanel() {
   const [isOpen, setIsOpen] = useState(false)
@@ -125,6 +126,7 @@ export function AIChatPanel() {
 
             {/* Messages */}
             <div className="flex-1 overflow-y-auto p-4 space-y-3">
+              <ChatErrorBoundary onReset={clearChat}>
               {!configured ? (
                 <div className="flex flex-col items-center justify-center h-full text-center">
                   <Sparkles className="w-10 h-10 text-amber-400/30 mb-3" />
@@ -172,6 +174,7 @@ export function AIChatPanel() {
                 </>
               )}
               <div ref={messagesEndRef} />
+              </ChatErrorBoundary>
             </div>
 
             {/* Quick Commands Bar (when in conversation) */}

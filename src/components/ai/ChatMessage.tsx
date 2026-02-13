@@ -114,10 +114,10 @@ function ExecutionCard({ execution, content }: { execution: ExecutionStatus; con
       
       {/* 执行输出 */}
       {execution.output && (
-        <div className="mt-2 p-2 bg-black/20 rounded border border-white/5">
+        <div className="mt-2 p-2 bg-black/20 rounded border border-white/5 max-h-40 overflow-y-auto">
           <p className="text-[10px] font-mono text-white/40 mb-1">输出:</p>
-          <p className="text-xs font-mono text-emerald-400/80 whitespace-pre-wrap line-clamp-5">
-            {execution.output}
+          <p className="text-xs font-mono text-emerald-400/80 whitespace-pre-wrap break-all">
+            {typeof execution.output === 'string' ? execution.output.slice(0, 3000) : String(execution.output)}
           </p>
         </div>
       )}

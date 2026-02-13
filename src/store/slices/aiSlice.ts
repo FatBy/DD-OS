@@ -350,11 +350,17 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
             localServerService.pollTaskStatus(
               result.taskId,
               (status) => {
+                // 截断过长的输出，防止渲染崩溃
+                const maxOutputLen = 5000
+                const truncatedOutput = status.output && status.output.length > maxOutputLen
+                  ? status.output.slice(0, maxOutputLen) + '\n\n... [输出过长，已截断]'
+                  : status.output
+
                 const finalStatus: ExecutionStatus = {
                   id: execId,
                   status: status.status === 'done' ? 'success' : status.status === 'error' ? 'error' : 'running',
                   sessionKey: result.taskId,
-                  output: status.output,
+                  output: truncatedOutput,
                   error: status.error,
                   timestamp: Date.now(),
                 }
