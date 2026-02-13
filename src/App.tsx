@@ -31,10 +31,13 @@ function App() {
       removeSession: useStore.getState().removeSession,
       setSessionsLoading: useStore.getState().setSessionsLoading,
       
-      // Channels → Skills
+      // Channels → Skills (兼容)
       setChannelsSnapshot: useStore.getState().setChannelsSnapshot,
       setChannelConnected: useStore.getState().setChannelConnected,
       setChannelsLoading: useStore.getState().setChannelsLoading,
+      
+      // OpenClaw Skills → Skills (新)
+      setOpenClawSkills: useStore.getState().setOpenClawSkills,
       
       // Agent → Memories
       setAgentIdentity: useStore.getState().setAgentIdentity,

@@ -33,7 +33,7 @@ export interface TaskItem {
   messageCount?: number
 }
 
-// 技能节点 (映射自 Channel)
+// 技能节点 (映射自 OpenClaw Skill)
 export interface SkillNode {
   id: string
   name: string
@@ -43,10 +43,23 @@ export interface SkillNode {
   unlocked: boolean
   dependencies: string[]
   // 原始数据引用
-  channelId?: string
-  connected?: boolean
-  accountCount?: number
+  skillName?: string
+  category?: SkillCategory
+  version?: string
+  status?: 'active' | 'inactive' | 'error'
+  description?: string
 }
+
+// 技能类别
+export type SkillCategory = 
+  | 'core'        // 核心工具
+  | 'creative'    // 创作设计
+  | 'ai'          // AI与记忆
+  | 'search'      // 搜索网络
+  | 'integration' // 通道集成
+  | 'domain'      // 专业领域
+  | 'devops'      // 开发运维
+  | 'other'       // 其他
 
 // 记忆条目 (映射自 Session Message)
 export interface MemoryEntry {
@@ -87,7 +100,7 @@ export interface Session {
   }
 }
 
-// Channel
+// Channel (保留用于通道集成技能)
 export type ChannelType = 
   | 'whatsapp' | 'telegram' | 'discord' | 'slack' 
   | 'irc' | 'signal' | 'webchat' | 'matrix'
@@ -113,6 +126,21 @@ export interface ChannelsSnapshot {
   channelOrder: ChannelType[]
   channelLabels: Record<string, string>
   channels: Record<string, Channel>
+}
+
+// OpenClaw Skill (SKILL.md 文件系统)
+export interface OpenClawSkill {
+  name: string
+  version?: string
+  status: 'active' | 'inactive' | 'error'
+  enabled: boolean
+  description?: string
+  location?: 'global' | 'local' | 'extension'
+  path?: string
+}
+
+export interface SkillsSnapshot {
+  skills: OpenClawSkill[]
 }
 
 // Agent

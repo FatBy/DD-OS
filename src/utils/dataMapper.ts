@@ -3,14 +3,15 @@
  * 
  * 将 OpenClaw 的真实数据结构映射为游戏化的 UI 概念:
  * - Sessions → Tasks (任务看板)
- * - Channels → Skills (技能树)
+ * - OpenClaw Skills → Skills (技能树)
  * - Session History → Memories (记忆宫殿)
  * - Health/Presence/Agent → Soul (灵魂塔)
  */
 
 import type { 
   Session, Channel, ChannelType, Device, HealthSnapshot, AgentIdentity,
-  TaskItem, SkillNode, MemoryEntry, SoulDimension, SoulConfig
+  TaskItem, SkillNode, MemoryEntry, SoulDimension, SoulConfig,
+  OpenClawSkill, SkillCategory
 } from '@/types'
 
 // ============================================
@@ -165,6 +166,124 @@ export function channelsToSkills(channels: Record<string, Channel>, order: Chann
     .filter(Boolean)
     .map(channelToSkill)
 }
+
+// ============================================
+// OpenClaw Skills → SkillNodes 映射
+// ============================================
+
+// 技能类别配置 (用于布局和分类)
+const skillCategoryConfig: Record<SkillCategory, { 
+  label: string
+  color: string
+  baseY: number
+}> = {
+  core: { label: '核心工具', color: '#22d3ee', baseY: 60 },
+  creative: { label: '创作设计', color: '#f472b6', baseY: 140 },
+  ai: { label: 'AI记忆', color: '#a78bfa', baseY: 220 },
+  search: { label: '搜索网络', color: '#34d399', baseY: 300 },
+  integration: { label: '通道集成', color: '#fbbf24', baseY: 380 },
+  domain: { label: '专业领域', color: '#f87171', baseY: 460 },
+  devops: { label: '开发运维', color: '#60a5fa', baseY: 540 },
+  other: { label: '其他', color: '#9ca3af', baseY: 620 },
+}
+
+// 根据技能名称推断类别
+function inferSkillCategory(skillName: string): SkillCategory {
+  const name = skillName.toLowerCase()
+  
+  // 核心工具
+  if (['tmux', 'github', 'slack', 'url-digest', 'pptx-creator', 'weather', 'hn'].some(k => name.includes(k))) {
+    return 'core'
+  }
+  // 创作设计
+  if (['animation', 'svg', 'video', 'cinematic', 'content-remix', 'youtube', 'invoice'].some(k => name.includes(k))) {
+    return 'creative'
+  }
+  // AI与记忆
+  if (['memory', 'agent', 'ollama', 'zeroapi', 'clawdio', 'clawdo'].some(k => name.includes(k))) {
+    return 'ai'
+  }
+  // 搜索网络
+  if (['search', 'scraper', 'vibesurf', 'serper', 'baidu', 'searxng'].some(k => name.includes(k))) {
+    return 'search'
+  }
+  // 通道集成
+  if (['channel', 'gmail', 'calendly', 'figma', 'notion', 'stripe', 'olvid', 'bluebubbles'].some(k => name.includes(k))) {
+    return 'integration'
+  }
+  // 专业领域
+  if (['gaode', 'traffic', 'stock', 'shuangdian', 'wiim', 'zepto'].some(k => name.includes(k))) {
+    return 'domain'
+  }
+  // 开发运维
+  if (['openclaw', 'samma', 'sanctuary', 'moltlog', 'skill-creator', 'clawdhub'].some(k => name.includes(k))) {
+    return 'devops'
+  }
+  
+  return 'other'
+}
+
+/**
+ * 将 OpenClaw Skill 映射为 SkillNode
+ */
+export function openClawSkillToNode(skill: OpenClawSkill, index: number, categoryIndex: number): SkillNode {
+  const category = inferSkillCategory(skill.name)
+  const config = skillCategoryConfig[category]
+  
+  // 根据类别和索引计算位置
+  const x = 80 + (categoryIndex % 5) * 90
+  const y = config.baseY
+  
+  return {
+    id: skill.name,
+    name: skill.name.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' '),
+    x,
+    y,
+    level: skill.status === 'active' ? 80 : skill.status === 'inactive' ? 40 : 10,
+    unlocked: skill.enabled && skill.status === 'active',
+    dependencies: [],
+    skillName: skill.name,
+    category,
+    version: skill.version,
+    status: skill.status,
+    description: skill.description,
+  }
+}
+
+/**
+ * 将 OpenClaw Skills 数组映射为 SkillNodes
+ * 按类别分组布局
+ */
+export function openClawSkillsToNodes(skills: OpenClawSkill[]): SkillNode[] {
+  if (!skills || skills.length === 0) {
+    return []
+  }
+  
+  // 按类别分组
+  const byCategory = new Map<SkillCategory, OpenClawSkill[]>()
+  for (const skill of skills) {
+    const category = inferSkillCategory(skill.name)
+    if (!byCategory.has(category)) {
+      byCategory.set(category, [])
+    }
+    byCategory.get(category)!.push(skill)
+  }
+  
+  // 转换为 SkillNodes
+  const nodes: SkillNode[] = []
+  let globalIndex = 0
+  
+  for (const [category, categorySkills] of byCategory) {
+    categorySkills.forEach((skill, categoryIndex) => {
+      nodes.push(openClawSkillToNode(skill, globalIndex++, categoryIndex))
+    })
+  }
+  
+  return nodes
+}
+
+// 导出类别配置供 UI 使用
+export { skillCategoryConfig }
 
 // ============================================
 // Session Messages → Memories 映射

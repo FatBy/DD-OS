@@ -1,154 +1,129 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { motion } from 'framer-motion'
-import { Brain, Loader2, Zap } from 'lucide-react'
+import { Brain, Loader2, Zap, X, ChevronRight } from 'lucide-react'
 import { useStore } from '@/store'
 import { cn } from '@/utils/cn'
-import type { SkillNode } from '@/types'
+import type { SkillNode, SkillCategory } from '@/types'
 
-// 默认技能节点（未连接时显示）
+// 默认技能（未连接时显示示例）
 const defaultSkills: SkillNode[] = [
-  { id: 'webchat', name: 'WebChat', x: 250, y: 80, level: 50, unlocked: true, dependencies: [] },
-  { id: 'telegram', name: 'Telegram', x: 150, y: 180, level: 0, unlocked: false, dependencies: ['webchat'] },
-  { id: 'whatsapp', name: 'WhatsApp', x: 350, y: 180, level: 0, unlocked: false, dependencies: ['webchat'] },
-  { id: 'discord', name: 'Discord', x: 100, y: 300, level: 0, unlocked: false, dependencies: ['telegram'] },
-  { id: 'slack', name: 'Slack', x: 250, y: 300, level: 0, unlocked: false, dependencies: ['telegram', 'whatsapp'] },
-  { id: 'signal', name: 'Signal', x: 400, y: 300, level: 0, unlocked: false, dependencies: ['whatsapp'] },
+  { id: 'tmux', name: 'Tmux', x: 0, y: 0, level: 80, unlocked: true, dependencies: [], category: 'core', status: 'active' },
+  { id: 'github', name: 'GitHub', x: 0, y: 0, level: 80, unlocked: true, dependencies: [], category: 'core', status: 'active' },
+  { id: 'weather', name: 'Weather', x: 0, y: 0, level: 60, unlocked: true, dependencies: [], category: 'core', status: 'active' },
+  { id: 'animations', name: 'Animations', x: 0, y: 0, level: 0, unlocked: false, dependencies: [], category: 'creative', status: 'inactive' },
+  { id: 'agent-memory', name: 'Agent Memory', x: 0, y: 0, level: 80, unlocked: true, dependencies: [], category: 'ai', status: 'active' },
+  { id: 'multi-search', name: 'Multi Search', x: 0, y: 0, level: 80, unlocked: true, dependencies: [], category: 'search', status: 'active' },
 ]
 
-function SkillNodeComponent({ node, allNodes }: { node: SkillNode; allNodes: SkillNode[] }) {
-  const nodeMap = useMemo(() => 
-    Object.fromEntries(allNodes.map(n => [n.id, n])),
-    [allNodes]
-  )
+// 类别图标和颜色配置
+const categoryMeta: Record<SkillCategory, { icon: string; color: string; label: string }> = {
+  core: { icon: '🔧', color: 'cyan', label: '核心工具' },
+  creative: { icon: '🎨', color: 'pink', label: '创作设计' },
+  ai: { icon: '🧠', color: 'purple', label: 'AI记忆' },
+  search: { icon: '🌐', color: 'emerald', label: '搜索网络' },
+  integration: { icon: '🔌', color: 'amber', label: '通道集成' },
+  domain: { icon: '🎯', color: 'red', label: '专业领域' },
+  devops: { icon: '⚡', color: 'blue', label: '开发运维' },
+  other: { icon: '📦', color: 'gray', label: '其他' },
+}
 
+// 单个技能卡片
+function SkillCard({ skill, index }: { skill: SkillNode; index: number }) {
+  const isActive = skill.status === 'active'
+  const meta = categoryMeta[skill.category || 'other']
+  
   return (
-    <g>
-      {/* 依赖连线 */}
-      {node.dependencies.map((depId) => {
-        const dep = nodeMap[depId]
-        if (!dep) return null
-        return (
-          <motion.line
-            key={`${node.id}-${depId}`}
-            x1={dep.x}
-            y1={dep.y}
-            x2={node.x}
-            y2={node.y}
-            stroke={node.unlocked ? 'rgba(34, 211, 238, 0.3)' : 'rgba(255, 255, 255, 0.1)'}
-            strokeWidth={node.unlocked ? 2 : 1}
-            strokeDasharray={node.unlocked ? '0' : '4 4'}
-            initial={{ pathLength: 0 }}
-            animate={{ pathLength: 1 }}
-            transition={{ duration: 1, delay: 0.2 }}
-          />
-        )
-      })}
+    <motion.div
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: index * 0.02 }}
+      className={cn(
+        'p-2 rounded-lg border transition-all cursor-pointer hover:scale-[1.02]',
+        isActive 
+          ? 'bg-cyan-500/10 border-cyan-500/30 hover:border-cyan-400/50'
+          : 'bg-white/5 border-white/10 hover:border-white/20'
+      )}
+    >
+      <div className="flex items-center gap-2">
+        {/* 状态指示 */}
+        <div className={cn(
+          'w-2 h-2 rounded-full',
+          isActive ? 'bg-cyan-400' : 'bg-white/20'
+        )} />
+        
+        {/* 技能名称 */}
+        <span className={cn(
+          'text-xs font-mono truncate flex-1',
+          isActive ? 'text-cyan-300' : 'text-white/40'
+        )}>
+          {skill.name}
+        </span>
+        
+        {/* 等级/状态 */}
+        {isActive ? (
+          <span className="text-[9px] font-mono text-cyan-400/60">
+            Lv.{skill.level}
+          </span>
+        ) : (
+          <X className="w-3 h-3 text-white/20" />
+        )}
+      </div>
+    </motion.div>
+  )
+}
 
-      {/* 节点 */}
-      <motion.g
-        initial={{ scale: 0, opacity: 0 }}
-        animate={{ scale: 1, opacity: 1 }}
-        transition={{ type: 'spring', stiffness: 200, delay: 0.1 }}
+// 技能类别分组
+function SkillCategoryGroup({ 
+  category, 
+  skills,
+  expanded,
+  onToggle
+}: { 
+  category: SkillCategory
+  skills: SkillNode[]
+  expanded: boolean
+  onToggle: () => void
+}) {
+  const meta = categoryMeta[category]
+  const activeCount = skills.filter(s => s.status === 'active').length
+  
+  return (
+    <div className="mb-3">
+      {/* 类别标题 */}
+      <button
+        onClick={onToggle}
+        className="w-full flex items-center gap-2 p-2 rounded-lg bg-white/5 hover:bg-white/10 transition-colors"
       >
-        {/* 光晕效果 */}
-        {node.unlocked && (
-          <motion.circle
-            cx={node.x}
-            cy={node.y}
-            r={35}
-            fill="url(#glowGradient)"
-            opacity={0.5}
-            animate={{
-              r: [35, 40, 35],
-              opacity: [0.3, 0.5, 0.3],
-            }}
-            transition={{
-              duration: 2,
-              repeat: Infinity,
-              ease: 'easeInOut',
-            }}
-          />
-        )}
-
-        {/* 主圆 */}
-        <circle
-          cx={node.x}
-          cy={node.y}
-          r={30}
-          fill={node.unlocked ? 'rgba(34, 211, 238, 0.2)' : 'rgba(255, 255, 255, 0.05)'}
-          stroke={node.unlocked ? 'rgba(34, 211, 238, 0.6)' : 'rgba(255, 255, 255, 0.2)'}
-          strokeWidth={2}
-          className="cursor-pointer hover:stroke-cyan-400 transition-colors"
-        />
-
-        {/* 等级指示器 */}
-        {node.unlocked && (
-          <motion.circle
-            cx={node.x}
-            cy={node.y}
-            r={28}
-            fill="none"
-            stroke="rgba(34, 211, 238, 0.8)"
-            strokeWidth={3}
-            strokeDasharray={`${(node.level / 100) * 175.9} 175.9`}
-            strokeLinecap="round"
-            transform={`rotate(-90 ${node.x} ${node.y})`}
-            initial={{ strokeDasharray: '0 175.9' }}
-            animate={{ strokeDasharray: `${(node.level / 100) * 175.9} 175.9` }}
-            transition={{ duration: 1, delay: 0.5 }}
-          />
-        )}
-
-        {/* 图标/文字 */}
-        <text
-          x={node.x}
-          y={node.y + 4}
-          textAnchor="middle"
-          className={cn(
-            'text-xs font-mono select-none pointer-events-none',
-            node.unlocked ? 'fill-cyan-300' : 'fill-white/30'
-          )}
+        <span className="text-base">{meta.icon}</span>
+        <span className="text-xs font-mono text-white/70 flex-1 text-left">
+          {meta.label}
+        </span>
+        <span className={cn(
+          'text-[10px] font-mono px-1.5 py-0.5 rounded',
+          `bg-${meta.color}-500/20 text-${meta.color}-400`
+        )}>
+          {activeCount}/{skills.length}
+        </span>
+        <ChevronRight className={cn(
+          'w-3 h-3 text-white/30 transition-transform',
+          expanded && 'rotate-90'
+        )} />
+      </button>
+      
+      {/* 技能列表 */}
+      {expanded && (
+        <motion.div
+          initial={{ height: 0, opacity: 0 }}
+          animate={{ height: 'auto', opacity: 1 }}
+          exit={{ height: 0, opacity: 0 }}
+          className="mt-2 grid grid-cols-2 gap-1.5 pl-2"
         >
-          {node.name.slice(0, 6)}
-        </text>
-
-        {/* 等级标签 */}
-        {node.unlocked && (
-          <g>
-            <rect
-              x={node.x - 15}
-              y={node.y + 35}
-              width={30}
-              height={16}
-              rx={4}
-              fill="rgba(34, 211, 238, 0.2)"
-              stroke="rgba(34, 211, 238, 0.4)"
-              strokeWidth={1}
-            />
-            <text
-              x={node.x}
-              y={node.y + 47}
-              textAnchor="middle"
-              className="text-[9px] font-mono fill-cyan-400 select-none pointer-events-none"
-            >
-              Lv.{node.level}
-            </text>
-          </g>
-        )}
-
-        {/* 锁定标记 */}
-        {!node.unlocked && (
-          <text
-            x={node.x}
-            y={node.y + 45}
-            textAnchor="middle"
-            className="text-[8px] font-mono fill-white/20 select-none"
-          >
-            🔒
-          </text>
-        )}
-      </motion.g>
-    </g>
+          {skills.map((skill, idx) => (
+            <SkillCard key={skill.id} skill={skill} index={idx} />
+          ))}
+        </motion.div>
+      )}
+    </div>
   )
 }
 
@@ -160,9 +135,45 @@ export function SkillHouse() {
   const isConnected = connectionStatus === 'connected'
   const skills = isConnected && storeSkills.length > 0 ? storeSkills : defaultSkills
 
+  // 按类别分组
+  const skillsByCategory = useMemo(() => {
+    const grouped = new Map<SkillCategory, SkillNode[]>()
+    
+    for (const skill of skills) {
+      const cat = skill.category || 'other'
+      if (!grouped.has(cat)) {
+        grouped.set(cat, [])
+      }
+      grouped.get(cat)!.push(skill)
+    }
+    
+    // 按类别顺序排序
+    const order: SkillCategory[] = ['core', 'creative', 'ai', 'search', 'integration', 'domain', 'devops', 'other']
+    return order
+      .filter(cat => grouped.has(cat))
+      .map(cat => ({ category: cat, skills: grouped.get(cat)! }))
+  }, [skills])
+
+  // 展开状态 (默认全部展开)
+  const [expandedCategories, setExpandedCategories] = useState<Set<SkillCategory>>(
+    () => new Set(['core', 'creative', 'ai', 'search', 'integration', 'domain', 'devops', 'other'])
+  )
+
+  const toggleCategory = (cat: SkillCategory) => {
+    setExpandedCategories(prev => {
+      const newSet = new Set(prev)
+      if (newSet.has(cat)) {
+        newSet.delete(cat)
+      } else {
+        newSet.add(cat)
+      }
+      return newSet
+    })
+  }
+
   // 统计
-  const unlockedCount = skills.filter(s => s.unlocked).length
-  const totalLevel = skills.reduce((sum, s) => sum + s.level, 0)
+  const activeCount = skills.filter(s => s.status === 'active').length
+  const totalSkills = skills.length
 
   if (loading && isConnected) {
     return (
@@ -174,40 +185,43 @@ export function SkillHouse() {
 
   return (
     <div className="flex h-full">
-      {/* 主区域: 技能树可视化 */}
-      <div className="flex-1 relative overflow-hidden">
-        <svg className="w-full h-full" viewBox="0 0 500 600">
-          <defs>
-            <radialGradient id="glowGradient">
-              <stop offset="0%" stopColor="rgba(34, 211, 238, 0.4)" />
-              <stop offset="100%" stopColor="rgba(34, 211, 238, 0)" />
-            </radialGradient>
-          </defs>
-
-          {/* 背景网格 */}
-          <pattern id="grid" width="50" height="50" patternUnits="userSpaceOnUse">
-            <path
-              d="M 50 0 L 0 0 0 50"
-              fill="none"
-              stroke="rgba(255,255,255,0.03)"
-              strokeWidth="1"
-            />
-          </pattern>
-          <rect width="100%" height="100%" fill="url(#grid)" />
-
-          {/* 技能节点 */}
-          {skills.map((node) => (
-            <SkillNodeComponent key={node.id} node={node} allNodes={skills} />
-          ))}
-        </svg>
-
+      {/* 主区域: 技能列表 */}
+      <div className="flex-1 p-4 overflow-y-auto">
         {/* 标题 */}
-        <div className="absolute top-4 left-4 flex items-center gap-2">
+        <div className="flex items-center gap-2 mb-4">
           <Brain className="w-5 h-5 text-cyan-400" />
           <h3 className="font-mono text-sm text-cyan-300 tracking-wider">
-            频道技能树
+            技能库
           </h3>
+          {isConnected && (
+            <span className="ml-auto text-[10px] font-mono text-white/40">
+              OpenClaw Skills
+            </span>
+          )}
         </div>
+
+        {/* 技能分组列表 */}
+        <div className="space-y-1">
+          {skillsByCategory.map(({ category, skills: catSkills }) => (
+            <SkillCategoryGroup
+              key={category}
+              category={category}
+              skills={catSkills}
+              expanded={expandedCategories.has(category)}
+              onToggle={() => toggleCategory(category)}
+            />
+          ))}
+        </div>
+
+        {/* 无数据提示 */}
+        {skills.length === 0 && !loading && (
+          <div className="text-center py-8">
+            <p className="text-white/40 text-sm font-mono">暂无技能数据</p>
+            <p className="text-white/20 text-xs font-mono mt-1">
+              请检查 OpenClaw Gateway 的 skills.list API
+            </p>
+          </div>
+        )}
       </div>
 
       {/* 侧边栏: 统计 */}
@@ -219,21 +233,36 @@ export function SkillHouse() {
 
         <div className="space-y-3">
           <div className="p-3 bg-white/5 rounded-lg">
-            <p className="text-[10px] font-mono text-white/40 uppercase">已解锁</p>
+            <p className="text-[10px] font-mono text-white/40 uppercase">已激活</p>
             <p className="text-2xl font-bold text-cyan-400">
-              {unlockedCount}<span className="text-sm text-white/30">/{skills.length}</span>
+              {activeCount}<span className="text-sm text-white/30">/{totalSkills}</span>
             </p>
           </div>
 
           <div className="p-3 bg-white/5 rounded-lg">
-            <p className="text-[10px] font-mono text-white/40 uppercase">总等级</p>
-            <p className="text-2xl font-bold text-emerald-400">{totalLevel}</p>
+            <p className="text-[10px] font-mono text-white/40 uppercase">技能类别</p>
+            <p className="text-2xl font-bold text-emerald-400">{skillsByCategory.length}</p>
           </div>
+        </div>
+
+        {/* 类别统计 */}
+        <div className="pt-4 border-t border-white/10 space-y-2">
+          {skillsByCategory.slice(0, 5).map(({ category, skills: catSkills }) => {
+            const meta = categoryMeta[category]
+            const active = catSkills.filter(s => s.status === 'active').length
+            return (
+              <div key={category} className="flex items-center gap-2 text-[10px] font-mono">
+                <span>{meta.icon}</span>
+                <span className="text-white/50 flex-1">{meta.label}</span>
+                <span className="text-white/30">{active}/{catSkills.length}</span>
+              </div>
+            )
+          })}
         </div>
 
         <div className="pt-4 border-t border-white/10">
           <p className="text-[9px] font-mono text-white/30 leading-relaxed">
-            连接更多消息平台以解锁新技能。每个平台的连接账户数决定技能等级。
+            技能来自 SKILL.md 文件系统，包括核心工具、创作设计、AI记忆等多个类别。
           </p>
         </div>
       </div>

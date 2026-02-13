@@ -1,6 +1,7 @@
 import type { 
   RequestMessage, ResponseMessage, EventMessage, ServerMessage,
-  Session, ChannelsSnapshot, AgentEvent, Device, HealthSnapshot, HelloOkPayload, LogEntry
+  Session, ChannelsSnapshot, AgentEvent, Device, HealthSnapshot, HelloOkPayload, LogEntry,
+  OpenClawSkill
 } from '@/types'
 
 // ============================================
@@ -40,10 +41,13 @@ type StoreActions = {
   removeSession: (key: string) => void
   setSessionsLoading: (loading: boolean) => void
   
-  // Channels → Skills
+  // Channels → Skills (兼容旧 API)
   setChannelsSnapshot: (snapshot: ChannelsSnapshot) => void
   setChannelConnected: (id: string, accountId: string, connected: boolean) => void
   setChannelsLoading: (loading: boolean) => void
+  
+  // OpenClaw Skills → Skills (新 API)
+  setOpenClawSkills: (skills: OpenClawSkill[]) => void
   
   // Agent → Memories
   setAgentIdentity: (identity: { agentId: string; name?: string; emoji?: string } | null) => void
@@ -232,9 +236,10 @@ class OpenClawService {
   // 加载初始数据
   async loadInitialData(): Promise<void> {
     try {
-      // 并行请求初始数据
-      const [sessionsResult, channelsResult, agentResult] = await Promise.allSettled([
+      // 并行请求初始数据 (包括新的 skills.list API)
+      const [sessionsResult, skillsResult, channelsResult, agentResult] = await Promise.allSettled([
         this.send<{ sessions: Session[] }>('sessions.list', { limit: 50, includeLastMessage: true }),
+        this.send<{ skills: OpenClawSkill[] }>('skills.list', {}),
         this.send<ChannelsSnapshot>('channels.status', {}),
         this.send<{ agentId: string; name?: string; emoji?: string }>('agent.identity', {}),
       ])
@@ -251,9 +256,20 @@ class OpenClawService {
       }
       this.storeActions?.setSessionsLoading(false)
 
-      // 处理 Channels → Skills
-      if (channelsResult.status === 'fulfilled' && channelsResult.value) {
-        console.log('[OpenClawService] channels.status raw response:', channelsResult.value)
+      // 处理 Skills (优先使用 skills.list API)
+      let skillsLoaded = false
+      if (skillsResult.status === 'fulfilled' && skillsResult.value) {
+        const skillsResponse = skillsResult.value as { skills?: OpenClawSkill[] }
+        console.log('[OpenClawService] skills.list raw response:', skillsResponse)
+        if (skillsResponse.skills && skillsResponse.skills.length > 0) {
+          this.storeActions?.setOpenClawSkills(skillsResponse.skills)
+          skillsLoaded = true
+        }
+      }
+      
+      // 如果 skills.list 没有返回数据，回退到 channels.status
+      if (!skillsLoaded && channelsResult.status === 'fulfilled' && channelsResult.value) {
+        console.log('[OpenClawService] channels.status raw response (fallback):', channelsResult.value)
         this.storeActions?.setChannelsSnapshot(channelsResult.value as ChannelsSnapshot)
       }
       this.storeActions?.setChannelsLoading(false)
