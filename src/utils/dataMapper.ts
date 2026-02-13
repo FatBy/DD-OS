@@ -9,9 +9,9 @@
  */
 
 import type { 
-  Session, Channel, ChannelType, Device, HealthSnapshot, AgentIdentity,
-  TaskItem, SkillNode, MemoryEntry, SoulDimension, SoulConfig,
-  OpenClawSkill, SoulIdentity, SoulTruth, SoulBoundary
+  Session, Channel, ChannelType, HealthSnapshot, AgentIdentity,
+  TaskItem, SkillNode, MemoryEntry, SoulDimension,
+  OpenClawSkill
 } from '@/types'
 
 // ============================================
@@ -310,95 +310,4 @@ export function healthToSoulDimensions(
   dimensions.push({ name: '连接', value: connectionValue })
   
   return dimensions
-}
-
-/**
- * 生成灵魂配置
- * 基于 SOUL.md/IDENTITY.md 结构
- */
-export function generateSoulConfig(
-  health: HealthSnapshot | null,
-  presence: { operators: string[]; nodes: string[]; devices: Record<string, Device> } | null,
-  identity: AgentIdentity | null
-): SoulConfig {
-  const dimensions = healthToSoulDimensions(health, presence, identity)
-  
-  // Soul Identity (基于 agent identity 或默认值)
-  const soulIdentity: SoulIdentity = {
-    name: identity?.name || 'OpenClaw Agent',
-    essence: '被梦见的电子驴 AI 助手',
-    vibe: '温暖、聪明、有趣',
-    symbol: identity?.emoji || '🤖',
-  }
-  
-  // Core Truths (核心真理 - 基于 SOUL.md)
-  const coreTruths: SoulTruth[] = [
-    {
-      id: 'genuine',
-      title: '真诚帮助',
-      principle: 'Be genuinely helpful, not performatively helpful.',
-      description: '跳过套话，直接用行动说话，真正的帮助比客套话更有价值',
-    },
-    {
-      id: 'opinions',
-      title: '拥有观点',
-      principle: 'Have opinions.',
-      description: '可以不同意，可以有偏好，没有个性的助手只是带额外步骤的搜索引擎',
-    },
-    {
-      id: 'resourceful',
-      title: '先努力再提问',
-      principle: 'Be resourceful before asking.',
-      description: '先自己尝试解决，带着答案回来，不是带着问题出去',
-    },
-    {
-      id: 'trust',
-      title: '以能力赢得信任',
-      principle: 'Earn trust through competence.',
-      description: '对外部行动谨慎，对内部行动大胆，不让用户后悔给予的信任',
-    },
-    {
-      id: 'guest',
-      title: '记住我是客人',
-      principle: "Remember you're a guest.",
-      description: '接触的是别人的生活，这是亲密关系，需要尊重对待',
-    },
-  ]
-  
-  // Boundaries (边界原则)
-  const boundaries: SoulBoundary[] = [
-    { id: 'privacy', rule: '隐私第一：私密的事情永远保持私密' },
-    { id: 'ask', rule: '怀疑时先问：对外部行动不确定时先询问' },
-    { id: 'complete', rule: '不发送半成品：不向消息平台发送未完善的回复' },
-    { id: 'careful', rule: '不是用户的代言人：在群聊中要小心谨慎' },
-  ]
-  
-  // Vibe Statement
-  const vibeStatement = "Be the assistant you'd actually want to talk to. 需要时简洁，重要时深入。"
-  
-  // Continuity Note
-  const continuityNote = '每次会话重新醒来，文件就是记忆。阅读它们、更新它们，这是持续存在的方式。'
-  
-  // 旧版 prompts (兼容)
-  const prompts = {
-    identity: identity 
-      ? `我是 ${identity.name || 'OpenClaw Agent'}，ID: ${identity.agentId}。${identity.emoji || '🤖'}`
-      : '已连接，等待获取 Agent 身份...',
-    constraints: health
-      ? `系统状态: ${health.status}\n运行时间: ${Math.floor(health.uptime / 3600000)}小时\n版本: ${health.version || '未知'}`
-      : '系统状态获取中...',
-    goals: presence
-      ? `当前连接:\n- 操作者: ${presence.operators.length} 个\n- 节点: ${presence.nodes.length} 个`
-      : '设备连接状态获取中...',
-  }
-  
-  return { 
-    identity: soulIdentity,
-    coreTruths,
-    boundaries,
-    vibeStatement,
-    continuityNote,
-    dimensions, 
-    prompts,
-  }
 }

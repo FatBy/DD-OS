@@ -3,6 +3,7 @@ import type {
   Session, ChannelsSnapshot, AgentEvent, Device, HealthSnapshot, HelloOkPayload, LogEntry,
   OpenClawSkill
 } from '@/types'
+import { parseSoulMd, type ParsedSoul } from '@/utils/soulParser'
 
 // ============================================
 // 配置常量
@@ -64,6 +65,9 @@ type StoreActions = {
   setHealth: (health: HealthSnapshot | null) => void
   setDevicesLoading: (loading: boolean) => void
   updateSoulFromState: (identity: { agentId: string; name?: string; emoji?: string } | null) => void
+  
+  // Soul from SOUL.md
+  setSoulFromParsed: (parsed: ParsedSoul, agentIdentity: { agentId: string; name?: string; emoji?: string } | null) => void
 }
 
 // ============================================
@@ -236,12 +240,14 @@ class OpenClawService {
   // 加载初始数据
   async loadInitialData(): Promise<void> {
     try {
-      // 并行请求初始数据 (包括新的 skills.list API)
-      const [sessionsResult, skillsResult, channelsResult, agentResult] = await Promise.allSettled([
+      // 并行请求初始数据 (包括新的 skills.list 和 files.read API)
+      const [sessionsResult, skillsResult, channelsResult, agentResult, soulResult] = await Promise.allSettled([
         this.send<{ sessions: Session[] }>('sessions.list', { limit: 50, includeLastMessage: true }),
         this.send<{ skills: OpenClawSkill[] }>('skills.list', {}),
         this.send<ChannelsSnapshot>('channels.status', {}),
         this.send<{ agentId: string; name?: string; emoji?: string }>('agent.identity', {}),
+        // 尝试读取 SOUL.md 文件
+        this.send<{ content: string } | string>('files.read', { path: 'SOUL.md' }),
       ])
 
       let sessions: Session[] = []
@@ -282,13 +288,29 @@ class OpenClawService {
       if (agentResult.status === 'fulfilled' && agentResult.value) {
         agentIdentity = agentResult.value as { agentId: string; name?: string; emoji?: string }
         this.storeActions?.setAgentIdentity(agentIdentity)
-        // 更新灵魂维度 (需要 agent identity)
-        this.storeActions?.updateSoulFromState(agentIdentity)
       }
       this.storeActions?.setAgentLoading(false)
 
+      // 处理 SOUL.md 文件内容
+      if (soulResult.status === 'fulfilled' && soulResult.value) {
+        console.log('[OpenClawService] files.read SOUL.md raw response:', soulResult.value)
+        // 响应可能是 { content: string } 或直接是 string
+        const soulContent = typeof soulResult.value === 'string' 
+          ? soulResult.value 
+          : (soulResult.value as { content?: string }).content || ''
+        
+        if (soulContent) {
+          const parsedSoul = parseSoulMd(soulContent)
+          console.log('[OpenClawService] Parsed SOUL.md:', parsedSoul)
+          this.storeActions?.setSoulFromParsed(parsedSoul, agentIdentity)
+        }
+      } else if (soulResult.status === 'rejected') {
+        console.log('[OpenClawService] files.read SOUL.md not available:', soulResult.reason)
+        // 如果无法读取 SOUL.md，使用 agent identity 更新基本信息
+        this.storeActions?.updateSoulFromState(agentIdentity)
+      }
+
       // 确保 devicesLoading 最终为 false（兜底逻辑）
-      // 如果握手响应不包含 presence 数据，这里保证 loading 状态结束
       this.storeActions?.setDevicesLoading(false)
 
     } catch (error) {

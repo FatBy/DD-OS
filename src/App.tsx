@@ -54,6 +54,9 @@ function App() {
       setHealth: useStore.getState().setHealth,
       setDevicesLoading: useStore.getState().setDevicesLoading,
       updateSoulFromState: useStore.getState().updateSoulFromState,
+      
+      // Soul from SOUL.md
+      setSoulFromParsed: useStore.getState().setSoulFromParsed,
     })
 
     // Note: Don't auto-connect, let user click connect button
