@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { motion } from 'framer-motion'
 import { Brain, Loader2, Zap, ChevronRight, Check, AlertCircle } from 'lucide-react'
 import { useStore } from '@/store'
+import { AISummaryCard } from '@/components/ai/AISummaryCard'
 import { cn } from '@/utils/cn'
 import type { SkillNode } from '@/types'
 
@@ -170,7 +171,11 @@ export function SkillHouse() {
   }
 
   return (
-    <div className="flex h-full">
+    <div className="flex flex-col h-full">
+      <div className="px-4 pt-4">
+        <AISummaryCard view="skill" />
+      </div>
+      <div className="flex flex-1 min-h-0">
       {/* 主区域: 技能列表 */}
       <div className="flex-1 p-4 overflow-y-auto">
         {/* 标题 */}
@@ -258,6 +263,7 @@ export function SkillHouse() {
             技能来自 OpenClaw 的 SKILL.md 文件系统，显示所有已安装的 Agent 技能。
           </p>
         </div>
+      </div>
       </div>
     </div>
   )

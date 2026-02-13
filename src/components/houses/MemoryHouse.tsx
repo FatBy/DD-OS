@@ -1,6 +1,7 @@
 import { motion } from 'framer-motion'
 import { ScrollText, Clock, Tag, Inbox, Loader2, Brain, MessageCircle } from 'lucide-react'
 import { GlassCard } from '@/components/GlassCard'
+import { AISummaryCard } from '@/components/ai/AISummaryCard'
 import { useStore } from '@/store'
 import { cn } from '@/utils/cn'
 import type { MemoryEntry } from '@/types'
@@ -126,7 +127,11 @@ export function MemoryHouse() {
   }
 
   return (
-    <div className="flex h-full">
+    <div className="flex flex-col h-full">
+      <div className="px-4 pt-4">
+        <AISummaryCard view="memory" />
+      </div>
+      <div className="flex flex-1 min-h-0">
       {/* 左侧: 记忆列表 */}
       <div className="w-[40%] border-r border-white/10 p-4 overflow-y-auto">
         {/* 短期记忆 */}
@@ -254,6 +259,7 @@ export function MemoryHouse() {
             <p className="text-sm font-mono">选择一条记忆查看详情</p>
           </div>
         )}
+      </div>
       </div>
     </div>
   )

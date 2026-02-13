@@ -113,3 +113,50 @@ export async function fetchLocalFile(
   }
   return null
 }
+
+// ============================================
+// 任务执行 API
+// ============================================
+
+export interface TaskExecResult {
+  taskId: string
+  status: 'pending' | 'running' | 'done' | 'error'
+  output?: string
+  error?: string
+}
+
+/**
+ * 通过本地服务执行任务
+ */
+export async function executeTask(
+  prompt: string,
+  url: string = LOCAL_SERVER_URL
+): Promise<TaskExecResult> {
+  const response = await fetch(`${url}/task/execute`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt }),
+  })
+  
+  if (!response.ok) {
+    throw new Error(`Task execution failed: ${response.status}`)
+  }
+  
+  return await response.json()
+}
+
+/**
+ * 查询任务执行状态
+ */
+export async function getTaskStatus(
+  taskId: string,
+  url: string = LOCAL_SERVER_URL
+): Promise<TaskExecResult> {
+  const response = await fetch(`${url}/task/status/${taskId}`)
+  
+  if (!response.ok) {
+    throw new Error(`Task status check failed: ${response.status}`)
+  }
+  
+  return await response.json()
+}

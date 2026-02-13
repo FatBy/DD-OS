@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import { 
   Monitor, Cpu, Info, Database, Upload, Download, Trash2, 
-  Check, Ghost, Brain, ScrollText, RefreshCw, Server, Wifi
+  Check, Ghost, Brain, ScrollText, RefreshCw, Server, Wifi, Sparkles, Eye, EyeOff
 } from 'lucide-react'
 import { GlassCard } from '@/components/GlassCard'
 import { FileDropZone } from '@/components/FileDropZone'
@@ -19,6 +19,7 @@ import {
   exportConfig, importConfig,
 } from '@/utils/localDataProvider'
 import { fetchLocalServerData, LOCAL_SERVER_URL, type LocalServerData } from '@/utils/localServerClient'
+import { testConnection } from '@/services/llmService'
 
 interface SettingToggle {
   id: string
@@ -107,6 +108,16 @@ export function SettingsHouse() {
   const setMemoriesFromLocal = useStore((s) => s.setMemories)
   const connectionStatus = useStore((s) => s.connectionStatus)
   
+  // LLM 配置
+  const llmConfig = useStore((s) => s.llmConfig)
+  const setLlmConfig = useStore((s) => s.setLlmConfig)
+  const setLlmConnected = useStore((s) => s.setLlmConnected)
+  const [llmApiKey, setLlmApiKey] = useState('')
+  const [llmBaseUrl, setLlmBaseUrl] = useState('')
+  const [llmModel, setLlmModel] = useState('')
+  const [llmTestStatus, setLlmTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle')
+  const [showApiKey, setShowApiKey] = useState(false)
+  
   // 初始化：从 localStorage 加载
   useEffect(() => {
     setDataModeState(getDataMode())
@@ -122,6 +133,11 @@ export function SettingsHouse() {
     if (memories.length > 0) {
       setMemoriesMd(memories.map(m => `## ${m.title}\n${m.content}`).join('\n\n'))
     }
+    
+    // 加载 LLM 配置
+    setLlmApiKey(llmConfig.apiKey)
+    setLlmBaseUrl(llmConfig.baseUrl)
+    setLlmModel(llmConfig.model)
     
     // 自动加载本地数据到 store
     loadLocalDataToStore()
@@ -358,6 +374,27 @@ export function SettingsHouse() {
       setMemoriesMd('')
     }
   }
+  
+  // LLM 配置保存
+  const saveLlmSettings = () => {
+    setLlmConfig({ apiKey: llmApiKey, baseUrl: llmBaseUrl, model: llmModel })
+  }
+  
+  // LLM 连接测试
+  const handleTestLlm = async () => {
+    saveLlmSettings()
+    setLlmTestStatus('testing')
+    try {
+      const ok = await testConnection({ apiKey: llmApiKey, baseUrl: llmBaseUrl, model: llmModel })
+      setLlmTestStatus(ok ? 'success' : 'error')
+      setLlmConnected(ok)
+      setTimeout(() => setLlmTestStatus('idle'), 3000)
+    } catch {
+      setLlmTestStatus('error')
+      setLlmConnected(false)
+      setTimeout(() => setLlmTestStatus('idle'), 3000)
+    }
+  }
 
   return (
     <div className="p-6 h-full overflow-y-auto space-y-6">
@@ -443,6 +480,102 @@ export function SettingsHouse() {
           <FileDropZone onFileDrop={handleFileDrop} />
         </div>
       )}
+
+      {/* AI 能力配置 */}
+      <div>
+        <div className="flex items-center gap-2 mb-4">
+          <Sparkles className="w-4 h-4 text-amber-400" />
+          <h3 className="font-mono text-sm text-amber-300 tracking-wider">
+            AI 能力配置
+          </h3>
+        </div>
+        
+        <GlassCard className="p-4 space-y-3">
+          <div>
+            <label className="text-xs font-mono text-white/50 mb-1 block">API Base URL</label>
+            <input
+              type="text"
+              value={llmBaseUrl}
+              onChange={(e) => setLlmBaseUrl(e.target.value)}
+              onBlur={saveLlmSettings}
+              placeholder="https://api.deepseek.com/v1"
+              className="w-full px-3 py-2 bg-black/30 border border-white/10 rounded-lg 
+                         text-xs font-mono text-white/70 placeholder-white/30
+                         focus:border-amber-500/50 focus:outline-none"
+            />
+          </div>
+          
+          <div>
+            <label className="text-xs font-mono text-white/50 mb-1 block">API Key</label>
+            <div className="flex gap-2">
+              <div className="flex-1 relative">
+                <input
+                  type={showApiKey ? 'text' : 'password'}
+                  value={llmApiKey}
+                  onChange={(e) => setLlmApiKey(e.target.value)}
+                  onBlur={saveLlmSettings}
+                  placeholder="sk-..."
+                  className="w-full px-3 py-2 pr-8 bg-black/30 border border-white/10 rounded-lg 
+                             text-xs font-mono text-white/70 placeholder-white/30
+                             focus:border-amber-500/50 focus:outline-none"
+                />
+                <button
+                  onClick={() => setShowApiKey(!showApiKey)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-white/30 hover:text-white/60"
+                >
+                  {showApiKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                </button>
+              </div>
+            </div>
+          </div>
+          
+          <div>
+            <label className="text-xs font-mono text-white/50 mb-1 block">Model</label>
+            <input
+              type="text"
+              value={llmModel}
+              onChange={(e) => setLlmModel(e.target.value)}
+              onBlur={saveLlmSettings}
+              placeholder="deepseek-chat"
+              className="w-full px-3 py-2 bg-black/30 border border-white/10 rounded-lg 
+                         text-xs font-mono text-white/70 placeholder-white/30
+                         focus:border-amber-500/50 focus:outline-none"
+            />
+          </div>
+          
+          <div className="flex items-center gap-3 pt-1">
+            <button
+              onClick={handleTestLlm}
+              disabled={llmTestStatus === 'testing' || !llmApiKey || !llmBaseUrl || !llmModel}
+              className={`px-4 py-2 rounded-lg text-xs font-mono transition-colors ${
+                llmTestStatus === 'testing'
+                  ? 'bg-amber-500/20 border border-amber-500/30 text-amber-400 animate-pulse'
+                  : llmTestStatus === 'success'
+                  ? 'bg-emerald-500/20 border border-emerald-500/30 text-emerald-400'
+                  : llmTestStatus === 'error'
+                  ? 'bg-red-500/20 border border-red-500/30 text-red-400'
+                  : !llmApiKey || !llmBaseUrl || !llmModel
+                  ? 'bg-white/5 border border-white/10 text-white/30 cursor-not-allowed'
+                  : 'bg-amber-500/20 border border-amber-500/30 text-amber-400 hover:bg-amber-500/30'
+              }`}
+            >
+              {llmTestStatus === 'testing' ? '测试中...' : 
+               llmTestStatus === 'success' ? '连接成功' : 
+               llmTestStatus === 'error' ? '连接失败' : '测试连接'}
+            </button>
+            
+            {llmTestStatus === 'success' && (
+              <span className="text-[10px] text-emerald-400 font-mono flex items-center gap-1">
+                <Check className="w-3 h-3" /> AI 已就绪
+              </span>
+            )}
+          </div>
+          
+          <p className="text-[10px] text-white/30 font-mono">
+            支持所有兼容 OpenAI 格式的 API（DeepSeek、GPT-4、Claude 代理等）
+          </p>
+        </GlassCard>
+      </div>
 
       {/* 本地服务连接 */}
       {dataMode === 'local' && (

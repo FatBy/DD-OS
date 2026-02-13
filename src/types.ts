@@ -275,3 +275,40 @@ export interface Toast {
   message?: string
   duration?: number
 }
+
+// ============================================
+// LLM / AI 类型
+// ============================================
+
+export interface LLMConfig {
+  apiKey: string
+  baseUrl: string
+  model: string
+}
+
+export interface ChatMessage {
+  id: string
+  role: 'system' | 'user' | 'assistant'
+  content: string
+  timestamp: number
+  error?: boolean
+}
+
+export interface AISummary {
+  content: string
+  loading: boolean
+  error: string | null
+  timestamp: number
+}
+
+export interface TaskExecRequest {
+  prompt: string
+  context?: Record<string, unknown>
+}
+
+export interface TaskExecResponse {
+  taskId: string
+  status: 'pending' | 'running' | 'done' | 'error'
+  output?: string
+  error?: string
+}

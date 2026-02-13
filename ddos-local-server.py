@@ -19,6 +19,9 @@ import os
 import sys
 import json
 import argparse
+import threading
+import uuid
+import subprocess
 from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import unquote
@@ -27,6 +30,9 @@ VERSION = "1.0.0"
 
 class ClawdDataHandler(BaseHTTPRequestHandler):
     clawd_path = None
+    # 任务存储 (内存)
+    tasks = {}
+    tasks_lock = threading.Lock()
     
     def log_message(self, format, *args):
         print(f"[{self.log_date_time_string()}] {format % args}")
@@ -74,8 +80,26 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
             self.handle_memories()
         elif path == '/all':
             self.handle_all()
+        elif path.startswith('/task/status/'):
+            task_id = path[13:]
+            self.handle_task_status(task_id)
         elif path == '/' or path == '':
             self.handle_index()
+        else:
+            self.send_error_json(f'Unknown endpoint: {path}', 404)
+    
+    def do_POST(self):
+        path = unquote(self.path)
+        
+        if path == '/task/execute':
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length).decode('utf-8') if content_length > 0 else '{}'
+            try:
+                data = json.loads(body)
+            except json.JSONDecodeError:
+                self.send_error_json('Invalid JSON', 400)
+                return
+            self.handle_task_execute(data)
         else:
             self.send_error_json(f'Unknown endpoint: {path}', 404)
     
@@ -267,6 +291,39 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
                 pass
         
         self.send_json(data)
+    
+    def handle_task_execute(self, data):
+        """处理任务执行请求"""
+        prompt = data.get('prompt', '').strip()
+        if not prompt:
+            self.send_error_json('Missing prompt', 400)
+            return
+        
+        task_id = str(uuid.uuid4())[:8]
+        
+        # 在后台线程执行
+        thread = threading.Thread(
+            target=run_task_in_background,
+            args=(task_id, prompt, self.clawd_path),
+            daemon=True,
+        )
+        thread.start()
+        
+        self.send_json({
+            'taskId': task_id,
+            'status': 'running',
+        })
+    
+    def handle_task_status(self, task_id):
+        """查询任务状态"""
+        with self.tasks_lock:
+            task = self.tasks.get(task_id)
+        
+        if not task:
+            self.send_error_json(f'Task not found: {task_id}', 404)
+            return
+        
+        self.send_json(task)
 
 
 def list_files(clawd_path):
@@ -305,6 +362,52 @@ def parse_memory_md(content):
             })
     
     return memories
+
+
+# ============================================
+# 任务执行
+# ============================================
+
+def run_task_in_background(task_id, prompt, clawd_path):
+    """在后台线程中执行任务"""
+    with ClawdDataHandler.tasks_lock:
+        ClawdDataHandler.tasks[task_id] = {
+            'taskId': task_id,
+            'status': 'running',
+            'output': '',
+            'error': None,
+        }
+    
+    try:
+        # 尝试使用 claw CLI（如果可用）
+        result = subprocess.run(
+            ['claw', 'run', prompt],
+            cwd=str(clawd_path),
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        
+        with ClawdDataHandler.tasks_lock:
+            if result.returncode == 0:
+                ClawdDataHandler.tasks[task_id]['status'] = 'done'
+                ClawdDataHandler.tasks[task_id]['output'] = result.stdout or '任务执行完成'
+            else:
+                ClawdDataHandler.tasks[task_id]['status'] = 'error'
+                ClawdDataHandler.tasks[task_id]['error'] = result.stderr or f'Exit code: {result.returncode}'
+    except FileNotFoundError:
+        # claw CLI 不可用，记录提示
+        with ClawdDataHandler.tasks_lock:
+            ClawdDataHandler.tasks[task_id]['status'] = 'done'
+            ClawdDataHandler.tasks[task_id]['output'] = f'任务已记录: {prompt}\n(claw CLI 未安装，任务已保存供后续处理)'
+    except subprocess.TimeoutExpired:
+        with ClawdDataHandler.tasks_lock:
+            ClawdDataHandler.tasks[task_id]['status'] = 'error'
+            ClawdDataHandler.tasks[task_id]['error'] = '任务执行超时 (120s)'
+    except Exception as e:
+        with ClawdDataHandler.tasks_lock:
+            ClawdDataHandler.tasks[task_id]['status'] = 'error'
+            ClawdDataHandler.tasks[task_id]['error'] = str(e)
 
 
 def main():

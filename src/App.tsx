@@ -5,6 +5,7 @@ import { Dock } from '@/components/Dock'
 import { HouseContainer } from '@/components/HouseContainer'
 import { ConnectionPanel } from '@/components/ConnectionPanel'
 import { ToastContainer } from '@/components/Toast'
+import { AIChatPanel } from '@/components/ai/AIChatPanel'
 import { useStore } from '@/store'
 import { getHouseById } from '@/houses/registry'
 import { openClawService } from '@/services/OpenClawService'
@@ -87,6 +88,9 @@ function App() {
 
       {/* Connection control panel */}
       <ConnectionPanel />
+
+      {/* AI Chat panel */}
+      <AIChatPanel />
 
       {/* Toast notifications */}
       <ToastContainer />

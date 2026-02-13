@@ -718,6 +718,38 @@ class OpenClawService {
     })
     this.pendingRequests.clear()
   }
+
+  // ============================================
+  // 公开方法 - 任务执行
+  // ============================================
+
+  /**
+   * 通过 WebSocket 发送任务命令给 OpenClaw
+   * 创建一个新会话并发送消息
+   */
+  async sendTaskCommand(prompt: string, context?: Record<string, unknown>): Promise<{ sessionKey: string }> {
+    // 创建新会话
+    const sessionResult = await this.send<{ session: { key: string } }>('sessions.create', {
+      label: prompt.slice(0, 50),
+    })
+    
+    const sessionKey = sessionResult.session?.key
+    if (!sessionKey) {
+      throw new Error('Failed to create session')
+    }
+
+    // 在新会话中发送消息
+    await this.send('chat.send', {
+      sessionKey,
+      message: {
+        role: 'user',
+        content: prompt,
+      },
+      ...(context ? { context } : {}),
+    })
+
+    return { sessionKey }
+  }
 }
 
 // 导出单例

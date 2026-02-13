@@ -1,6 +1,7 @@
 import { motion } from 'framer-motion'
 import { Ghost, Sparkles, Heart, Shield, Compass, Loader2, AlertCircle } from 'lucide-react'
 import { RadarChart } from '@/components/effects/RadarChart'
+import { AISummaryCard } from '@/components/ai/AISummaryCard'
 import { useStore } from '@/store'
 import type { SoulDimension, SoulTruth, SoulBoundary } from '@/types'
 
@@ -78,7 +79,11 @@ export function SoulHouse() {
   }
 
   return (
-    <div className="flex h-full overflow-hidden">
+    <div className="flex flex-col h-full overflow-hidden">
+      <div className="px-4 pt-4">
+        <AISummaryCard view="soul" />
+      </div>
+      <div className="flex flex-1 min-h-0 overflow-hidden">
       {/* 左侧: 身份与雷达图 */}
       <div className="w-[35%] flex flex-col p-4 border-r border-white/10 overflow-y-auto">
         {/* 身份标识 */}
@@ -198,6 +203,7 @@ export function SoulHouse() {
             </p>
           </div>
         )}
+      </div>
       </div>
     </div>
   )

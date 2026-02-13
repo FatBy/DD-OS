@@ -4,6 +4,7 @@ import {
   Loader2, MessageSquare, ChevronRight 
 } from 'lucide-react'
 import { GlassCard } from '@/components/GlassCard'
+import { AISummaryCard } from '@/components/ai/AISummaryCard'
 import { useStore } from '@/store'
 import { cn } from '@/utils/cn'
 import type { TaskItem } from '@/types'
@@ -126,7 +127,9 @@ export function TaskHouse() {
   }
 
   return (
-    <div className="flex h-full gap-4 p-6">
+    <div className="flex flex-col h-full p-6">
+      <AISummaryCard view="task" />
+      <div className="flex flex-1 gap-4 min-h-0">
       {/* 待处理列 */}
       <div className="flex-1 flex flex-col min-w-0">
         <div className="flex items-center gap-2 mb-4">
@@ -185,6 +188,7 @@ export function TaskHouse() {
             ))
           )}
         </div>
+      </div>
       </div>
     </div>
   )

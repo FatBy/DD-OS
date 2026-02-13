@@ -5,6 +5,7 @@ import { createSessionsSlice, type SessionsSlice } from './slices/sessionsSlice'
 import { createChannelsSlice, type ChannelsSlice } from './slices/channelsSlice'
 import { createAgentSlice, type AgentSlice } from './slices/agentSlice'
 import { createDevicesSlice, type DevicesSlice } from './slices/devicesSlice'
+import { createAiSlice, type AiSlice } from './slices/aiSlice'
 
 // ============================================
 // 视图状态
@@ -17,7 +18,7 @@ interface ViewSlice {
 // ============================================
 // 合并后的 Store 类型
 // ============================================
-export type AppStore = ViewSlice & ConnectionSlice & SessionsSlice & ChannelsSlice & AgentSlice & DevicesSlice
+export type AppStore = ViewSlice & ConnectionSlice & SessionsSlice & ChannelsSlice & AgentSlice & DevicesSlice & AiSlice
 
 // ============================================
 // 创建 Store
@@ -33,6 +34,7 @@ export const useStore = create<AppStore>()((...args) => ({
   ...createChannelsSlice(...args),
   ...createAgentSlice(...args),
   ...createDevicesSlice(...args),
+  ...createAiSlice(...args),
 }))
 
 // ============================================
@@ -56,3 +58,8 @@ export const selectSoulPrompts = (state: AppStore) => state.soulPrompts
 
 export const selectToasts = (state: AppStore) => state.toasts
 export const selectLogs = (state: AppStore) => state.logs
+
+// AI 选择器
+export const selectLlmConfig = (state: AppStore) => state.llmConfig
+export const selectChatMessages = (state: AppStore) => state.chatMessages
+export const selectChatStreaming = (state: AppStore) => state.chatStreaming
