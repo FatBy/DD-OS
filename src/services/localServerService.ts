@@ -2,17 +2,23 @@
  * DD-OS 本地服务通信模块
  * 通过 HTTP API 与 ddos-local-server.py 通信
  * 用于执行任务（绕过 WebSocket chat 层，直接调用 claw CLI）
+ *
+ * 远程访问策略：
+ * - 本地开发时直连 http://localhost:3001
+ * - 远程访问时通过 Vite 代理 /local-api → localhost:3001
+ *   这样浏览器只需连接 Vite dev server 端口，无需额外开放 3001 端口
  */
 
 // 自动推断本地服务地址
-// 如果通过远程访问（非 localhost），使用当前页面的 host + 3001 端口
 function getDefaultServerUrl(): string {
   const hostname = window.location.hostname
   if (hostname === 'localhost' || hostname === '127.0.0.1') {
+    // 本地开发：直连 3001 端口
     return 'http://localhost:3001'
   }
-  // 远程访问时，使用同一 host 的 3001 端口
-  return `http://${hostname}:3001`
+  // 远程访问：走 Vite 代理，使用相对路径
+  // /local-api/* → 代理到 localhost:3001/*
+  return '/local-api'
 }
 
 // 默认本地服务地址

@@ -27,6 +27,13 @@ export default defineConfig({
         target: GATEWAY_URL.replace('ws://', 'http://').replace('wss://', 'https://'),
         changeOrigin: true,
       },
+      // 本地服务代理 - 转发到 ddos-local-server.py
+      // 远程访问时浏览器无需直连 3001 端口
+      '/local-api': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/local-api/, ''),
+      },
     },
   },
 })
