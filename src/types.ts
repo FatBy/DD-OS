@@ -342,7 +342,7 @@ export interface ExecutionCommand {
 
 export interface ExecutionStatus {
   id: string
-  status: 'pending' | 'running' | 'success' | 'error'
+  status: 'pending' | 'running' | 'success' | 'error' | 'suggestion'
   sessionKey?: string
   output?: string
   error?: string

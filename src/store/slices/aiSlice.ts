@@ -3,13 +3,69 @@ import type { ChatMessage, AISummary, LLMConfig, ViewType, SkillEnhancement, Tas
 import type { SkillNode, TaskItem } from '@/types'
 import { getLLMConfig, saveLLMConfig, isLLMConfigured, streamChat, chat } from '@/services/llmService'
 import { buildSummaryMessages, buildChatMessages, buildSkillEnhancementPrompt, buildTaskNamingPrompt, parseJSONFromLLM, parseExecutionCommands, stripExecutionBlocks } from '@/services/contextBuilder'
-import { openClawService } from '@/services/OpenClawService'
 
 // 摘要缓存时间 (5分钟)
 const SUMMARY_CACHE_MS = 5 * 60 * 1000
-const ENHANCEMENT_CACHE_MS = 5 * 60 * 1000
+const ENHANCEMENT_CACHE_MS = 30 * 60 * 1000 // 30分钟 - 增强结果缓存更久
+
+// LocalStorage 键名
+const STORAGE_KEYS = {
+  SKILL_ENHANCEMENTS: 'ddos_skill_enhancements',
+  TASK_ENHANCEMENTS: 'ddos_task_enhancements',
+  SKILL_TIMESTAMP: 'ddos_skill_enhancements_ts',
+  TASK_TIMESTAMP: 'ddos_task_enhancements_ts',
+}
+
+// 从 localStorage 加载持久化数据
+function loadSkillEnhancements(): { data: Record<string, SkillEnhancement>; timestamp: number } {
+  try {
+    const data = localStorage.getItem(STORAGE_KEYS.SKILL_ENHANCEMENTS)
+    const ts = localStorage.getItem(STORAGE_KEYS.SKILL_TIMESTAMP)
+    if (data && ts) {
+      return { data: JSON.parse(data), timestamp: parseInt(ts, 10) }
+    }
+  } catch (e) {
+    console.warn('[AI] Failed to load skill enhancements from localStorage:', e)
+  }
+  return { data: {}, timestamp: 0 }
+}
+
+function loadTaskEnhancements(): { data: Record<string, TaskEnhancement>; timestamp: number } {
+  try {
+    const data = localStorage.getItem(STORAGE_KEYS.TASK_ENHANCEMENTS)
+    const ts = localStorage.getItem(STORAGE_KEYS.TASK_TIMESTAMP)
+    if (data && ts) {
+      return { data: JSON.parse(data), timestamp: parseInt(ts, 10) }
+    }
+  } catch (e) {
+    console.warn('[AI] Failed to load task enhancements from localStorage:', e)
+  }
+  return { data: {}, timestamp: 0 }
+}
+
+function saveSkillEnhancements(data: Record<string, SkillEnhancement>, timestamp: number) {
+  try {
+    localStorage.setItem(STORAGE_KEYS.SKILL_ENHANCEMENTS, JSON.stringify(data))
+    localStorage.setItem(STORAGE_KEYS.SKILL_TIMESTAMP, timestamp.toString())
+  } catch (e) {
+    console.warn('[AI] Failed to save skill enhancements to localStorage:', e)
+  }
+}
+
+function saveTaskEnhancements(data: Record<string, TaskEnhancement>, timestamp: number) {
+  try {
+    localStorage.setItem(STORAGE_KEYS.TASK_ENHANCEMENTS, JSON.stringify(data))
+    localStorage.setItem(STORAGE_KEYS.TASK_TIMESTAMP, timestamp.toString())
+  } catch (e) {
+    console.warn('[AI] Failed to save task enhancements to localStorage:', e)
+  }
+}
 
 const emptySummary = (): AISummary => ({ content: '', loading: false, error: null, timestamp: 0 })
+
+// 初始化时加载持久化数据
+const initialSkillEnhancements = loadSkillEnhancements()
+const initialTaskEnhancements = loadTaskEnhancements()
 
 export interface AiSlice {
   // LLM 配置
@@ -72,12 +128,13 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
   chatContext: 'world',
   chatError: null,
   _chatAbort: null,
-  skillEnhancements: {},
+  // 从 localStorage 恢复持久化数据
+  skillEnhancements: initialSkillEnhancements.data,
   skillEnhancementsLoading: false,
-  skillEnhancementsTimestamp: 0,
-  taskEnhancements: {},
+  skillEnhancementsTimestamp: initialSkillEnhancements.timestamp,
+  taskEnhancements: initialTaskEnhancements.data,
   taskEnhancementsLoading: false,
-  taskEnhancementsTimestamp: 0,
+  taskEnhancementsTimestamp: initialTaskEnhancements.timestamp,
   executionStatuses: {},
 
   setLlmConfig: (config) => {
@@ -223,71 +280,27 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
         _chatAbort: null,
       }))
 
-      // 执行 OpenClaw 命令
+      // 处理 OpenClaw 任务建议（不再直接调用 API）
       if (commands.length > 0) {
-        const connStatus = (get() as any).connectionStatus
-        if (connStatus !== 'connected') {
-          // 未连接，添加错误提示
-          const errMsg: ChatMessage = {
-            id: `exec-err-${Date.now()}`,
+        for (const cmd of commands) {
+          const suggestionId = `suggestion-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+          
+          // 创建任务建议消息
+          const suggestionMsg: ChatMessage = {
+            id: suggestionId,
             role: 'assistant',
-            content: '无法执行：OpenClaw 未连接。请先在连接面板中连接到 Gateway。',
+            content: cmd.prompt,
             timestamp: Date.now(),
-            error: true,
+            execution: {
+              id: suggestionId,
+              status: 'suggestion', // 新状态：建议
+              timestamp: Date.now(),
+            },
           }
+          
           set((state) => ({
-            chatMessages: [...state.chatMessages, errMsg],
+            chatMessages: [...state.chatMessages, suggestionMsg],
           }))
-        } else {
-          for (const cmd of commands) {
-            const execId = `exec-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
-            const execStatus: ExecutionStatus = {
-              id: execId,
-              status: 'pending',
-              timestamp: Date.now(),
-            }
-
-            // 添加执行状态消息
-            const execMsg: ChatMessage = {
-              id: execId,
-              role: 'assistant',
-              content: `正在执行: ${cmd.prompt}`,
-              timestamp: Date.now(),
-              execution: execStatus,
-            }
-            set((state) => ({
-              chatMessages: [...state.chatMessages, execMsg],
-              executionStatuses: { ...state.executionStatuses, [execId]: execStatus },
-            }))
-
-            // 异步调用 OpenClaw
-            try {
-              const result = await openClawService.sendTaskCommand(cmd.prompt, cmd.context)
-              const updated: ExecutionStatus = {
-                ...execStatus,
-                status: 'running',
-                sessionKey: result.sessionKey,
-              }
-              set((state) => ({
-                executionStatuses: { ...state.executionStatuses, [execId]: updated },
-                chatMessages: state.chatMessages.map(m =>
-                  m.id === execId ? { ...m, execution: updated } : m
-                ),
-              }))
-            } catch (err: any) {
-              const updated: ExecutionStatus = {
-                ...execStatus,
-                status: 'error',
-                error: err.message,
-              }
-              set((state) => ({
-                executionStatuses: { ...state.executionStatuses, [execId]: updated },
-                chatMessages: state.chatMessages.map(m =>
-                  m.id === execId ? { ...m, execution: updated, content: `执行失败: ${err.message}` } : m
-                ),
-              }))
-            }
-          }
         }
       }
     } catch (err: any) {
@@ -364,10 +377,15 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
         }
       }
 
+      const timestamp = Date.now()
+      
+      // 保存到 localStorage
+      saveSkillEnhancements(enhancementMap, timestamp)
+
       set({
         skillEnhancements: enhancementMap,
         skillEnhancementsLoading: false,
-        skillEnhancementsTimestamp: Date.now(),
+        skillEnhancementsTimestamp: timestamp,
       })
     } catch (err: any) {
       console.error('[AI] enhanceSkills failed:', err)
@@ -399,10 +417,15 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
         }
       }
 
+      const timestamp = Date.now()
+      
+      // 保存到 localStorage
+      saveTaskEnhancements(enhancementMap, timestamp)
+
       set({
         taskEnhancements: enhancementMap,
         taskEnhancementsLoading: false,
-        taskEnhancementsTimestamp: Date.now(),
+        taskEnhancementsTimestamp: timestamp,
       })
     } catch (err: any) {
       console.error('[AI] enhanceTaskNames failed:', err)
@@ -411,10 +434,16 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
   },
 
   clearSkillEnhancements: () => {
+    // 同时清除 localStorage
+    localStorage.removeItem(STORAGE_KEYS.SKILL_ENHANCEMENTS)
+    localStorage.removeItem(STORAGE_KEYS.SKILL_TIMESTAMP)
     set({ skillEnhancements: {}, skillEnhancementsTimestamp: 0 })
   },
 
   clearTaskEnhancements: () => {
+    // 同时清除 localStorage
+    localStorage.removeItem(STORAGE_KEYS.TASK_ENHANCEMENTS)
+    localStorage.removeItem(STORAGE_KEYS.TASK_TIMESTAMP)
     set({ taskEnhancements: {}, taskEnhancementsTimestamp: 0 })
   },
 

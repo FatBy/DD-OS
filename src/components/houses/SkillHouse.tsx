@@ -34,7 +34,7 @@ function SkillCard({ skill, index, enhancement, allSkills, highlightDep, onHighl
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: Math.min(index * 0.02, 0.5) }}
       className={cn(
-        'p-2.5 rounded-lg border transition-all cursor-pointer hover:scale-[1.01] relative',
+        'p-3 rounded-lg border transition-all cursor-pointer hover:scale-[1.01] relative',
         isHighlighted
           ? 'bg-amber-500/15 border-amber-400/50 ring-1 ring-amber-400/30'
           : isActive 
@@ -46,13 +46,13 @@ function SkillCard({ skill, index, enhancement, allSkills, highlightDep, onHighl
       <div className="flex items-center gap-2">
         {/* 状态指示 */}
         <div className={cn(
-          'w-2 h-2 rounded-full flex-shrink-0',
+          'w-2.5 h-2.5 rounded-full flex-shrink-0',
           isActive ? 'bg-cyan-400' : 'bg-white/20'
         )} />
         
         {/* 技能名称 */}
         <span className={cn(
-          'text-xs font-mono truncate flex-1',
+          'text-sm font-mono truncate flex-1',
           isActive ? 'text-cyan-300' : 'text-white/40'
         )}>
           {skill.name}
@@ -61,7 +61,7 @@ function SkillCard({ skill, index, enhancement, allSkills, highlightDep, onHighl
         {/* 分数 */}
         {enhancement ? (
           <span className={cn(
-            'text-[9px] font-mono flex-shrink-0 px-1.5 py-0.5 rounded',
+            'text-xs font-mono flex-shrink-0 px-2 py-0.5 rounded',
             enhancement.importanceScore >= 80 ? 'bg-amber-500/20 text-amber-400' :
             enhancement.importanceScore >= 60 ? 'bg-cyan-500/20 text-cyan-400' :
             'bg-white/5 text-white/30'
@@ -69,22 +69,22 @@ function SkillCard({ skill, index, enhancement, allSkills, highlightDep, onHighl
             {enhancement.importanceScore}
           </span>
         ) : isActive ? (
-          <Check className="w-3 h-3 text-cyan-400/60 flex-shrink-0" />
+          <Check className="w-4 h-4 text-cyan-400/60 flex-shrink-0" />
         ) : (
-          <span className="text-[9px] text-white/20">-</span>
+          <span className="text-xs text-white/20">-</span>
         )}
       </div>
       
       {/* AI 理由 */}
       {enhancement?.reasoning && (
-        <p className="text-[9px] text-white/30 mt-1 truncate pl-4">{enhancement.reasoning}</p>
+        <p className="text-xs text-white/40 mt-1.5 truncate pl-5">{enhancement.reasoning}</p>
       )}
       
       {/* 依赖关系 */}
       {hasDeps && depNames.length > 0 && (
-        <div className="flex items-center gap-1 mt-1.5 pl-4">
-          <GitBranch className="w-2.5 h-2.5 text-white/20 flex-shrink-0" />
-          <span className="text-[8px] font-mono text-white/25 truncate">
+        <div className="flex items-center gap-1.5 mt-2 pl-5">
+          <GitBranch className="w-3 h-3 text-white/25 flex-shrink-0" />
+          <span className="text-xs font-mono text-white/30 truncate">
             {depNames.join(', ')}
           </span>
         </div>
@@ -92,7 +92,7 @@ function SkillCard({ skill, index, enhancement, allSkills, highlightDep, onHighl
       
       {/* 版本 */}
       {!enhancement && skill.version && (
-        <p className="text-[9px] text-white/30 mt-1 truncate pl-4">v{skill.version}</p>
+        <p className="text-xs text-white/30 mt-1.5 truncate pl-5">v{skill.version}</p>
       )}
     </motion.div>
   )
@@ -129,20 +129,20 @@ function SubCategoryGroup({
   }, [skills, enhancements])
 
   return (
-    <div className="mb-1.5">
+    <div className="mb-2">
       <button
         onClick={onToggle}
-        className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-white/5 transition-colors"
+        className="w-full flex items-center gap-2 px-3 py-2 rounded-md hover:bg-white/5 transition-colors"
       >
-        <div className="w-2 h-2 rounded-full bg-amber-400/40 flex-shrink-0" />
+        <div className="w-2.5 h-2.5 rounded-full bg-amber-400/40 flex-shrink-0" />
         <ChevronRight className={cn(
-          'w-3 h-3 text-white/20 transition-transform',
+          'w-4 h-4 text-white/30 transition-transform',
           expanded && 'rotate-90'
         )} />
-        <span className="text-[10px] font-mono text-white/50 flex-1 text-left truncate">
+        <span className="text-sm font-mono text-white/60 flex-1 text-left truncate">
           {subCategory}
         </span>
-        <span className="text-[9px] font-mono text-cyan-400/50">
+        <span className="text-xs font-mono text-cyan-400/60">
           {activeCount}/{skills.length}
         </span>
       </button>
@@ -156,7 +156,7 @@ function SubCategoryGroup({
             transition={{ duration: 0.2 }}
             className="overflow-hidden"
           >
-            <div className="grid grid-cols-2 gap-1 pl-6 pr-1 mt-1">
+            <div className="grid grid-cols-2 gap-2 pl-8 pr-2 mt-2">
               {sortedSkills.map((skill, idx) => (
                 <SkillCard
                   key={skill.id}
@@ -206,19 +206,19 @@ function CategoryGroup({
     .filter(s => s.unlocked || s.status === 'active').length
 
   return (
-    <div className="mb-3 border border-white/10 rounded-lg overflow-hidden">
+    <div className="mb-4 border border-white/10 rounded-lg overflow-hidden">
       <button
         onClick={onToggle}
-        className="w-full flex items-center gap-2 p-3 bg-white/5 hover:bg-white/8 transition-colors"
+        className="w-full flex items-center gap-3 p-4 bg-white/5 hover:bg-white/8 transition-colors"
       >
         <ChevronRight className={cn(
-          'w-3.5 h-3.5 text-cyan-400/60 transition-transform',
+          'w-4 h-4 text-cyan-400/60 transition-transform',
           expanded && 'rotate-90'
         )} />
-        <span className="text-xs font-mono text-cyan-400 uppercase flex-1 text-left">
+        <span className="text-sm font-mono text-cyan-400 uppercase flex-1 text-left font-medium">
           {category}
         </span>
-        <span className="text-[10px] font-mono text-cyan-400/50">
+        <span className="text-sm font-mono text-cyan-400/60">
           {activeSkills}/{totalSkills}
         </span>
       </button>
@@ -232,7 +232,7 @@ function CategoryGroup({
             transition={{ duration: 0.2 }}
             className="overflow-hidden"
           >
-            <div className="p-2">
+            <div className="p-3">
               {Array.from(subGroups.entries()).map(([sub, subSkills]) => (
                 <SubCategoryGroup
                   key={sub}
@@ -269,19 +269,19 @@ function SkillGroup({
   const activeCount = skills.filter(s => s.unlocked || s.status === 'active').length
   
   return (
-    <div className="mb-2">
+    <div className="mb-3">
       <button
         onClick={onToggle}
-        className="w-full flex items-center gap-2 p-2 rounded-lg bg-white/5 hover:bg-white/10 transition-colors"
+        className="w-full flex items-center gap-3 p-3 rounded-lg bg-white/5 hover:bg-white/10 transition-colors"
       >
         <ChevronRight className={cn(
-          'w-3 h-3 text-white/30 transition-transform',
+          'w-4 h-4 text-white/40 transition-transform',
           expanded && 'rotate-90'
         )} />
-        <span className="text-xs font-mono text-white/70 flex-1 text-left truncate">
+        <span className="text-sm font-mono text-white/70 flex-1 text-left truncate">
           {groupName}
         </span>
-        <span className="text-[10px] font-mono text-cyan-400/60">
+        <span className="text-sm font-mono text-cyan-400/70">
           {activeCount}/{skills.length}
         </span>
       </button>
@@ -292,7 +292,7 @@ function SkillGroup({
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: 'auto', opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
-            className="mt-1 grid grid-cols-2 gap-1 pl-3"
+            className="mt-2 grid grid-cols-2 gap-2 pl-4"
           >
             {skills.map((skill, idx) => (
               <SkillCard key={skill.id} skill={skill} index={idx} />
@@ -452,9 +452,9 @@ export function SkillHouse() {
       {/* 主区域: 技能树 */}
       <div className="flex-1 p-4 overflow-y-auto">
         {/* 标题 */}
-        <div className="flex items-center gap-2 mb-4">
-          <Brain className="w-5 h-5 text-cyan-400" />
-          <h3 className="font-mono text-sm text-cyan-300 tracking-wider">
+        <div className="flex items-center gap-3 mb-5">
+          <Brain className="w-6 h-6 text-cyan-400" />
+          <h3 className="font-mono text-base text-cyan-300 tracking-wider font-medium">
             技能树
           </h3>
           
@@ -464,23 +464,23 @@ export function SkillHouse() {
               onClick={handleAIRefresh}
               disabled={skillEnhancementsLoading}
               className={cn(
-                'flex items-center gap-1 px-2 py-1 rounded text-[10px] font-mono transition-colors',
+                'flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-mono transition-colors',
                 hasEnhancements
                   ? 'bg-amber-500/20 border border-amber-500/30 text-amber-400'
                   : 'bg-white/5 border border-white/10 text-white/40 hover:text-amber-400 hover:border-amber-500/30'
               )}
             >
               {skillEnhancementsLoading ? (
-                <Loader2 className="w-3 h-3 animate-spin" />
+                <Loader2 className="w-4 h-4 animate-spin" />
               ) : (
-                <Sparkles className="w-3 h-3" />
+                <Sparkles className="w-4 h-4" />
               )}
               {hasEnhancements ? 'AI 已分析' : 'AI 分析'}
             </button>
           )}
           
           {totalSkills > 0 && (
-            <span className="ml-auto text-[10px] font-mono text-white/40">
+            <span className="ml-auto text-xs font-mono text-white/50">
               {totalSkills} skills
             </span>
           )}
@@ -488,7 +488,7 @@ export function SkillHouse() {
 
         {/* 技能树 */}
         {skills.length > 0 ? (
-          <div className="space-y-1">
+          <div className="space-y-2">
             {/* AI 层级树模式 */}
             {hierarchicalGroups ? (
               Array.from(hierarchicalGroups.entries()).map(([category, subGroups]) => (
@@ -508,17 +508,17 @@ export function SkillHouse() {
               ))
             ) : skillEnhancementsLoading ? (
               /* AI 加载中骨架屏 */
-              <div className="space-y-2">
+              <div className="space-y-3">
                 {[1, 2, 3].map(i => (
-                  <div key={i} className="border border-white/10 rounded-lg p-3">
-                    <div className="h-4 bg-white/10 rounded w-24 mb-3 animate-pulse" />
-                    <div className="grid grid-cols-2 gap-1">
+                  <div key={i} className="border border-white/10 rounded-lg p-4">
+                    <div className="h-5 bg-white/10 rounded w-28 mb-4 animate-pulse" />
+                    <div className="grid grid-cols-2 gap-2">
                       {skills.slice(0, 4).map((skill) => (
-                        <div key={`skel-${i}-${skill.id}`} className="p-2 rounded-lg border border-white/10 bg-white/5">
+                        <div key={`skel-${i}-${skill.id}`} className="p-3 rounded-lg border border-white/10 bg-white/5">
                           <div className="flex items-center gap-2">
-                            <div className="w-2 h-2 rounded-full bg-white/10 animate-pulse" />
-                            <span className="text-xs font-mono text-white/40 truncate flex-1">{skill.name}</span>
-                            <div className="w-6 h-4 rounded bg-white/10 animate-pulse" />
+                            <div className="w-2.5 h-2.5 rounded-full bg-white/10 animate-pulse" />
+                            <span className="text-sm font-mono text-white/40 truncate flex-1">{skill.name}</span>
+                            <div className="w-8 h-5 rounded bg-white/10 animate-pulse" />
                           </div>
                         </div>
                       ))}
@@ -539,7 +539,7 @@ export function SkillHouse() {
                   />
                 ))
               ) : (
-                <div className="grid grid-cols-2 gap-1">
+                <div className="grid grid-cols-2 gap-2">
                   {skills.map((skill, idx) => (
                     <SkillCard key={skill.id} skill={skill} index={idx} />
                   ))}
@@ -549,11 +549,11 @@ export function SkillHouse() {
           </div>
         ) : (
           <div className="flex flex-col items-center justify-center h-48 text-center">
-            <AlertCircle className="w-8 h-8 text-white/20 mb-3" />
-            <p className="text-white/40 text-sm font-mono">
+            <AlertCircle className="w-10 h-10 text-white/20 mb-4" />
+            <p className="text-white/50 text-sm font-mono">
               {isConnected ? '暂无技能数据' : '未连接'}
             </p>
-            <p className="text-white/20 text-xs font-mono mt-1">
+            <p className="text-white/30 text-xs font-mono mt-2">
               {isConnected 
                 ? '请检查 OpenClaw 的 skills.list API' 
                 : '请先连接到 OpenClaw Gateway'}
@@ -563,43 +563,43 @@ export function SkillHouse() {
       </div>
 
       {/* 侧边栏: 统计 */}
-      <div className="w-44 border-l border-white/10 p-4 space-y-4">
-        <div className="flex items-center gap-2 mb-2">
-          <Zap className="w-4 h-4 text-cyan-400" />
-          <h4 className="font-mono text-xs text-cyan-300 uppercase">统计</h4>
+      <div className="w-48 border-l border-white/10 p-4 space-y-4">
+        <div className="flex items-center gap-2 mb-3">
+          <Zap className="w-5 h-5 text-cyan-400" />
+          <h4 className="font-mono text-sm text-cyan-300 uppercase font-medium">统计</h4>
         </div>
 
-        <div className="space-y-3">
+        <div className="space-y-4">
           <div className="p-3 bg-white/5 rounded-lg">
-            <p className="text-[10px] font-mono text-white/40 uppercase">总技能</p>
-            <p className="text-2xl font-bold text-cyan-400">{totalSkills}</p>
+            <p className="text-xs font-mono text-white/50 uppercase mb-1">总技能</p>
+            <p className="text-3xl font-bold text-cyan-400">{totalSkills}</p>
           </div>
 
           <div className="p-3 bg-white/5 rounded-lg">
-            <p className="text-[10px] font-mono text-white/40 uppercase">已激活</p>
-            <p className="text-2xl font-bold text-emerald-400">
+            <p className="text-xs font-mono text-white/50 uppercase mb-1">已激活</p>
+            <p className="text-3xl font-bold text-emerald-400">
               {activeCount}
             </p>
           </div>
 
           {!hasEnhancements && groupedSkills.size > 1 && (
             <div className="p-3 bg-white/5 rounded-lg">
-              <p className="text-[10px] font-mono text-white/40 uppercase">分类数</p>
-              <p className="text-2xl font-bold text-purple-400">{groupedSkills.size}</p>
+              <p className="text-xs font-mono text-white/50 uppercase mb-1">分类数</p>
+              <p className="text-3xl font-bold text-purple-400">{groupedSkills.size}</p>
             </div>
           )}
 
           {/* AI 分类统计 */}
           {hasEnhancements && subCategoryCounts.size > 0 && (
             <div className="p-3 bg-white/5 rounded-lg">
-              <p className="text-[10px] font-mono text-white/40 uppercase mb-2">AI 分类</p>
-              <div className="space-y-1.5">
+              <p className="text-xs font-mono text-white/50 uppercase mb-3">AI 分类</p>
+              <div className="space-y-2">
                 {Array.from(subCategoryCounts.entries())
                   .sort((a, b) => b[1] - a[1])
                   .map(([cat, count]) => (
                     <div key={cat} className="flex items-center justify-between">
-                      <span className="text-[9px] font-mono text-white/50 truncate">{cat}</span>
-                      <span className="text-[9px] font-mono text-amber-400/70">{count}</span>
+                      <span className="text-xs font-mono text-white/60 truncate">{cat}</span>
+                      <span className="text-xs font-mono text-amber-400">{count}</span>
                     </div>
                   ))
                 }
@@ -609,7 +609,7 @@ export function SkillHouse() {
         </div>
 
         <div className="pt-4 border-t border-white/10">
-          <p className="text-[9px] font-mono text-white/30 leading-relaxed">
+          <p className="text-xs font-mono text-white/40 leading-relaxed">
             {hasEnhancements 
               ? 'AI 已按功能分类技能并评估重要度。点击有依赖的技能可高亮关联项。'
               : '技能来自 OpenClaw 的 SKILL.md 文件系统，显示所有已安装的 Agent 技能。'

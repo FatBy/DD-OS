@@ -20,19 +20,58 @@ import type {
 
 /**
  * 将任意格式的时间戳标准化为毫秒级
- * OpenClaw API 可能返回秒级时间戳, 需要智能检测并转换
+ * 支持多种输入格式:
+ * - ISO 字符串: "2025-01-15T12:30:45Z"
+ * - 字符串数字: "1736940645" 或 "1736940645000"
+ * - 数字毫秒: 1736940645000
+ * - 数字秒: 1736940645
  */
-function normalizeTimestamp(ts: number | undefined | null): number {
-  if (!ts || ts <= 0) return Date.now()
+function normalizeTimestamp(ts: unknown): number {
+  // 空值处理
+  if (ts === undefined || ts === null) {
+    console.warn('[dataMapper] Empty timestamp, using now')
+    return Date.now()
+  }
 
-  // 秒级时间戳 < 1e12 (约 2001 年的毫秒时间戳, 2286 年的秒级时间戳)
-  const normalized = ts < 1e12 ? ts * 1000 : ts
+  let numeric: number
 
-  // 验证范围: 2000-2100 年
+  // ISO 字符串格式 (如 "2025-01-15T12:30:45.123Z")
+  if (typeof ts === 'string') {
+    // 尝试解析 ISO 日期字符串
+    if (ts.includes('T') || ts.includes('-')) {
+      const parsed = Date.parse(ts)
+      if (!isNaN(parsed)) {
+        console.log('[dataMapper] Parsed ISO string:', ts, '->', parsed)
+        return parsed
+      }
+    }
+    // 尝试解析纯数字字符串
+    numeric = Number(ts)
+    if (isNaN(numeric)) {
+      console.warn('[dataMapper] Invalid string timestamp:', ts)
+      return Date.now()
+    }
+  } else if (typeof ts === 'number') {
+    numeric = ts
+  } else {
+    console.warn('[dataMapper] Unknown timestamp type:', typeof ts, ts)
+    return Date.now()
+  }
+
+  // 检查无效数值
+  if (numeric <= 0 || !isFinite(numeric)) {
+    console.warn('[dataMapper] Invalid numeric timestamp:', numeric)
+    return Date.now()
+  }
+
+  // 秒 vs 毫秒判定: 秒级时间戳 < 1e12 (约 2001 年的毫秒时间戳)
+  const normalized = numeric < 1e12 ? numeric * 1000 : numeric
+
+  // 验证合理范围: 2000-2100 年
   const MIN = 946684800000  // 2000-01-01
   const MAX = 4102444800000 // 2100-01-01
   if (normalized < MIN || normalized > MAX) {
-    console.warn('[dataMapper] Invalid timestamp:', ts)
+    console.warn('[dataMapper] Timestamp out of range:', ts, '->', normalized)
     return Date.now()
   }
 
@@ -51,7 +90,11 @@ function normalizeTimestamp(ts: number | undefined | null): number {
  */
 export function sessionToTask(session: Session): TaskItem {
   const now = Date.now()
-  const age = now - normalizeTimestamp(session.updatedAt)
+  // Debug: 输出原始时间戳
+  console.log('[dataMapper] sessionToTask raw updatedAt:', session.key, session.updatedAt, typeof session.updatedAt)
+  const normalizedTime = normalizeTimestamp(session.updatedAt)
+  console.log('[dataMapper] sessionToTask normalized:', normalizedTime, new Date(normalizedTime).toISOString())
+  const age = now - normalizedTime
   const isRecent = age < 3600000 // 1小时内
   const isActive = age < 300000 // 5分钟内
   
@@ -250,7 +293,12 @@ export function sessionToMemories(session: Session): MemoryEntry[] {
   
   // 如果有最后消息，创建记忆条目
   if (session.lastMessage) {
-    const age = now - normalizeTimestamp(session.lastMessage.timestamp)
+    // Debug: 输出原始时间戳
+    console.log('[dataMapper] sessionToMemories raw timestamp:', session.key, session.lastMessage.timestamp, typeof session.lastMessage.timestamp)
+    const normalizedTime = normalizeTimestamp(session.lastMessage.timestamp)
+    console.log('[dataMapper] sessionToMemories normalized:', normalizedTime, new Date(normalizedTime).toISOString())
+    
+    const age = now - normalizedTime
     const isRecent = age < 86400000 // 24小时内
     
     memories.push({
@@ -258,7 +306,7 @@ export function sessionToMemories(session: Session): MemoryEntry[] {
       title: session.label || extractSessionTitle(session.key),
       content: session.lastMessage.content,
       type: isRecent ? 'short-term' : 'long-term',
-      timestamp: new Date(normalizeTimestamp(session.lastMessage.timestamp)).toISOString(),
+      timestamp: new Date(normalizedTime).toISOString(),
       tags: extractTags(session),
       sessionKey: session.key,
       role: session.lastMessage.role,
