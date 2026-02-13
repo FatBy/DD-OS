@@ -21,7 +21,8 @@ export interface AgentSlice {
   clearLogs: () => void
   setAgentLoading: (loading: boolean) => void
   
-  // 记忆 actions (从 sessions 生成)
+  // 记忆 actions
+  setMemories: (memories: MemoryEntry[]) => void
   setMemoriesFromSessions: (sessions: Session[]) => void
   setSelectedMemory: (id: string | null) => void
 }
@@ -56,6 +57,8 @@ export const createAgentSlice: StateCreator<AgentSlice> = (set) => ({
   clearLogs: () => set({ logs: [] }),
   
   setAgentLoading: (loading) => set({ agentLoading: loading }),
+  
+  setMemories: (memories) => set({ memories }),
   
   setMemoriesFromSessions: (sessions) => set((state) => ({
     memories: sessionsToMemories(sessions),
