@@ -1,8 +1,9 @@
-import { useEffect } from 'react'
-import { motion } from 'framer-motion'
+import { useEffect, useState } from 'react'
+import { motion, AnimatePresence } from 'framer-motion'
 import { 
   Inbox, Clock, CheckCircle2, Play,
-  Loader2, MessageSquare, ChevronRight, Sparkles
+  Loader2, MessageSquare, ChevronRight, ChevronDown, Sparkles,
+  Calendar, Hash, Send
 } from 'lucide-react'
 import { GlassCard } from '@/components/GlassCard'
 import { AISummaryCard } from '@/components/ai/AISummaryCard'
@@ -53,11 +54,13 @@ function EmptyColumn({ status }: { status: TaskItem['status'] }) {
   )
 }
 
-function TaskCard({ task, index, enhancement, isEnhancing }: { 
+function TaskCard({ task, index, enhancement, isEnhancing, isExpanded, onToggle }: { 
   task: TaskItem
   index: number
   enhancement?: TaskEnhancement
   isEnhancing?: boolean
+  isExpanded: boolean
+  onToggle: () => void
 }) {
   const config = statusConfig[task.status]
   const priority = priorityConfig[task.priority]
@@ -74,11 +77,12 @@ function TaskCard({ task, index, enhancement, isEnhancing }: {
     >
       <GlassCard 
         themeColor={config.color} 
-        className="p-4 cursor-pointer hover:scale-[1.02] transition-transform"
+        className="p-4 cursor-pointer hover:scale-[1.005] transition-transform"
+        onClick={onToggle}
       >
         <div className="flex items-start gap-3">
           <div className={cn(
-            'w-8 h-8 rounded-lg flex items-center justify-center',
+            'w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0',
             `bg-${config.color}-500/20`
           )}>
             <Icon className={cn('w-4 h-4', `text-${config.color}-400`)} />
@@ -105,20 +109,75 @@ function TaskCard({ task, index, enhancement, isEnhancing }: {
                 {task.title}
               </p>
             )}
-            <p className="text-xs text-white/50 mt-1 line-clamp-2">
-              {task.description}
-            </p>
-            <div className="flex items-center gap-3 mt-2 text-[9px] font-mono text-white/30">
-              {task.messageCount !== undefined && (
-                <span className="flex items-center gap-1">
-                  <MessageSquare className="w-3 h-3" />
-                  {task.messageCount}
-                </span>
+            
+            {/* 折叠时显示截断描述 */}
+            {!isExpanded && (
+              <p className="text-xs text-white/50 mt-1 line-clamp-2">
+                {task.description}
+              </p>
+            )}
+
+            {/* 展开详情 */}
+            <AnimatePresence initial={false}>
+              {isExpanded && (
+                <motion.div
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: 'auto', opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  transition={{ duration: 0.2 }}
+                  className="overflow-hidden"
+                >
+                  {/* 完整描述 */}
+                  <div className="mt-2 p-2.5 bg-white/5 rounded-lg border border-white/10">
+                    <p className="text-xs text-white/70 whitespace-pre-wrap leading-relaxed">
+                      {task.description || '暂无详细描述'}
+                    </p>
+                  </div>
+
+                  {/* 元数据 */}
+                  <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[9px] font-mono text-white/40">
+                    <span className="flex items-center gap-1">
+                      <Calendar className="w-3 h-3" />
+                      {new Date(task.timestamp).toLocaleString('zh-CN')}
+                    </span>
+                    {task.messageCount !== undefined && (
+                      <span className="flex items-center gap-1">
+                        <MessageSquare className="w-3 h-3" />
+                        {task.messageCount} 条消息
+                      </span>
+                    )}
+                    {task.sessionKey && (
+                      <span className="flex items-center gap-1">
+                        <Hash className="w-3 h-3" />
+                        <span className="truncate max-w-[120px]">{task.sessionKey}</span>
+                      </span>
+                    )}
+                  </div>
+                </motion.div>
               )}
-              <span>{new Date(task.timestamp).toLocaleDateString('zh-CN')}</span>
-            </div>
+            </AnimatePresence>
+
+            {/* 折叠时的简要元数据 */}
+            {!isExpanded && (
+              <div className="flex items-center gap-3 mt-2 text-[9px] font-mono text-white/30">
+                {task.messageCount !== undefined && (
+                  <span className="flex items-center gap-1">
+                    <MessageSquare className="w-3 h-3" />
+                    {task.messageCount}
+                  </span>
+                )}
+                <span>{new Date(task.timestamp).toLocaleDateString('zh-CN')}</span>
+              </div>
+            )}
           </div>
-          <ChevronRight className="w-4 h-4 text-white/20" />
+
+          {/* 展开/折叠指示器 */}
+          <motion.div
+            animate={{ rotate: isExpanded ? 90 : 0 }}
+            transition={{ duration: 0.2 }}
+          >
+            <ChevronRight className="w-4 h-4 text-white/20 flex-shrink-0" />
+          </motion.div>
         </div>
       </GlassCard>
     </motion.div>
@@ -141,6 +200,13 @@ export function TaskHouse() {
   const configured = isLLMConfigured()
   const hasEnhancements = Object.keys(taskEnhancements).length > 0
 
+  // 展开状态
+  const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null)
+
+  const toggleExpand = (id: string) => {
+    setExpandedTaskId(prev => prev === id ? null : id)
+  }
+
   // 首次进入自动触发 AI 命名
   useEffect(() => {
     if (configured && tasks.length > 0) {
@@ -162,6 +228,44 @@ export function TaskHouse() {
     return (
       <div className="flex items-center justify-center h-full">
         <Loader2 className="w-8 h-8 text-amber-400 animate-spin" />
+      </div>
+    )
+  }
+
+  const renderColumn = (
+    columnTasks: TaskItem[], 
+    status: TaskItem['status'],
+    config: typeof statusConfig[keyof typeof statusConfig]
+  ) => {
+    const Icon = config.icon
+    return (
+      <div className="flex-1 flex flex-col min-w-0">
+        <div className="flex items-center gap-2 mb-4">
+          <Icon className={cn('w-4 h-4', `text-${config.color}-400`)} />
+          <h3 className={cn('font-mono text-sm tracking-wider', `text-${config.color}-300`)}>
+            {config.label}
+          </h3>
+          <span className="text-[10px] font-mono text-white/40 bg-white/5 px-2 py-0.5 rounded ml-auto">
+            {columnTasks.length}
+          </span>
+        </div>
+        <div className="flex-1 overflow-y-auto space-y-3 pr-2">
+          {columnTasks.length === 0 ? (
+            <EmptyColumn status={status} />
+          ) : (
+            columnTasks.map((task, i) => (
+              <TaskCard 
+                key={task.id} 
+                task={task} 
+                index={i} 
+                enhancement={taskEnhancements[task.id]}
+                isEnhancing={taskEnhancementsLoading}
+                isExpanded={expandedTaskId === task.id}
+                onToggle={() => toggleExpand(task.id)}
+              />
+            ))
+          )}
+        </div>
       </div>
     )
   }
@@ -194,83 +298,9 @@ export function TaskHouse() {
       )}
 
       <div className="flex flex-1 gap-4 min-h-0">
-      {/* 待处理列 */}
-      <div className="flex-1 flex flex-col min-w-0">
-        <div className="flex items-center gap-2 mb-4">
-          <Clock className="w-4 h-4 text-amber-400" />
-          <h3 className="font-mono text-sm text-amber-300 tracking-wider">待处理</h3>
-          <span className="text-[10px] font-mono text-white/40 bg-white/5 px-2 py-0.5 rounded ml-auto">
-            {pendingTasks.length}
-          </span>
-        </div>
-        <div className="flex-1 overflow-y-auto space-y-3 pr-2">
-          {pendingTasks.length === 0 ? (
-            <EmptyColumn status="pending" />
-          ) : (
-            pendingTasks.map((task, i) => (
-              <TaskCard 
-                key={task.id} 
-                task={task} 
-                index={i} 
-                enhancement={taskEnhancements[task.id]}
-                isEnhancing={taskEnhancementsLoading}
-              />
-            ))
-          )}
-        </div>
-      </div>
-
-      {/* 进行中列 */}
-      <div className="flex-1 flex flex-col min-w-0">
-        <div className="flex items-center gap-2 mb-4">
-          <Play className="w-4 h-4 text-cyan-400" />
-          <h3 className="font-mono text-sm text-cyan-300 tracking-wider">进行中</h3>
-          <span className="text-[10px] font-mono text-white/40 bg-white/5 px-2 py-0.5 rounded ml-auto">
-            {executingTasks.length}
-          </span>
-        </div>
-        <div className="flex-1 overflow-y-auto space-y-3 pr-2">
-          {executingTasks.length === 0 ? (
-            <EmptyColumn status="executing" />
-          ) : (
-            executingTasks.map((task, i) => (
-              <TaskCard 
-                key={task.id} 
-                task={task} 
-                index={i} 
-                enhancement={taskEnhancements[task.id]}
-                isEnhancing={taskEnhancementsLoading}
-              />
-            ))
-          )}
-        </div>
-      </div>
-
-      {/* 已完成列 */}
-      <div className="flex-1 flex flex-col min-w-0">
-        <div className="flex items-center gap-2 mb-4">
-          <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-          <h3 className="font-mono text-sm text-emerald-300 tracking-wider">已完成</h3>
-          <span className="text-[10px] font-mono text-white/40 bg-white/5 px-2 py-0.5 rounded ml-auto">
-            {doneTasks.length}
-          </span>
-        </div>
-        <div className="flex-1 overflow-y-auto space-y-3 pr-2">
-          {doneTasks.length === 0 ? (
-            <EmptyColumn status="done" />
-          ) : (
-            doneTasks.map((task, i) => (
-              <TaskCard 
-                key={task.id} 
-                task={task} 
-                index={i} 
-                enhancement={taskEnhancements[task.id]}
-                isEnhancing={taskEnhancementsLoading}
-              />
-            ))
-          )}
-        </div>
-      </div>
+        {renderColumn(pendingTasks, 'pending', statusConfig.pending)}
+        {renderColumn(executingTasks, 'executing', statusConfig.executing)}
+        {renderColumn(doneTasks, 'done', statusConfig.done)}
       </div>
     </div>
   )

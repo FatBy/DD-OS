@@ -3,27 +3,35 @@
  * 根据当前页面类型构建 LLM 的 system prompt 和数据上下文
  */
 
-import type { ChatMessage, ViewType, TaskItem, SkillNode, MemoryEntry, SoulTruth, SoulBoundary } from '@/types'
+import type { ChatMessage, ViewType, TaskItem, SkillNode, MemoryEntry, SoulTruth, SoulBoundary, ExecutionCommand } from '@/types'
 
 // ============================================
 // 系统 Prompt
 // ============================================
 
+const OPENCLAW_CAPABILITY = `
+
+你可以通过 DD-OS 直接控制 OpenClaw AI Agent 执行任务。当用户请求你执行某项操作时（如发消息、执行命令、自动化任务等），在你的回复末尾包含以下特殊标记：
+\`\`\`execute
+{"action":"sendTask","prompt":"要发送给 Agent 的具体指令"}
+\`\`\`
+只在需要执行操作时才添加此标记，纯分析或回答问题时不需要。`
+
 const SYSTEM_PROMPTS: Record<string, string> = {
   task: `你是 DD-OS 任务管理助手。你的职责是帮助用户分析任务状态、建议优先级、识别瓶颈。
-回答要简洁精炼，使用中文。如果用户请求执行任务，可以通过 /run 指令来执行。`,
+回答要简洁精炼，使用中文。` + OPENCLAW_CAPABILITY,
 
   skill: `你是 DD-OS 技能分析助手。你的职责是帮助用户了解当前已安装的技能、分析技能覆盖度、推荐可能需要的新技能。
-回答要简洁精炼，使用中文。`,
+回答要简洁精炼，使用中文。` + OPENCLAW_CAPABILITY,
 
   memory: `你是 DD-OS 记忆管理助手。你的职责是帮助用户总结和分析记忆数据、发现记忆间的关联、提取关键洞察。
-回答要简洁精炼，使用中文。`,
+回答要简洁精炼，使用中文。` + OPENCLAW_CAPABILITY,
 
   soul: `你是 DD-OS 灵魂分析助手。你的职责是帮助用户理解 Agent 的个性配置、分析核心特质和边界规则、建议优化方向。
-回答要简洁精炼，使用中文。`,
+回答要简洁精炼，使用中文。` + OPENCLAW_CAPABILITY,
 
   default: `你是 DD-OS 智能助手，帮助用户管理和分析 OpenClaw AI Agent 的各项数据。
-回答要简洁精炼，使用中文。`,
+回答要简洁精炼，使用中文。` + OPENCLAW_CAPABILITY,
 }
 
 // ============================================
@@ -49,6 +57,7 @@ interface StoreData {
   soulBoundaries?: SoulBoundary[]
   soulVibeStatement?: string
   soulRawContent?: string
+  connectionStatus?: string
 }
 
 function buildTaskContext(tasks: TaskItem[]): string {
@@ -183,12 +192,13 @@ export function buildChatMessages(
 ): ChatMessage[] {
   const systemPrompt = SYSTEM_PROMPTS[view] || SYSTEM_PROMPTS.default
   const context = getContextForView(view, data)
+  const connStatus = data.connectionStatus === 'connected' ? 'OpenClaw 已连接，可执行任务' : 'OpenClaw 未连接，无法执行任务'
   
   const messages: ChatMessage[] = [
     {
       id: 'sys',
       role: 'system',
-      content: `${systemPrompt}\n\n当前数据:\n${context}`,
+      content: `${systemPrompt}\n\n系统状态: ${connStatus}\n\n当前数据:\n${context}`,
       timestamp: Date.now(),
     },
   ]
@@ -288,22 +298,34 @@ export function buildSkillEnhancementPrompt(skills: SkillNode[]): ChatMessage[] 
     {
       id: 'sys',
       role: 'system',
-      content: `你是 DD-OS 技能分析专家。根据技能的名称、分类、状态和描述，评估每个技能对 AI Agent 的重要程度。
+      content: `你是 DD-OS 技能分析专家。根据技能的名称、分类、状态和描述，完成两个任务：
+1. 评估每个技能对 AI Agent 的重要程度（0-100 分）
+2. 将技能归类到功能子分类中
+
 评分标准：
 - 90-100: 核心必备技能（如记忆管理、任务执行）
 - 70-89: 重要辅助技能（如浏览器自动化、代码分析）
 - 50-69: 一般技能
 - 0-49: 可选/低优先级技能
+
+子分类参考（可自行判断最合适的分类名）：
+- 通信: 消息平台、通知、社交相关
+- 分析: 数据分析、代码审查、信息提取
+- 执行: 自动化操作、文件操作、系统调用
+- 存储: 数据库、文件系统、缓存
+- 系统: 核心框架、运行时、配置
+- 辅助: 工具类、格式化、转换
+
 你必须返回纯 JSON 数组，不要包含任何其他文字。`,
       timestamp: Date.now(),
     },
     {
       id: 'user',
       role: 'user',
-      content: `分析以下 ${limitedSkills.length} 个技能的重要度，返回 JSON 数组：
+      content: `分析以下 ${limitedSkills.length} 个技能，返回 JSON 数组：
 ${JSON.stringify(skillsList, null, 2)}
 
-返回格式：[{"skillId":"技能id","importanceScore":85,"reasoning":"一句话理由"}]`,
+返回格式：[{"skillId":"技能id","importanceScore":85,"reasoning":"一句话理由","subCategory":"分类名"}]`,
       timestamp: Date.now(),
     },
   ]
@@ -345,4 +367,41 @@ ${JSON.stringify(tasksList, null, 2)}
       timestamp: Date.now(),
     },
   ]
+}
+
+// ============================================
+// AI 执行命令解析
+// ============================================
+
+/**
+ * 从 LLM 回复中提取执行命令
+ */
+export function parseExecutionCommands(content: string): ExecutionCommand[] {
+  const commands: ExecutionCommand[] = []
+  const regex = /```execute\s*([\s\S]*?)\s*```/g
+  let match
+
+  while ((match = regex.exec(content)) !== null) {
+    try {
+      const parsed = JSON.parse(match[1])
+      if (parsed.action === 'sendTask' && parsed.prompt) {
+        commands.push({
+          action: 'sendTask',
+          prompt: parsed.prompt,
+          context: parsed.context,
+        })
+      }
+    } catch {
+      // 解析失败跳过
+    }
+  }
+
+  return commands
+}
+
+/**
+ * 从显示内容中移除执行命令块
+ */
+export function stripExecutionBlocks(content: string): string {
+  return content.replace(/```execute\s*[\s\S]*?\s*```/g, '').trim()
 }

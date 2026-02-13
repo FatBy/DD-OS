@@ -15,6 +15,31 @@ import type {
 } from '@/types'
 
 // ============================================
+// 时间戳标准化
+// ============================================
+
+/**
+ * 将任意格式的时间戳标准化为毫秒级
+ * OpenClaw API 可能返回秒级时间戳, 需要智能检测并转换
+ */
+function normalizeTimestamp(ts: number | undefined | null): number {
+  if (!ts || ts <= 0) return Date.now()
+
+  // 秒级时间戳 < 1e12 (约 2001 年的毫秒时间戳, 2286 年的秒级时间戳)
+  const normalized = ts < 1e12 ? ts * 1000 : ts
+
+  // 验证范围: 2000-2100 年
+  const MIN = 946684800000  // 2000-01-01
+  const MAX = 4102444800000 // 2100-01-01
+  if (normalized < MIN || normalized > MAX) {
+    console.warn('[dataMapper] Invalid timestamp:', ts)
+    return Date.now()
+  }
+
+  return normalized
+}
+
+// ============================================
 // Sessions → Tasks 映射
 // ============================================
 
@@ -26,7 +51,7 @@ import type {
  */
 export function sessionToTask(session: Session): TaskItem {
   const now = Date.now()
-  const age = now - session.updatedAt
+  const age = now - normalizeTimestamp(session.updatedAt)
   const isRecent = age < 3600000 // 1小时内
   const isActive = age < 300000 // 5分钟内
   
@@ -52,10 +77,10 @@ export function sessionToTask(session: Session): TaskItem {
   return {
     id: session.key,
     title: session.label || extractSessionTitle(session.key),
-    description: description.slice(0, 100) + (description.length > 100 ? '...' : ''),
+    description,
     status,
     priority,
-    timestamp: new Date(session.updatedAt).toISOString(),
+    timestamp: new Date(normalizeTimestamp(session.updatedAt)).toISOString(),
     sessionKey: session.key,
     messageCount: session.messageCount,
   }
@@ -225,7 +250,7 @@ export function sessionToMemories(session: Session): MemoryEntry[] {
   
   // 如果有最后消息，创建记忆条目
   if (session.lastMessage) {
-    const age = now - session.lastMessage.timestamp
+    const age = now - normalizeTimestamp(session.lastMessage.timestamp)
     const isRecent = age < 86400000 // 24小时内
     
     memories.push({
@@ -233,7 +258,7 @@ export function sessionToMemories(session: Session): MemoryEntry[] {
       title: session.label || extractSessionTitle(session.key),
       content: session.lastMessage.content,
       type: isRecent ? 'short-term' : 'long-term',
-      timestamp: new Date(session.lastMessage.timestamp).toISOString(),
+      timestamp: new Date(normalizeTimestamp(session.lastMessage.timestamp)).toISOString(),
       tags: extractTags(session),
       sessionKey: session.key,
       role: session.lastMessage.role,

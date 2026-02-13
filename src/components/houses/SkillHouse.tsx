@@ -1,27 +1,32 @@
 import { useEffect, useMemo, useState } from 'react'
-import { motion } from 'framer-motion'
-import { Brain, Loader2, Zap, ChevronRight, Check, AlertCircle, Sparkles } from 'lucide-react'
+import { motion, AnimatePresence } from 'framer-motion'
+import { Brain, Loader2, Zap, ChevronRight, Check, AlertCircle, Sparkles, GitBranch } from 'lucide-react'
 import { useStore } from '@/store'
 import { AISummaryCard } from '@/components/ai/AISummaryCard'
 import { isLLMConfigured } from '@/services/llmService'
 import { cn } from '@/utils/cn'
 import type { SkillNode, SkillEnhancement } from '@/types'
 
-// 排名徽章颜色
-const RANK_STYLES: Record<number, string> = {
-  1: 'bg-amber-400 text-slate-900',    // 金
-  2: 'bg-slate-300 text-slate-900',     // 银
-  3: 'bg-amber-700 text-white',         // 铜
-}
-
 // 单个技能卡片
-function SkillCard({ skill, index, enhancement, rank }: { 
+function SkillCard({ skill, index, enhancement, allSkills, highlightDep, onHighlight }: { 
   skill: SkillNode
   index: number
   enhancement?: SkillEnhancement
-  rank?: number
+  allSkills?: SkillNode[]
+  highlightDep?: string | null
+  onHighlight?: (id: string | null) => void
 }) {
   const isActive = skill.unlocked || skill.status === 'active'
+  const isHighlighted = highlightDep === skill.id
+  const hasDeps = skill.dependencies && skill.dependencies.length > 0
+  
+  // 找到依赖的技能名称
+  const depNames = useMemo(() => {
+    if (!hasDeps || !allSkills) return []
+    return skill.dependencies
+      .map(depId => allSkills.find(s => s.id === depId)?.name || depId)
+      .slice(0, 3)
+  }, [skill.dependencies, allSkills, hasDeps])
   
   return (
     <motion.div
@@ -29,31 +34,21 @@ function SkillCard({ skill, index, enhancement, rank }: {
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: Math.min(index * 0.02, 0.5) }}
       className={cn(
-        'p-2 rounded-lg border transition-all cursor-pointer hover:scale-[1.01] relative',
-        isActive 
+        'p-2.5 rounded-lg border transition-all cursor-pointer hover:scale-[1.01] relative',
+        isHighlighted
+          ? 'bg-amber-500/15 border-amber-400/50 ring-1 ring-amber-400/30'
+          : isActive 
           ? 'bg-cyan-500/10 border-cyan-500/30 hover:border-cyan-400/50'
           : 'bg-white/5 border-white/10 hover:border-white/20'
       )}
+      onClick={() => onHighlight?.(hasDeps ? skill.id : null)}
     >
       <div className="flex items-center gap-2">
-        {/* 排名徽章 */}
-        {rank && rank <= 3 ? (
-          <div className={cn(
-            'w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 text-[9px] font-bold',
-            RANK_STYLES[rank]
-          )}>
-            {rank}
-          </div>
-        ) : rank ? (
-          <div className="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 bg-white/10 text-[9px] font-mono text-white/40">
-            {rank}
-          </div>
-        ) : (
-          <div className={cn(
-            'w-2 h-2 rounded-full flex-shrink-0',
-            isActive ? 'bg-cyan-400' : 'bg-white/20'
-          )} />
-        )}
+        {/* 状态指示 */}
+        <div className={cn(
+          'w-2 h-2 rounded-full flex-shrink-0',
+          isActive ? 'bg-cyan-400' : 'bg-white/20'
+        )} />
         
         {/* 技能名称 */}
         <span className={cn(
@@ -63,7 +58,7 @@ function SkillCard({ skill, index, enhancement, rank }: {
           {skill.name}
         </span>
         
-        {/* 分数或状态 */}
+        {/* 分数 */}
         {enhancement ? (
           <span className={cn(
             'text-[9px] font-mono flex-shrink-0 px-1.5 py-0.5 rounded',
@@ -80,9 +75,19 @@ function SkillCard({ skill, index, enhancement, rank }: {
         )}
       </div>
       
-      {/* AI 理由 (如果有) */}
+      {/* AI 理由 */}
       {enhancement?.reasoning && (
-        <p className="text-[9px] text-white/30 mt-1 truncate pl-7">{enhancement.reasoning}</p>
+        <p className="text-[9px] text-white/30 mt-1 truncate pl-4">{enhancement.reasoning}</p>
+      )}
+      
+      {/* 依赖关系 */}
+      {hasDeps && depNames.length > 0 && (
+        <div className="flex items-center gap-1 mt-1.5 pl-4">
+          <GitBranch className="w-2.5 h-2.5 text-white/20 flex-shrink-0" />
+          <span className="text-[8px] font-mono text-white/25 truncate">
+            {depNames.join(', ')}
+          </span>
+        </div>
       )}
       
       {/* 版本 */}
@@ -93,7 +98,163 @@ function SkillCard({ skill, index, enhancement, rank }: {
   )
 }
 
-// 技能分组组件
+// AI 子分类组
+function SubCategoryGroup({
+  subCategory,
+  skills,
+  enhancements,
+  allSkills,
+  expanded,
+  onToggle,
+  highlightDep,
+  onHighlight,
+}: {
+  subCategory: string
+  skills: SkillNode[]
+  enhancements: Record<string, SkillEnhancement>
+  allSkills: SkillNode[]
+  expanded: boolean
+  onToggle: () => void
+  highlightDep: string | null
+  onHighlight: (id: string | null) => void
+}) {
+  const activeCount = skills.filter(s => s.unlocked || s.status === 'active').length
+  // 按重要度排序（子分类内）
+  const sortedSkills = useMemo(() => {
+    return [...skills].sort((a, b) => {
+      const sa = enhancements[a.id]?.importanceScore ?? 0
+      const sb = enhancements[b.id]?.importanceScore ?? 0
+      return sb - sa
+    })
+  }, [skills, enhancements])
+
+  return (
+    <div className="mb-1.5">
+      <button
+        onClick={onToggle}
+        className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-white/5 transition-colors"
+      >
+        <div className="w-2 h-2 rounded-full bg-amber-400/40 flex-shrink-0" />
+        <ChevronRight className={cn(
+          'w-3 h-3 text-white/20 transition-transform',
+          expanded && 'rotate-90'
+        )} />
+        <span className="text-[10px] font-mono text-white/50 flex-1 text-left truncate">
+          {subCategory}
+        </span>
+        <span className="text-[9px] font-mono text-cyan-400/50">
+          {activeCount}/{skills.length}
+        </span>
+      </button>
+      
+      <AnimatePresence initial={false}>
+        {expanded && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="overflow-hidden"
+          >
+            <div className="grid grid-cols-2 gap-1 pl-6 pr-1 mt-1">
+              {sortedSkills.map((skill, idx) => (
+                <SkillCard
+                  key={skill.id}
+                  skill={skill}
+                  index={idx}
+                  enhancement={enhancements[skill.id]}
+                  allSkills={allSkills}
+                  highlightDep={highlightDep}
+                  onHighlight={onHighlight}
+                />
+              ))}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  )
+}
+
+// 顶层分类组
+function CategoryGroup({
+  category,
+  subGroups,
+  enhancements,
+  allSkills,
+  expandedSubs,
+  onToggleSub,
+  expanded,
+  onToggle,
+  highlightDep,
+  onHighlight,
+}: {
+  category: string
+  subGroups: Map<string, SkillNode[]>
+  enhancements: Record<string, SkillEnhancement>
+  allSkills: SkillNode[]
+  expandedSubs: Set<string>
+  onToggleSub: (key: string) => void
+  expanded: boolean
+  onToggle: () => void
+  highlightDep: string | null
+  onHighlight: (id: string | null) => void
+}) {
+  const totalSkills = Array.from(subGroups.values()).reduce((sum, s) => sum + s.length, 0)
+  const activeSkills = Array.from(subGroups.values())
+    .flat()
+    .filter(s => s.unlocked || s.status === 'active').length
+
+  return (
+    <div className="mb-3 border border-white/10 rounded-lg overflow-hidden">
+      <button
+        onClick={onToggle}
+        className="w-full flex items-center gap-2 p-3 bg-white/5 hover:bg-white/8 transition-colors"
+      >
+        <ChevronRight className={cn(
+          'w-3.5 h-3.5 text-cyan-400/60 transition-transform',
+          expanded && 'rotate-90'
+        )} />
+        <span className="text-xs font-mono text-cyan-400 uppercase flex-1 text-left">
+          {category}
+        </span>
+        <span className="text-[10px] font-mono text-cyan-400/50">
+          {activeSkills}/{totalSkills}
+        </span>
+      </button>
+
+      <AnimatePresence initial={false}>
+        {expanded && (
+          <motion.div
+            initial={{ height: 0 }}
+            animate={{ height: 'auto' }}
+            exit={{ height: 0 }}
+            transition={{ duration: 0.2 }}
+            className="overflow-hidden"
+          >
+            <div className="p-2">
+              {Array.from(subGroups.entries()).map(([sub, subSkills]) => (
+                <SubCategoryGroup
+                  key={sub}
+                  subCategory={sub}
+                  skills={subSkills}
+                  enhancements={enhancements}
+                  allSkills={allSkills}
+                  expanded={expandedSubs.has(`${category}::${sub}`)}
+                  onToggle={() => onToggleSub(`${category}::${sub}`)}
+                  highlightDep={highlightDep}
+                  onHighlight={onHighlight}
+                />
+              ))}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  )
+}
+
+// 原始分组（无 AI 时）
 function SkillGroup({ 
   groupName, 
   skills,
@@ -125,18 +286,20 @@ function SkillGroup({
         </span>
       </button>
       
-      {expanded && (
-        <motion.div
-          initial={{ height: 0, opacity: 0 }}
-          animate={{ height: 'auto', opacity: 1 }}
-          exit={{ height: 0, opacity: 0 }}
-          className="mt-1 grid grid-cols-2 gap-1 pl-3"
-        >
-          {skills.map((skill, idx) => (
-            <SkillCard key={skill.id} skill={skill} index={idx} />
-          ))}
-        </motion.div>
-      )}
+      <AnimatePresence initial={false}>
+        {expanded && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            className="mt-1 grid grid-cols-2 gap-1 pl-3"
+          >
+            {skills.map((skill, idx) => (
+              <SkillCard key={skill.id} skill={skill} index={idx} />
+            ))}
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   )
 }
@@ -157,6 +320,9 @@ export function SkillHouse() {
   const configured = isLLMConfigured()
   const hasEnhancements = Object.keys(skillEnhancements).length > 0
 
+  // 依赖高亮
+  const [highlightDep, setHighlightDep] = useState<string | null>(null)
+
   // 首次进入自动触发 AI 分析
   useEffect(() => {
     if (configured && skills.length > 0) {
@@ -164,16 +330,28 @@ export function SkillHouse() {
     }
   }, [configured, skills.length])
 
-  // AI 排序后的技能列表
-  const rankedSkills = useMemo(() => {
+  // AI 层级分组: category → subCategory → skills
+  const hierarchicalGroups = useMemo(() => {
     if (!hasEnhancements) return null
     
-    return [...skills]
-      .sort((a, b) => {
-        const scoreA = skillEnhancements[a.id]?.importanceScore ?? 0
-        const scoreB = skillEnhancements[b.id]?.importanceScore ?? 0
-        return scoreB - scoreA
-      })
+    const topLevel = new Map<string, Map<string, SkillNode[]>>()
+    
+    for (const skill of skills) {
+      const enhancement = skillEnhancements[skill.id]
+      const category = skill.category || 'Skills'
+      const subCategory = enhancement?.subCategory || '其他'
+      
+      if (!topLevel.has(category)) {
+        topLevel.set(category, new Map())
+      }
+      const subMap = topLevel.get(category)!
+      if (!subMap.has(subCategory)) {
+        subMap.set(subCategory, [])
+      }
+      subMap.get(subCategory)!.push(skill)
+    }
+    
+    return topLevel
   }, [skills, skillEnhancements, hasEnhancements])
 
   // 原始分组（无 AI 时使用）
@@ -188,13 +366,46 @@ export function SkillHouse() {
     return groups
   }, [skills])
 
+  // 展开状态
+  const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set())
+  const [expandedSubs, setExpandedSubs] = useState<Set<string>>(new Set())
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
   
-  useMemo(() => {
-    if (groupedSkills.size > 0 && expandedGroups.size === 0) {
+  // 初始化展开所有
+  useEffect(() => {
+    if (hierarchicalGroups && expandedCategories.size === 0) {
+      setExpandedCategories(new Set(hierarchicalGroups.keys()))
+      const allSubs = new Set<string>()
+      hierarchicalGroups.forEach((subMap, cat) => {
+        subMap.forEach((_, sub) => allSubs.add(`${cat}::${sub}`))
+      })
+      setExpandedSubs(allSubs)
+    }
+  }, [hierarchicalGroups])
+
+  useEffect(() => {
+    if (groupedSkills.size > 0 && expandedGroups.size === 0 && !hasEnhancements) {
       setExpandedGroups(new Set(groupedSkills.keys()))
     }
-  }, [groupedSkills])
+  }, [groupedSkills, hasEnhancements])
+
+  const toggleCategory = (cat: string) => {
+    setExpandedCategories(prev => {
+      const newSet = new Set(prev)
+      if (newSet.has(cat)) newSet.delete(cat)
+      else newSet.add(cat)
+      return newSet
+    })
+  }
+
+  const toggleSub = (key: string) => {
+    setExpandedSubs(prev => {
+      const newSet = new Set(prev)
+      if (newSet.has(key)) newSet.delete(key)
+      else newSet.add(key)
+      return newSet
+    })
+  }
 
   const toggleGroup = (group: string) => {
     setExpandedGroups(prev => {
@@ -207,6 +418,17 @@ export function SkillHouse() {
 
   const totalSkills = skills.length
   const activeCount = skills.filter(s => s.unlocked || s.status === 'active').length
+
+  // AI 子分类统计
+  const subCategoryCounts = useMemo(() => {
+    if (!hasEnhancements) return new Map<string, number>()
+    const counts = new Map<string, number>()
+    Object.values(skillEnhancements).forEach(e => {
+      const cat = e.subCategory || '其他'
+      counts.set(cat, (counts.get(cat) || 0) + 1)
+    })
+    return counts
+  }, [skillEnhancements, hasEnhancements])
 
   const handleAIRefresh = () => {
     clearSkillEnhancements()
@@ -227,16 +449,16 @@ export function SkillHouse() {
         <AISummaryCard view="skill" />
       </div>
       <div className="flex flex-1 min-h-0">
-      {/* 主区域: 技能列表 */}
+      {/* 主区域: 技能树 */}
       <div className="flex-1 p-4 overflow-y-auto">
         {/* 标题 */}
         <div className="flex items-center gap-2 mb-4">
           <Brain className="w-5 h-5 text-cyan-400" />
           <h3 className="font-mono text-sm text-cyan-300 tracking-wider">
-            技能库
+            技能树
           </h3>
           
-          {/* AI 排序按钮 */}
+          {/* AI 分析按钮 */}
           {configured && skills.length > 0 && (
             <button
               onClick={handleAIRefresh}
@@ -253,7 +475,7 @@ export function SkillHouse() {
               ) : (
                 <Sparkles className="w-3 h-3" />
               )}
-              {hasEnhancements ? 'AI 已排序' : 'AI 排序'}
+              {hasEnhancements ? 'AI 已分析' : 'AI 分析'}
             </button>
           )}
           
@@ -264,31 +486,42 @@ export function SkillHouse() {
           )}
         </div>
 
-        {/* 技能列表 */}
+        {/* 技能树 */}
         {skills.length > 0 ? (
           <div className="space-y-1">
-            {/* AI 排序模式: 平铺排名列表 */}
-            {rankedSkills ? (
-              <div className="grid grid-cols-2 gap-1">
-                {rankedSkills.map((skill, idx) => (
-                  <SkillCard 
-                    key={skill.id} 
-                    skill={skill} 
-                    index={idx} 
-                    enhancement={skillEnhancements[skill.id]}
-                    rank={idx + 1}
-                  />
-                ))}
-              </div>
+            {/* AI 层级树模式 */}
+            {hierarchicalGroups ? (
+              Array.from(hierarchicalGroups.entries()).map(([category, subGroups]) => (
+                <CategoryGroup
+                  key={category}
+                  category={category}
+                  subGroups={subGroups}
+                  enhancements={skillEnhancements}
+                  allSkills={skills}
+                  expandedSubs={expandedSubs}
+                  onToggleSub={toggleSub}
+                  expanded={expandedCategories.has(category)}
+                  onToggle={() => toggleCategory(category)}
+                  highlightDep={highlightDep}
+                  onHighlight={setHighlightDep}
+                />
+              ))
             ) : skillEnhancementsLoading ? (
               /* AI 加载中骨架屏 */
-              <div className="grid grid-cols-2 gap-1">
-                {skills.map((skill, idx) => (
-                  <div key={skill.id} className="p-2 rounded-lg border border-white/10 bg-white/5">
-                    <div className="flex items-center gap-2">
-                      <div className="w-5 h-5 rounded-full bg-white/10 animate-pulse" />
-                      <span className="text-xs font-mono text-white/40 truncate flex-1">{skill.name}</span>
-                      <div className="w-6 h-4 rounded bg-white/10 animate-pulse" />
+              <div className="space-y-2">
+                {[1, 2, 3].map(i => (
+                  <div key={i} className="border border-white/10 rounded-lg p-3">
+                    <div className="h-4 bg-white/10 rounded w-24 mb-3 animate-pulse" />
+                    <div className="grid grid-cols-2 gap-1">
+                      {skills.slice(0, 4).map((skill) => (
+                        <div key={`skel-${i}-${skill.id}`} className="p-2 rounded-lg border border-white/10 bg-white/5">
+                          <div className="flex items-center gap-2">
+                            <div className="w-2 h-2 rounded-full bg-white/10 animate-pulse" />
+                            <span className="text-xs font-mono text-white/40 truncate flex-1">{skill.name}</span>
+                            <div className="w-6 h-4 rounded bg-white/10 animate-pulse" />
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   </div>
                 ))}
@@ -356,12 +589,21 @@ export function SkillHouse() {
             </div>
           )}
 
-          {hasEnhancements && (
+          {/* AI 分类统计 */}
+          {hasEnhancements && subCategoryCounts.size > 0 && (
             <div className="p-3 bg-white/5 rounded-lg">
-              <p className="text-[10px] font-mono text-white/40 uppercase">AI 分析</p>
-              <p className="text-lg font-bold text-amber-400">
-                {Object.keys(skillEnhancements).length} 项
-              </p>
+              <p className="text-[10px] font-mono text-white/40 uppercase mb-2">AI 分类</p>
+              <div className="space-y-1.5">
+                {Array.from(subCategoryCounts.entries())
+                  .sort((a, b) => b[1] - a[1])
+                  .map(([cat, count]) => (
+                    <div key={cat} className="flex items-center justify-between">
+                      <span className="text-[9px] font-mono text-white/50 truncate">{cat}</span>
+                      <span className="text-[9px] font-mono text-amber-400/70">{count}</span>
+                    </div>
+                  ))
+                }
+              </div>
             </div>
           )}
         </div>
@@ -369,7 +611,7 @@ export function SkillHouse() {
         <div className="pt-4 border-t border-white/10">
           <p className="text-[9px] font-mono text-white/30 leading-relaxed">
             {hasEnhancements 
-              ? 'AI 已按重要度排序技能。点击 AI 排序按钮可刷新分析。'
+              ? 'AI 已按功能分类技能并评估重要度。点击有依赖的技能可高亮关联项。'
               : '技能来自 OpenClaw 的 SKILL.md 文件系统，显示所有已安装的 Agent 技能。'
             }
           </p>

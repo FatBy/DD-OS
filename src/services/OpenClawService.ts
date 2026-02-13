@@ -68,6 +68,9 @@ type StoreActions = {
   
   // Soul from SOUL.md
   setSoulFromParsed: (parsed: ParsedSoul, agentIdentity: { agentId: string; name?: string; emoji?: string } | null) => void
+  
+  // AI 执行状态
+  updateExecutionStatus: (id: string, updates: { status: string; output?: string; error?: string }) => void
 }
 
 // ============================================
@@ -570,6 +573,15 @@ class OpenClawService {
           level: 'info',
           message: `[${agentPayload.stream}] ${JSON.stringify(agentPayload.data).slice(0, 100)}`,
         })
+        // 通知 AI 执行状态: 通过 stream 判断是否完成
+        if (agentPayload.stream === 'result' || agentPayload.stream === 'error') {
+          const output = JSON.stringify(agentPayload.data).slice(0, 500)
+          // 查找关联的执行状态并更新
+          this.storeActions?.updateExecutionStatus(agentPayload.runId, {
+            status: agentPayload.stream === 'error' ? 'error' : 'success',
+            output,
+          })
+        }
         break
       }
 
@@ -581,6 +593,10 @@ class OpenClawService {
           this.storeActions?.updateSession(chatPayload.sessionKey, {
             updatedAt: Date.now(),
             lastMessage: chatPayload.message as Session['lastMessage'],
+          })
+          // 检查是否有 AI 发起的执行使用此 sessionKey, 更新为 success
+          this.storeActions?.updateExecutionStatus(chatPayload.sessionKey, {
+            status: 'success',
           })
         }
         break

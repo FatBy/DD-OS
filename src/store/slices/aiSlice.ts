@@ -1,8 +1,9 @@
 import type { StateCreator } from 'zustand'
-import type { ChatMessage, AISummary, LLMConfig, ViewType, SkillEnhancement, TaskEnhancement } from '@/types'
+import type { ChatMessage, AISummary, LLMConfig, ViewType, SkillEnhancement, TaskEnhancement, ExecutionStatus } from '@/types'
 import type { SkillNode, TaskItem } from '@/types'
 import { getLLMConfig, saveLLMConfig, isLLMConfigured, streamChat, chat } from '@/services/llmService'
-import { buildSummaryMessages, buildChatMessages, buildSkillEnhancementPrompt, buildTaskNamingPrompt, parseJSONFromLLM } from '@/services/contextBuilder'
+import { buildSummaryMessages, buildChatMessages, buildSkillEnhancementPrompt, buildTaskNamingPrompt, parseJSONFromLLM, parseExecutionCommands, stripExecutionBlocks } from '@/services/contextBuilder'
+import { openClawService } from '@/services/OpenClawService'
 
 // 摘要缓存时间 (5分钟)
 const SUMMARY_CACHE_MS = 5 * 60 * 1000
@@ -55,6 +56,10 @@ export interface AiSlice {
   enhanceTaskNames: (tasks: TaskItem[]) => Promise<void>
   clearSkillEnhancements: () => void
   clearTaskEnhancements: () => void
+
+  // AI 执行
+  executionStatuses: Record<string, ExecutionStatus>
+  updateExecutionStatus: (id: string, updates: Partial<ExecutionStatus>) => void
 }
 
 export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) => ({
@@ -73,6 +78,7 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
   taskEnhancements: {},
   taskEnhancementsLoading: false,
   taskEnhancementsTimestamp: 0,
+  executionStatuses: {},
 
   setLlmConfig: (config) => {
     saveLLMConfig(config)
@@ -181,6 +187,7 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
         soulBoundaries: state.soulBoundaries || [],
         soulVibeStatement: state.soulVibeStatement || '',
         soulRawContent: state.soulRawContent || '',
+        connectionStatus: state.connectionStatus || 'disconnected',
       }
 
       const history = get().chatMessages
@@ -197,11 +204,15 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
         abortController.signal,
       )
 
-      // 流式完成，添加 assistant 消息
+      // 流式完成，检测执行命令
+      const commands = parseExecutionCommands(fullContent)
+      const displayContent = commands.length > 0 ? stripExecutionBlocks(fullContent) : fullContent
+
+      // 添加 assistant 消息
       const assistantMsg: ChatMessage = {
         id: `assistant-${Date.now()}`,
         role: 'assistant',
-        content: fullContent,
+        content: displayContent,
         timestamp: Date.now(),
       }
 
@@ -211,6 +222,74 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
         chatStreamContent: '',
         _chatAbort: null,
       }))
+
+      // 执行 OpenClaw 命令
+      if (commands.length > 0) {
+        const connStatus = (get() as any).connectionStatus
+        if (connStatus !== 'connected') {
+          // 未连接，添加错误提示
+          const errMsg: ChatMessage = {
+            id: `exec-err-${Date.now()}`,
+            role: 'assistant',
+            content: '无法执行：OpenClaw 未连接。请先在连接面板中连接到 Gateway。',
+            timestamp: Date.now(),
+            error: true,
+          }
+          set((state) => ({
+            chatMessages: [...state.chatMessages, errMsg],
+          }))
+        } else {
+          for (const cmd of commands) {
+            const execId = `exec-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+            const execStatus: ExecutionStatus = {
+              id: execId,
+              status: 'pending',
+              timestamp: Date.now(),
+            }
+
+            // 添加执行状态消息
+            const execMsg: ChatMessage = {
+              id: execId,
+              role: 'assistant',
+              content: `正在执行: ${cmd.prompt}`,
+              timestamp: Date.now(),
+              execution: execStatus,
+            }
+            set((state) => ({
+              chatMessages: [...state.chatMessages, execMsg],
+              executionStatuses: { ...state.executionStatuses, [execId]: execStatus },
+            }))
+
+            // 异步调用 OpenClaw
+            try {
+              const result = await openClawService.sendTaskCommand(cmd.prompt, cmd.context)
+              const updated: ExecutionStatus = {
+                ...execStatus,
+                status: 'running',
+                sessionKey: result.sessionKey,
+              }
+              set((state) => ({
+                executionStatuses: { ...state.executionStatuses, [execId]: updated },
+                chatMessages: state.chatMessages.map(m =>
+                  m.id === execId ? { ...m, execution: updated } : m
+                ),
+              }))
+            } catch (err: any) {
+              const updated: ExecutionStatus = {
+                ...execStatus,
+                status: 'error',
+                error: err.message,
+              }
+              set((state) => ({
+                executionStatuses: { ...state.executionStatuses, [execId]: updated },
+                chatMessages: state.chatMessages.map(m =>
+                  m.id === execId ? { ...m, execution: updated, content: `执行失败: ${err.message}` } : m
+                ),
+              }))
+            }
+          }
+        }
+      }
     } catch (err: any) {
       if (err.name === 'AbortError') {
         // 用户取消，保留已收到的内容
@@ -273,7 +352,7 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
     try {
       const messages = buildSkillEnhancementPrompt(skills)
       const response = await chat(messages)
-      const parsed = parseJSONFromLLM<Array<{ skillId: string; importanceScore: number; reasoning: string }>>(response)
+      const parsed = parseJSONFromLLM<Array<{ skillId: string; importanceScore: number; reasoning: string; subCategory?: string }>>(response)
 
       const enhancementMap: Record<string, SkillEnhancement> = {}
       for (const item of parsed) {
@@ -281,6 +360,7 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
           skillId: item.skillId,
           importanceScore: item.importanceScore,
           reasoning: item.reasoning,
+          subCategory: item.subCategory || '其他',
         }
       }
 
@@ -336,5 +416,19 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
 
   clearTaskEnhancements: () => {
     set({ taskEnhancements: {}, taskEnhancementsTimestamp: 0 })
+  },
+
+  updateExecutionStatus: (id, updates) => {
+    set((state) => {
+      const current = state.executionStatuses[id]
+      if (!current) return state
+      const updated = { ...current, ...updates }
+      return {
+        executionStatuses: { ...state.executionStatuses, [id]: updated },
+        chatMessages: state.chatMessages.map(m =>
+          m.id === id ? { ...m, execution: updated } : m
+        ),
+      }
+    })
   },
 })

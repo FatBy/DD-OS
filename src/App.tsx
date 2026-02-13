@@ -58,6 +58,9 @@ function App() {
       
       // Soul from SOUL.md
       setSoulFromParsed: useStore.getState().setSoulFromParsed,
+      
+      // AI 执行状态
+      updateExecutionStatus: useStore.getState().updateExecutionStatus,
     })
 
     // Note: Don't auto-connect, let user click connect button

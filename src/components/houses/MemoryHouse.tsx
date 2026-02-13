@@ -54,6 +54,27 @@ function getDisplayDate(dateStr: string): string {
   return dateStr
 }
 
+// 安全解析时间
+function safeParseTime(timestamp: string): string {
+  try {
+    const date = new Date(timestamp)
+    if (isNaN(date.getTime())) return '--:--'
+    return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+  } catch {
+    return '--:--'
+  }
+}
+
+function safeParseDate(timestamp: string): string {
+  try {
+    const date = new Date(timestamp)
+    if (isNaN(date.getTime())) return 'unknown'
+    return date.toISOString().split('T')[0]
+  } catch {
+    return 'unknown'
+  }
+}
+
 // 时间轴记忆卡片
 function TimelineMemoryCard({ 
   memory, 
@@ -67,7 +88,7 @@ function TimelineMemoryCard({
   onToggle: () => void
 }) {
   const isShortTerm = memory.type === 'short-term'
-  const time = new Date(memory.timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+  const time = safeParseTime(memory.timestamp)
 
   return (
     <motion.div
@@ -145,7 +166,12 @@ function TimelineMemoryCard({
                 </div>
               )}
               <div className="text-[9px] font-mono text-white/25 mt-2">
-                {new Date(memory.timestamp).toLocaleString('zh-CN')}
+                {(() => {
+                  try {
+                    const d = new Date(memory.timestamp)
+                    return isNaN(d.getTime()) ? memory.timestamp : d.toLocaleString('zh-CN')
+                  } catch { return memory.timestamp }
+                })()}
               </div>
             </motion.div>
           ) : (
@@ -216,7 +242,7 @@ export function MemoryHouse() {
     const groups = new Map<string, MemoryEntry[]>()
 
     for (const mem of memories) {
-      const date = new Date(mem.timestamp).toISOString().split('T')[0]
+      const date = safeParseDate(mem.timestamp)
       if (!groups.has(date)) groups.set(date, [])
       groups.get(date)!.push(mem)
     }

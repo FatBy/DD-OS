@@ -292,6 +292,7 @@ export interface ChatMessage {
   content: string
   timestamp: number
   error?: boolean
+  execution?: ExecutionStatus
 }
 
 export interface AISummary {
@@ -321,9 +322,29 @@ export interface SkillEnhancement {
   skillId: string
   importanceScore: number  // 0-100
   reasoning: string
+  subCategory: string      // AI 功能分类 (通信/分析/执行/存储/系统/辅助)
 }
 
 export interface TaskEnhancement {
   taskId: string
   naturalTitle: string
+}
+
+// ============================================
+// AI 执行类型
+// ============================================
+
+export interface ExecutionCommand {
+  action: 'sendTask'
+  prompt: string
+  context?: Record<string, unknown>
+}
+
+export interface ExecutionStatus {
+  id: string
+  status: 'pending' | 'running' | 'success' | 'error'
+  sessionKey?: string
+  output?: string
+  error?: string
+  timestamp: number
 }
