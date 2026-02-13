@@ -13,13 +13,15 @@ interface GlassCardProps {
   children: ReactNode
   className?: string
   themeColor?: string
+  onClick?: () => void
 }
 
-export function GlassCard({ children, className, themeColor }: GlassCardProps) {
+export function GlassCard({ children, className, themeColor, onClick }: GlassCardProps) {
   const glow = themeColor ? themeGlowMap[themeColor] ?? '' : ''
 
   return (
     <div
+      onClick={onClick}
       className={cn(
         'bg-black/40 backdrop-blur-xl border border-white/10 shadow-2xl rounded-2xl',
         glow && `ring-1 ${glow}`,

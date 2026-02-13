@@ -1,10 +1,12 @@
 import type { StateCreator } from 'zustand'
-import type { ChatMessage, AISummary, LLMConfig, ViewType } from '@/types'
+import type { ChatMessage, AISummary, LLMConfig, ViewType, SkillEnhancement, TaskEnhancement } from '@/types'
+import type { SkillNode, TaskItem } from '@/types'
 import { getLLMConfig, saveLLMConfig, isLLMConfigured, streamChat, chat } from '@/services/llmService'
-import { buildSummaryMessages, buildChatMessages } from '@/services/contextBuilder'
+import { buildSummaryMessages, buildChatMessages, buildSkillEnhancementPrompt, buildTaskNamingPrompt, parseJSONFromLLM } from '@/services/contextBuilder'
 
 // 摘要缓存时间 (5分钟)
 const SUMMARY_CACHE_MS = 5 * 60 * 1000
+const ENHANCEMENT_CACHE_MS = 5 * 60 * 1000
 
 const emptySummary = (): AISummary => ({ content: '', loading: false, error: null, timestamp: 0 })
 
@@ -40,6 +42,19 @@ export interface AiSlice {
   clearChat: () => void
   abortChat: () => void
   setChatContext: (view: ViewType) => void
+
+  // AI 增强
+  skillEnhancements: Record<string, SkillEnhancement>
+  skillEnhancementsLoading: boolean
+  skillEnhancementsTimestamp: number
+  taskEnhancements: Record<string, TaskEnhancement>
+  taskEnhancementsLoading: boolean
+  taskEnhancementsTimestamp: number
+
+  enhanceSkills: (skills: SkillNode[]) => Promise<void>
+  enhanceTaskNames: (tasks: TaskItem[]) => Promise<void>
+  clearSkillEnhancements: () => void
+  clearTaskEnhancements: () => void
 }
 
 export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) => ({
@@ -52,6 +67,12 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
   chatContext: 'world',
   chatError: null,
   _chatAbort: null,
+  skillEnhancements: {},
+  skillEnhancementsLoading: false,
+  skillEnhancementsTimestamp: 0,
+  taskEnhancements: {},
+  taskEnhancementsLoading: false,
+  taskEnhancementsTimestamp: 0,
 
   setLlmConfig: (config) => {
     saveLLMConfig(config)
@@ -233,4 +254,87 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
   },
 
   setChatContext: (view) => set({ chatContext: view }),
+
+  // ============================================
+  // AI 增强 Actions
+  // ============================================
+
+  enhanceSkills: async (skills) => {
+    if (!isLLMConfigured() || skills.length === 0) return
+
+    // 缓存检查
+    const ts = get().skillEnhancementsTimestamp
+    if (ts && Date.now() - ts < ENHANCEMENT_CACHE_MS && Object.keys(get().skillEnhancements).length > 0) {
+      return
+    }
+
+    set({ skillEnhancementsLoading: true })
+
+    try {
+      const messages = buildSkillEnhancementPrompt(skills)
+      const response = await chat(messages)
+      const parsed = parseJSONFromLLM<Array<{ skillId: string; importanceScore: number; reasoning: string }>>(response)
+
+      const enhancementMap: Record<string, SkillEnhancement> = {}
+      for (const item of parsed) {
+        enhancementMap[item.skillId] = {
+          skillId: item.skillId,
+          importanceScore: item.importanceScore,
+          reasoning: item.reasoning,
+        }
+      }
+
+      set({
+        skillEnhancements: enhancementMap,
+        skillEnhancementsLoading: false,
+        skillEnhancementsTimestamp: Date.now(),
+      })
+    } catch (err: any) {
+      console.error('[AI] enhanceSkills failed:', err)
+      set({ skillEnhancementsLoading: false })
+    }
+  },
+
+  enhanceTaskNames: async (tasks) => {
+    if (!isLLMConfigured() || tasks.length === 0) return
+
+    // 缓存检查
+    const ts = get().taskEnhancementsTimestamp
+    if (ts && Date.now() - ts < ENHANCEMENT_CACHE_MS && Object.keys(get().taskEnhancements).length > 0) {
+      return
+    }
+
+    set({ taskEnhancementsLoading: true })
+
+    try {
+      const messages = buildTaskNamingPrompt(tasks)
+      const response = await chat(messages)
+      const parsed = parseJSONFromLLM<Array<{ taskId: string; naturalTitle: string }>>(response)
+
+      const enhancementMap: Record<string, TaskEnhancement> = {}
+      for (const item of parsed) {
+        enhancementMap[item.taskId] = {
+          taskId: item.taskId,
+          naturalTitle: item.naturalTitle,
+        }
+      }
+
+      set({
+        taskEnhancements: enhancementMap,
+        taskEnhancementsLoading: false,
+        taskEnhancementsTimestamp: Date.now(),
+      })
+    } catch (err: any) {
+      console.error('[AI] enhanceTaskNames failed:', err)
+      set({ taskEnhancementsLoading: false })
+    }
+  },
+
+  clearSkillEnhancements: () => {
+    set({ skillEnhancements: {}, skillEnhancementsTimestamp: 0 })
+  },
+
+  clearTaskEnhancements: () => {
+    set({ taskEnhancements: {}, taskEnhancementsTimestamp: 0 })
+  },
 })

@@ -237,3 +237,112 @@ export function getQuickCommands(view: ViewType): Array<{ label: string; prompt:
       return []
   }
 }
+
+// ============================================
+// AI 增强 Prompt 构建器
+// ============================================
+
+/**
+ * 从 LLM 返回文本中提取 JSON
+ */
+export function parseJSONFromLLM<T = unknown>(response: string): T {
+  // 1. 直接解析
+  try {
+    return JSON.parse(response)
+  } catch {}
+
+  // 2. 提取 ```json ... ``` 代码块
+  const codeBlockMatch = response.match(/```(?:json)?\s*([\s\S]*?)\s*```/)
+  if (codeBlockMatch) {
+    try {
+      return JSON.parse(codeBlockMatch[1])
+    } catch {}
+  }
+
+  // 3. 提取数组 [...]
+  const arrayMatch = response.match(/\[[\s\S]*\]/)
+  if (arrayMatch) {
+    try {
+      return JSON.parse(arrayMatch[0])
+    } catch {}
+  }
+
+  throw new Error('无法解析 LLM 返回的 JSON')
+}
+
+/**
+ * 构建技能重要度分析 Prompt
+ */
+export function buildSkillEnhancementPrompt(skills: SkillNode[]): ChatMessage[] {
+  const limitedSkills = skills.slice(0, 50)
+
+  const skillsList = limitedSkills.map(s => ({
+    id: s.id,
+    name: s.name,
+    category: s.category || '未分类',
+    status: s.status || (s.unlocked ? 'active' : 'inactive'),
+    description: s.description || '',
+  }))
+
+  return [
+    {
+      id: 'sys',
+      role: 'system',
+      content: `你是 DD-OS 技能分析专家。根据技能的名称、分类、状态和描述，评估每个技能对 AI Agent 的重要程度。
+评分标准：
+- 90-100: 核心必备技能（如记忆管理、任务执行）
+- 70-89: 重要辅助技能（如浏览器自动化、代码分析）
+- 50-69: 一般技能
+- 0-49: 可选/低优先级技能
+你必须返回纯 JSON 数组，不要包含任何其他文字。`,
+      timestamp: Date.now(),
+    },
+    {
+      id: 'user',
+      role: 'user',
+      content: `分析以下 ${limitedSkills.length} 个技能的重要度，返回 JSON 数组：
+${JSON.stringify(skillsList, null, 2)}
+
+返回格式：[{"skillId":"技能id","importanceScore":85,"reasoning":"一句话理由"}]`,
+      timestamp: Date.now(),
+    },
+  ]
+}
+
+/**
+ * 构建任务自然语言命名 Prompt
+ */
+export function buildTaskNamingPrompt(tasks: TaskItem[]): ChatMessage[] {
+  const limitedTasks = tasks.slice(0, 50)
+
+  const tasksList = limitedTasks.map(t => ({
+    id: t.id,
+    originalTitle: t.title,
+    description: t.description || '',
+    status: t.status,
+    priority: t.priority,
+  }))
+
+  return [
+    {
+      id: 'sys',
+      role: 'system',
+      content: `你是 DD-OS 任务命名专家。根据任务的原始标题和描述，生成简洁易懂的中文任务名称。
+要求：
+- 每个名称 5-15 个字
+- 使用自然语言，让人一眼看懂任务内容
+- 如果原始标题已经足够好，可以保留或微调
+你必须返回纯 JSON 数组，不要包含任何其他文字。`,
+      timestamp: Date.now(),
+    },
+    {
+      id: 'user',
+      role: 'user',
+      content: `为以下 ${limitedTasks.length} 个任务生成自然语言标题，返回 JSON 数组：
+${JSON.stringify(tasksList, null, 2)}
+
+返回格式：[{"taskId":"任务id","naturalTitle":"自然语言标题"}]`,
+      timestamp: Date.now(),
+    },
+  ]
+}

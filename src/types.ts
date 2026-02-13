@@ -312,3 +312,18 @@ export interface TaskExecResponse {
   output?: string
   error?: string
 }
+
+// ============================================
+// AI 增强类型
+// ============================================
+
+export interface SkillEnhancement {
+  skillId: string
+  importanceScore: number  // 0-100
+  reasoning: string
+}
+
+export interface TaskEnhancement {
+  taskId: string
+  naturalTitle: string
+}

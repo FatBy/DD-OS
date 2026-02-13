@@ -1,13 +1,15 @@
+import { useEffect } from 'react'
 import { motion } from 'framer-motion'
 import { 
-  Inbox, Clock, CheckCircle2, Play, AlertCircle, 
-  Loader2, MessageSquare, ChevronRight 
+  Inbox, Clock, CheckCircle2, Play,
+  Loader2, MessageSquare, ChevronRight, Sparkles
 } from 'lucide-react'
 import { GlassCard } from '@/components/GlassCard'
 import { AISummaryCard } from '@/components/ai/AISummaryCard'
 import { useStore } from '@/store'
+import { isLLMConfigured } from '@/services/llmService'
 import { cn } from '@/utils/cn'
-import type { TaskItem } from '@/types'
+import type { TaskItem, TaskEnhancement } from '@/types'
 
 // 默认任务（未连接时显示）
 const defaultTasks: TaskItem[] = [
@@ -51,10 +53,18 @@ function EmptyColumn({ status }: { status: TaskItem['status'] }) {
   )
 }
 
-function TaskCard({ task, index }: { task: TaskItem; index: number }) {
+function TaskCard({ task, index, enhancement, isEnhancing }: { 
+  task: TaskItem
+  index: number
+  enhancement?: TaskEnhancement
+  isEnhancing?: boolean
+}) {
   const config = statusConfig[task.status]
   const priority = priorityConfig[task.priority]
   const Icon = config.icon
+
+  const displayTitle = enhancement?.naturalTitle || task.title
+  const hasAITitle = !!enhancement?.naturalTitle
 
   return (
     <motion.div
@@ -75,16 +85,26 @@ function TaskCard({ task, index }: { task: TaskItem; index: number }) {
           </div>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
-              <h4 className="text-sm font-medium text-white/90 truncate">
-                {task.title}
-              </h4>
+              {isEnhancing && !enhancement ? (
+                <div className="h-4 bg-white/10 rounded w-2/3 animate-pulse" />
+              ) : (
+                <h4 className="text-sm font-medium text-white/90 truncate">
+                  {displayTitle}
+                </h4>
+              )}
               <span className={cn(
-                'text-[9px] font-mono px-1.5 py-0.5 rounded',
+                'text-[9px] font-mono px-1.5 py-0.5 rounded flex-shrink-0',
                 `bg-${priority.color}-500/20 text-${priority.color}-400`
               )}>
                 {priority.label}
               </span>
             </div>
+            {/* 原始标题（AI 命名后显示） */}
+            {hasAITitle && (
+              <p className="text-[9px] font-mono text-white/25 mt-0.5 truncate">
+                {task.title}
+              </p>
+            )}
             <p className="text-xs text-white/50 mt-1 line-clamp-2">
               {task.description}
             </p>
@@ -110,8 +130,28 @@ export function TaskHouse() {
   const loading = useStore((s) => s.sessionsLoading)
   const connectionStatus = useStore((s) => s.connectionStatus)
   
+  // AI 增强
+  const taskEnhancements = useStore((s) => s.taskEnhancements)
+  const taskEnhancementsLoading = useStore((s) => s.taskEnhancementsLoading)
+  const enhanceTaskNames = useStore((s) => s.enhanceTaskNames)
+  const clearTaskEnhancements = useStore((s) => s.clearTaskEnhancements)
+  
   const isConnected = connectionStatus === 'connected'
   const tasks = isConnected && storeTasks.length > 0 ? storeTasks : defaultTasks
+  const configured = isLLMConfigured()
+  const hasEnhancements = Object.keys(taskEnhancements).length > 0
+
+  // 首次进入自动触发 AI 命名
+  useEffect(() => {
+    if (configured && tasks.length > 0) {
+      enhanceTaskNames(tasks)
+    }
+  }, [configured, tasks.length])
+
+  const handleAIRefresh = () => {
+    clearTaskEnhancements()
+    enhanceTaskNames(tasks)
+  }
   
   // 按状态分组
   const pendingTasks = tasks.filter((t) => t.status === 'pending')
@@ -129,6 +169,30 @@ export function TaskHouse() {
   return (
     <div className="flex flex-col h-full p-6">
       <AISummaryCard view="task" />
+      
+      {/* AI 命名控制栏 */}
+      {configured && tasks.length > 0 && (
+        <div className="flex items-center gap-2 mb-3">
+          <button
+            onClick={handleAIRefresh}
+            disabled={taskEnhancementsLoading}
+            className={cn(
+              'flex items-center gap-1 px-2 py-1 rounded text-[10px] font-mono transition-colors',
+              hasEnhancements
+                ? 'bg-amber-500/20 border border-amber-500/30 text-amber-400'
+                : 'bg-white/5 border border-white/10 text-white/40 hover:text-amber-400 hover:border-amber-500/30'
+            )}
+          >
+            {taskEnhancementsLoading ? (
+              <Loader2 className="w-3 h-3 animate-spin" />
+            ) : (
+              <Sparkles className="w-3 h-3" />
+            )}
+            {hasEnhancements ? 'AI 已优化标题' : 'AI 优化标题'}
+          </button>
+        </div>
+      )}
+
       <div className="flex flex-1 gap-4 min-h-0">
       {/* 待处理列 */}
       <div className="flex-1 flex flex-col min-w-0">
@@ -144,7 +208,13 @@ export function TaskHouse() {
             <EmptyColumn status="pending" />
           ) : (
             pendingTasks.map((task, i) => (
-              <TaskCard key={task.id} task={task} index={i} />
+              <TaskCard 
+                key={task.id} 
+                task={task} 
+                index={i} 
+                enhancement={taskEnhancements[task.id]}
+                isEnhancing={taskEnhancementsLoading}
+              />
             ))
           )}
         </div>
@@ -164,7 +234,13 @@ export function TaskHouse() {
             <EmptyColumn status="executing" />
           ) : (
             executingTasks.map((task, i) => (
-              <TaskCard key={task.id} task={task} index={i} />
+              <TaskCard 
+                key={task.id} 
+                task={task} 
+                index={i} 
+                enhancement={taskEnhancements[task.id]}
+                isEnhancing={taskEnhancementsLoading}
+              />
             ))
           )}
         </div>
@@ -184,7 +260,13 @@ export function TaskHouse() {
             <EmptyColumn status="done" />
           ) : (
             doneTasks.map((task, i) => (
-              <TaskCard key={task.id} task={task} index={i} />
+              <TaskCard 
+                key={task.id} 
+                task={task} 
+                index={i} 
+                enhancement={taskEnhancements[task.id]}
+                isEnhancing={taskEnhancementsLoading}
+              />
             ))
           )}
         </div>

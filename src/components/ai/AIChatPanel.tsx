@@ -67,7 +67,7 @@ export function AIChatPanel() {
             animate={{ scale: 1, opacity: 1 }}
             exit={{ scale: 0, opacity: 0 }}
             onClick={() => setIsOpen(true)}
-            className="fixed right-6 bottom-24 z-40 w-12 h-12 rounded-full 
+            className="fixed right-6 bottom-28 z-[45] w-12 h-12 rounded-full 
                        bg-amber-500/20 border border-amber-500/30 
                        flex items-center justify-center
                        hover:bg-amber-500/30 transition-colors
@@ -92,7 +92,7 @@ export function AIChatPanel() {
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: 300 }}
             transition={{ type: 'spring', damping: 25, stiffness: 300 }}
-            className="fixed right-4 bottom-4 top-4 w-[380px] z-50
+            className="fixed right-4 bottom-4 top-4 w-[380px] z-[55]
                        bg-slate-950/95 backdrop-blur-xl border border-white/10 rounded-2xl
                        flex flex-col overflow-hidden
                        shadow-[0_0_40px_rgba(0,0,0,0.5)]"

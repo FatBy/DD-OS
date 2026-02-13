@@ -1,5 +1,6 @@
-import { motion } from 'framer-motion'
-import { ScrollText, Clock, Tag, Inbox, Loader2, Brain, MessageCircle } from 'lucide-react'
+import { useMemo, useState } from 'react'
+import { motion, AnimatePresence } from 'framer-motion'
+import { ScrollText, Clock, Inbox, Loader2, Brain, ChevronDown } from 'lucide-react'
 import { GlassCard } from '@/components/GlassCard'
 import { AISummaryCard } from '@/components/ai/AISummaryCard'
 import { useStore } from '@/store'
@@ -34,89 +35,207 @@ const defaultMemories: MemoryEntry[] = [
   },
 ]
 
-function MemorySkeleton() {
+interface TimelineGroup {
+  date: string
+  displayDate: string
+  memories: MemoryEntry[]
+}
+
+function getDisplayDate(dateStr: string): string {
+  const today = new Date()
+  const date = new Date(dateStr)
+  const todayStr = today.toISOString().split('T')[0]
+  const yesterdayDate = new Date(today)
+  yesterdayDate.setDate(yesterdayDate.getDate() - 1)
+  const yesterdayStr = yesterdayDate.toISOString().split('T')[0]
+
+  if (dateStr === todayStr) return '今天'
+  if (dateStr === yesterdayStr) return '昨天'
+  return dateStr
+}
+
+// 时间轴记忆卡片
+function TimelineMemoryCard({ 
+  memory, 
+  index,
+  isExpanded,
+  onToggle
+}: { 
+  memory: MemoryEntry
+  index: number
+  isExpanded: boolean
+  onToggle: () => void
+}) {
+  const isShortTerm = memory.type === 'short-term'
+  const time = new Date(memory.timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+
   return (
-    <div className="space-y-2">
-      {[1, 2, 3, 4].map((i) => (
-        <div key={i} className="p-3 bg-white/5 rounded-lg animate-pulse">
-          <div className="h-4 bg-white/10 rounded w-1/3 mb-2" />
-          <div className="h-3 bg-white/5 rounded w-full" />
+    <motion.div
+      initial={{ opacity: 0, x: -20 }}
+      animate={{ opacity: 1, x: 0 }}
+      transition={{ delay: Math.min(index * 0.05, 0.5) }}
+      className="relative pl-8 pb-6"
+    >
+      {/* 连接点 */}
+      <div className={cn(
+        'absolute left-0 top-2 w-3 h-3 rounded-full border-2 border-slate-950',
+        isShortTerm ? 'bg-amber-400' : 'bg-emerald-400'
+      )} />
+
+      {/* 时间标签 */}
+      <div className="text-[10px] font-mono text-white/30 mb-1.5 flex items-center gap-2">
+        <span>{time}</span>
+        <span className={cn(
+          'px-1.5 py-0.5 rounded',
+          isShortTerm ? 'bg-amber-500/15 text-amber-400/70' : 'bg-emerald-500/15 text-emerald-400/70'
+        )}>
+          {isShortTerm ? '短期' : '长期'}
+        </span>
+        {memory.role && (
+          <span className={cn(
+            'px-1 rounded',
+            memory.role === 'user' ? 'bg-cyan-500/15 text-cyan-400/70' : 'bg-purple-500/15 text-purple-400/70'
+          )}>
+            {memory.role === 'user' ? '用户' : 'AI'}
+          </span>
+        )}
+      </div>
+
+      {/* 记忆卡片 */}
+      <GlassCard
+        themeColor={isShortTerm ? 'amber' : 'emerald'}
+        className="p-4 cursor-pointer hover:scale-[1.005] transition-transform"
+        onClick={onToggle}
+      >
+        <div className="flex items-start justify-between gap-2">
+          <h4 className="text-sm font-medium text-white/90">
+            {memory.title}
+          </h4>
+          <motion.div
+            animate={{ rotate: isExpanded ? 180 : 0 }}
+            transition={{ duration: 0.2 }}
+          >
+            <ChevronDown className="w-4 h-4 text-white/20 flex-shrink-0" />
+          </motion.div>
         </div>
-      ))}
-    </div>
+
+        {/* 预览/展开内容 */}
+        <AnimatePresence initial={false}>
+          {isExpanded ? (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.2 }}
+              className="overflow-hidden"
+            >
+              <p className="text-sm text-white/70 mt-2 whitespace-pre-wrap leading-relaxed">
+                {memory.content}
+              </p>
+              {memory.tags.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 mt-3">
+                  {memory.tags.map(tag => (
+                    <span
+                      key={tag}
+                      className="px-2 py-0.5 text-[9px] font-mono bg-white/5 rounded text-white/50"
+                    >
+                      {tag}
+                    </span>
+                  ))}
+                </div>
+              )}
+              <div className="text-[9px] font-mono text-white/25 mt-2">
+                {new Date(memory.timestamp).toLocaleString('zh-CN')}
+              </div>
+            </motion.div>
+          ) : (
+            <p className="text-xs text-white/50 mt-1 line-clamp-2">
+              {memory.content}
+            </p>
+          )}
+        </AnimatePresence>
+
+        {/* 折叠状态下的标签预览 */}
+        {!isExpanded && memory.tags.length > 0 && (
+          <div className="flex gap-1 mt-2">
+            {memory.tags.slice(0, 3).map(tag => (
+              <span
+                key={tag}
+                className="text-[9px] font-mono text-white/30"
+              >
+                #{tag}
+              </span>
+            ))}
+          </div>
+        )}
+      </GlassCard>
+    </motion.div>
   )
 }
 
-function MemoryCard({ 
-  memory, 
-  isSelected, 
-  onClick 
-}: { 
-  memory: MemoryEntry
-  isSelected: boolean
-  onClick: () => void 
-}) {
-  const isShortTerm = memory.type === 'short-term'
-  
+// 日期分组标题
+function TimelineDateHeader({ group }: { group: TimelineGroup }) {
   return (
-    <motion.button
-      onClick={onClick}
-      className={cn(
-        'w-full text-left p-3 rounded-lg border transition-all',
-        isSelected
-          ? 'bg-emerald-500/20 border-emerald-500/40'
-          : 'bg-white/5 border-white/10 hover:bg-white/10'
-      )}
-      whileHover={{ x: 4 }}
-    >
-      <div className="flex items-start gap-2">
-        <div className={cn(
-          'w-2 h-2 rounded-full mt-1.5 shrink-0',
-          isShortTerm ? 'bg-amber-400' : 'bg-emerald-400'
-        )} />
-        <div className="flex-1 min-w-0">
-          <h4 className="text-sm font-medium text-white/90 truncate">
-            {memory.title}
-          </h4>
-          <p className="text-xs text-white/50 truncate mt-0.5">
-            {memory.content.slice(0, 50)}...
-          </p>
-          <div className="flex items-center gap-2 mt-1">
-            <span className="text-[9px] font-mono text-white/30">
-              {new Date(memory.timestamp).toLocaleDateString('zh-CN')}
-            </span>
-            {memory.role && (
-              <span className={cn(
-                'text-[8px] font-mono px-1 rounded',
-                memory.role === 'user' ? 'bg-cyan-500/20 text-cyan-400' : 'bg-purple-500/20 text-purple-400'
-              )}>
-                {memory.role === 'user' ? '用户' : 'AI'}
-              </span>
-            )}
-          </div>
-        </div>
+    <div className="relative pl-8 pb-4 pt-2">
+      {/* 日期大节点 */}
+      <div className="absolute left-[-4px] top-2 w-5 h-5 rounded-full bg-emerald-500/30 border-2 border-emerald-400/60 flex items-center justify-center">
+        <div className="w-2 h-2 rounded-full bg-emerald-400" />
       </div>
-    </motion.button>
+
+      <div className="flex items-center gap-3">
+        <h3 className="text-sm font-mono text-white/70 font-medium">
+          {group.displayDate}
+        </h3>
+        <span className="text-[10px] font-mono text-white/30 bg-white/5 px-2 py-0.5 rounded">
+          {group.memories.length} 条记忆
+        </span>
+      </div>
+    </div>
   )
 }
 
 export function MemoryHouse() {
   const storeMemories = useStore((s) => s.memories)
-  const selectedId = useStore((s) => s.selectedMemoryId)
-  const setSelectedMemory = useStore((s) => s.setSelectedMemory)
   const loading = useStore((s) => s.sessionsLoading)
   const connectionStatus = useStore((s) => s.connectionStatus)
 
   const isConnected = connectionStatus === 'connected'
   const memories = isConnected && storeMemories.length > 0 ? storeMemories : defaultMemories
 
-  // 确保有选中项
-  const effectiveSelectedId = selectedId || (memories.length > 0 ? memories[0].id : null)
-  const selectedMemory = memories.find((m) => m.id === effectiveSelectedId)
+  // 展开状态
+  const [expandedId, setExpandedId] = useState<string | null>(null)
 
-  // 分类
-  const shortTermMemories = memories.filter((m) => m.type === 'short-term')
-  const longTermMemories = memories.filter((m) => m.type === 'long-term')
+  const toggleExpand = (id: string) => {
+    setExpandedId(prev => prev === id ? null : id)
+  }
+
+  // 按日期分组并排序（编年体：从早到晚）
+  const timelineGroups = useMemo<TimelineGroup[]>(() => {
+    if (!memories || memories.length === 0) return []
+
+    const groups = new Map<string, MemoryEntry[]>()
+
+    for (const mem of memories) {
+      const date = new Date(mem.timestamp).toISOString().split('T')[0]
+      if (!groups.has(date)) groups.set(date, [])
+      groups.get(date)!.push(mem)
+    }
+
+    return Array.from(groups.entries())
+      .map(([date, mems]) => ({
+        date,
+        displayDate: getDisplayDate(date),
+        memories: mems.sort((a, b) =>
+          new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+        ),
+      }))
+      .sort((a, b) => a.date.localeCompare(b.date))
+  }, [memories])
+
+  // 统计
+  const totalMemories = memories.length
+  const shortTermCount = memories.filter(m => m.type === 'short-term').length
+  const longTermCount = memories.filter(m => m.type === 'long-term').length
 
   if (loading && isConnected) {
     return (
@@ -131,135 +250,98 @@ export function MemoryHouse() {
       <div className="px-4 pt-4">
         <AISummaryCard view="memory" />
       </div>
+
       <div className="flex flex-1 min-h-0">
-      {/* 左侧: 记忆列表 */}
-      <div className="w-[40%] border-r border-white/10 p-4 overflow-y-auto">
-        {/* 短期记忆 */}
-        <div className="mb-6">
-          <div className="flex items-center gap-2 mb-3">
-            <Clock className="w-4 h-4 text-amber-400" />
-            <h3 className="font-mono text-xs text-amber-300 uppercase tracking-wider">
-              短期记忆
+        {/* 主区域: 时间轴 */}
+        <div className="flex-1 p-6 overflow-y-auto">
+          {/* 标题 */}
+          <div className="flex items-center gap-2 mb-6">
+            <ScrollText className="w-5 h-5 text-emerald-400" />
+            <h3 className="font-mono text-sm text-emerald-300 tracking-wider">
+              记忆编年史
             </h3>
-            <span className="text-[9px] font-mono text-white/30 ml-auto">
-              {shortTermMemories.length}
+            <span className="ml-auto text-[10px] font-mono text-white/40">
+              {totalMemories} 条记忆
             </span>
           </div>
-          {shortTermMemories.length === 0 ? (
-            <p className="text-xs text-white/30 font-mono text-center py-4">
-              暂无短期记忆
-            </p>
-          ) : (
-            <div className="space-y-2">
-              {shortTermMemories.map((memory) => (
-                <MemoryCard
-                  key={memory.id}
-                  memory={memory}
-                  isSelected={effectiveSelectedId === memory.id}
-                  onClick={() => setSelectedMemory(memory.id)}
-                />
-              ))}
-            </div>
-          )}
-        </div>
 
-        {/* 长期记忆 */}
-        <div>
-          <div className="flex items-center gap-2 mb-3">
-            <Brain className="w-4 h-4 text-emerald-400" />
-            <h3 className="font-mono text-xs text-emerald-300 uppercase tracking-wider">
-              长期记忆
-            </h3>
-            <span className="text-[9px] font-mono text-white/30 ml-auto">
-              {longTermMemories.length}
-            </span>
-          </div>
-          {longTermMemories.length === 0 ? (
-            <p className="text-xs text-white/30 font-mono text-center py-4">
-              暂无长期记忆
-            </p>
-          ) : (
-            <div className="space-y-2">
-              {longTermMemories.map((memory) => (
-                <MemoryCard
-                  key={memory.id}
-                  memory={memory}
-                  isSelected={effectiveSelectedId === memory.id}
-                  onClick={() => setSelectedMemory(memory.id)}
-                />
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
+          {memories.length > 0 ? (
+            <div className="relative">
+              {/* 垂直时间线 */}
+              <div className="absolute left-[5px] top-4 bottom-0 w-0.5 bg-gradient-to-b from-emerald-500/40 via-white/10 to-transparent" />
 
-      {/* 右侧: 记忆详情 */}
-      <div className="flex-1 p-6 overflow-y-auto">
-        {selectedMemory ? (
-          <motion.div
-            key={selectedMemory.id}
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="space-y-4"
-          >
-            <div className="flex items-start justify-between">
-              <div>
-                <h2 className="text-xl font-medium text-white/90">
-                  {selectedMemory.title}
-                </h2>
-                <div className="flex items-center gap-3 mt-2 text-xs font-mono text-white/40">
-                  <span className="flex items-center gap-1">
-                    <Clock className="w-3 h-3" />
-                    {new Date(selectedMemory.timestamp).toLocaleString('zh-CN')}
-                  </span>
-                  <span className={cn(
-                    'px-2 py-0.5 rounded',
-                    selectedMemory.type === 'short-term' 
-                      ? 'bg-amber-500/20 text-amber-400'
-                      : 'bg-emerald-500/20 text-emerald-400'
-                  )}>
-                    {selectedMemory.type === 'short-term' ? '短期' : '长期'}
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            <GlassCard themeColor="emerald" className="p-4">
-              <div className="flex items-center gap-2 mb-3">
-                <MessageCircle className="w-4 h-4 text-emerald-400" />
-                <h4 className="text-xs font-mono text-emerald-300 uppercase">内容</h4>
-              </div>
-              <p className="text-sm text-white/80 whitespace-pre-wrap leading-relaxed">
-                {selectedMemory.content}
-              </p>
-            </GlassCard>
-
-            {selectedMemory.tags.length > 0 && (
-              <div>
-                <div className="flex items-center gap-2 mb-2">
-                  <Tag className="w-3 h-3 text-white/40" />
-                  <span className="text-[10px] font-mono text-white/40 uppercase">标签</span>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {selectedMemory.tags.map((tag) => (
-                    <span
-                      key={tag}
-                      className="px-2 py-1 text-xs font-mono bg-white/5 rounded text-white/60"
-                    >
-                      {tag}
-                    </span>
+              {/* 时间轴内容 */}
+              {timelineGroups.map((group) => (
+                <div key={group.date} className="mb-6">
+                  <TimelineDateHeader group={group} />
+                  {group.memories.map((memory, idx) => (
+                    <TimelineMemoryCard
+                      key={memory.id}
+                      memory={memory}
+                      index={idx}
+                      isExpanded={expandedId === memory.id}
+                      onToggle={() => toggleExpand(memory.id)}
+                    />
                   ))}
                 </div>
+              ))}
+            </div>
+          ) : (
+            <div className="flex flex-col items-center justify-center h-48 text-center">
+              <Inbox className="w-16 h-16 text-white/10 mb-4" />
+              <p className="text-sm font-mono text-white/40">
+                {isConnected ? '暂无记忆数据' : '未连接'}
+              </p>
+              <p className="text-xs font-mono text-white/25 mt-1">
+                {isConnected
+                  ? '对话开始后，记忆将自动出现在时间轴上'
+                  : '请先连接到 OpenClaw Gateway'}
+              </p>
+            </div>
+          )}
+        </div>
+
+        {/* 侧边栏: 统计 */}
+        <div className="w-44 border-l border-white/10 p-4 space-y-4">
+          <div className="flex items-center gap-2 mb-2">
+            <Brain className="w-4 h-4 text-emerald-400" />
+            <h4 className="font-mono text-xs text-emerald-300 uppercase">统计</h4>
+          </div>
+
+          <div className="space-y-3">
+            <div className="p-3 bg-white/5 rounded-lg">
+              <p className="text-[10px] font-mono text-white/40 uppercase">总记忆</p>
+              <p className="text-2xl font-bold text-emerald-400">{totalMemories}</p>
+            </div>
+
+            <div className="p-3 bg-white/5 rounded-lg">
+              <p className="text-[10px] font-mono text-white/40 uppercase flex items-center gap-1">
+                <Clock className="w-3 h-3" /> 短期
+              </p>
+              <p className="text-2xl font-bold text-amber-400">{shortTermCount}</p>
+            </div>
+
+            <div className="p-3 bg-white/5 rounded-lg">
+              <p className="text-[10px] font-mono text-white/40 uppercase flex items-center gap-1">
+                <Brain className="w-3 h-3" /> 长期
+              </p>
+              <p className="text-2xl font-bold text-emerald-400">{longTermCount}</p>
+            </div>
+
+            {timelineGroups.length > 0 && (
+              <div className="p-3 bg-white/5 rounded-lg">
+                <p className="text-[10px] font-mono text-white/40 uppercase">时间跨度</p>
+                <p className="text-lg font-bold text-purple-400">{timelineGroups.length} 天</p>
               </div>
             )}
-          </motion.div>
-        ) : (
-          <div className="flex flex-col items-center justify-center h-full text-white/30">
-            <Inbox className="w-16 h-16 mb-4 opacity-30" />
-            <p className="text-sm font-mono">选择一条记忆查看详情</p>
           </div>
-        )}
-      </div>
+
+          <div className="pt-4 border-t border-white/10">
+            <p className="text-[9px] font-mono text-white/30 leading-relaxed">
+              记忆按时间顺序排列，点击卡片展开查看完整内容。
+            </p>
+          </div>
+        </div>
       </div>
     </div>
   )
