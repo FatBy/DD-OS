@@ -8,7 +8,7 @@ import type { ChatMessage as ChatMessageType, ExecutionStatus } from '@/types'
 function ExecutionCard({ execution, content }: { execution: ExecutionStatus; content?: string }) {
   const [copied, setCopied] = useState(false)
   
-  // 任务建议模式
+  // 任务建议模式（本地服务不可用时的降级方案）
   if (execution.status === 'suggestion') {
     const handleCopy = async () => {
       if (content) {
@@ -28,6 +28,9 @@ function ExecutionCard({ execution, content }: { execution: ExecutionStatus; con
           <MessageSquare className="w-4 h-4 text-purple-400" />
           <span className="text-xs font-mono text-purple-400 font-medium">
             任务建议
+          </span>
+          <span className="text-[10px] font-mono text-white/30 ml-auto">
+            本地服务未启动
           </span>
         </div>
         
@@ -58,7 +61,7 @@ function ExecutionCard({ execution, content }: { execution: ExecutionStatus; con
             )}
           </button>
           <span className="text-[10px] font-mono text-white/30">
-            发送到 Telegram/WhatsApp 等渠道执行
+            启动 ddos-local-server.py 以执行任务
           </span>
         </div>
       </motion.div>
@@ -67,7 +70,7 @@ function ExecutionCard({ execution, content }: { execution: ExecutionStatus; con
   
   // 原有执行状态模式
   const configs: Record<string, { icon: typeof Clock; color: string; label: string }> = {
-    pending: { icon: Clock, color: 'amber', label: '等待执行...' },
+    pending: { icon: Clock, color: 'amber', label: '准备执行...' },
     running: { icon: Loader2, color: 'cyan', label: '执行中...' },
     success: { icon: CheckCircle2, color: 'emerald', label: '执行完成' },
     error: { icon: XCircle, color: 'red', label: '执行失败' },
@@ -80,35 +83,53 @@ function ExecutionCard({ execution, content }: { execution: ExecutionStatus; con
       initial={{ opacity: 0, y: 4 }}
       animate={{ opacity: 1, y: 0 }}
       className={cn(
-        'mt-2 p-2.5 rounded-lg border',
-        `bg-${config.color}-500/10 border-${config.color}-500/20`
+        'mt-3 p-3 rounded-lg border',
+        execution.status === 'success' ? 'bg-emerald-500/10 border-emerald-500/30' :
+        execution.status === 'error' ? 'bg-red-500/10 border-red-500/30' :
+        execution.status === 'running' ? 'bg-cyan-500/10 border-cyan-500/30' :
+        'bg-amber-500/10 border-amber-500/30'
       )}
     >
-      <div className="flex items-center gap-2">
-        <Zap className={cn('w-3 h-3', `text-${config.color}-400`)} />
+      <div className="flex items-center gap-2 mb-2">
+        <Zap className={cn('w-4 h-4', `text-${config.color}-400`)} />
         <Icon className={cn(
-          'w-3.5 h-3.5',
+          'w-4 h-4',
           `text-${config.color}-400`,
           execution.status === 'running' && 'animate-spin'
         )} />
-        <span className={cn('text-[10px] font-mono', `text-${config.color}-400`)}>
+        <span className={cn('text-xs font-mono font-medium', `text-${config.color}-400`)}>
           {config.label}
         </span>
         {execution.sessionKey && (
-          <span className="text-[9px] font-mono text-white/20 ml-auto truncate max-w-[120px]">
-            {execution.sessionKey}
+          <span className="text-[10px] font-mono text-white/30 ml-auto">
+            ID: {execution.sessionKey}
           </span>
         )}
       </div>
+      
+      {/* 任务内容 */}
+      <p className="text-xs font-mono text-white/60 mb-2 leading-relaxed">
+        {content}
+      </p>
+      
+      {/* 执行输出 */}
       {execution.output && (
-        <p className="text-[10px] font-mono text-white/50 mt-1.5 whitespace-pre-wrap line-clamp-3">
-          {execution.output}
-        </p>
+        <div className="mt-2 p-2 bg-black/20 rounded border border-white/5">
+          <p className="text-[10px] font-mono text-white/40 mb-1">输出:</p>
+          <p className="text-xs font-mono text-emerald-400/80 whitespace-pre-wrap line-clamp-5">
+            {execution.output}
+          </p>
+        </div>
       )}
+      
+      {/* 错误信息 */}
       {execution.error && (
-        <p className="text-[10px] font-mono text-red-400/80 mt-1.5">
-          {execution.error}
-        </p>
+        <div className="mt-2 p-2 bg-red-500/5 rounded border border-red-500/20">
+          <p className="text-[10px] font-mono text-red-400/60 mb-1">错误:</p>
+          <p className="text-xs font-mono text-red-400/80">
+            {execution.error}
+          </p>
+        </div>
       )}
     </motion.div>
   )

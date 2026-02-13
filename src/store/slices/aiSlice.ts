@@ -3,6 +3,7 @@ import type { ChatMessage, AISummary, LLMConfig, ViewType, SkillEnhancement, Tas
 import type { SkillNode, TaskItem } from '@/types'
 import { getLLMConfig, saveLLMConfig, isLLMConfigured, streamChat, chat } from '@/services/llmService'
 import { buildSummaryMessages, buildChatMessages, buildSkillEnhancementPrompt, buildTaskNamingPrompt, parseJSONFromLLM, parseExecutionCommands, stripExecutionBlocks } from '@/services/contextBuilder'
+import { localServerService } from '@/services/localServerService'
 
 // 摘要缓存时间 (5分钟)
 const SUMMARY_CACHE_MS = 5 * 60 * 1000
@@ -280,27 +281,106 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
         _chatAbort: null,
       }))
 
-      // 处理 OpenClaw 任务建议（不再直接调用 API）
+      // 通过本地服务执行 OpenClaw 任务
       if (commands.length > 0) {
         for (const cmd of commands) {
-          const suggestionId = `suggestion-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+          const execId = `exec-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
           
-          // 创建任务建议消息
-          const suggestionMsg: ChatMessage = {
-            id: suggestionId,
+          // 先检查本地服务是否可用
+          const serverAvailable = await localServerService.checkStatus()
+          
+          if (!serverAvailable) {
+            // 本地服务不可用，显示任务建议（降级方案）
+            const suggestionMsg: ChatMessage = {
+              id: execId,
+              role: 'assistant',
+              content: cmd.prompt,
+              timestamp: Date.now(),
+              execution: {
+                id: execId,
+                status: 'suggestion',
+                timestamp: Date.now(),
+              },
+            }
+            set((state) => ({
+              chatMessages: [...state.chatMessages, suggestionMsg],
+            }))
+            continue
+          }
+          
+          // 创建执行中状态消息
+          const execMsg: ChatMessage = {
+            id: execId,
             role: 'assistant',
             content: cmd.prompt,
             timestamp: Date.now(),
             execution: {
-              id: suggestionId,
-              status: 'suggestion', // 新状态：建议
+              id: execId,
+              status: 'pending',
               timestamp: Date.now(),
             },
           }
-          
           set((state) => ({
-            chatMessages: [...state.chatMessages, suggestionMsg],
+            chatMessages: [...state.chatMessages, execMsg],
+            executionStatuses: { 
+              ...state.executionStatuses, 
+              [execId]: execMsg.execution! 
+            },
           }))
+          
+          // 异步执行任务
+          try {
+            const result = await localServerService.executeTask(cmd.prompt)
+            
+            // 更新为 running 状态
+            const runningStatus: ExecutionStatus = {
+              id: execId,
+              status: 'running',
+              sessionKey: result.taskId,
+              timestamp: Date.now(),
+            }
+            set((state) => ({
+              executionStatuses: { ...state.executionStatuses, [execId]: runningStatus },
+              chatMessages: state.chatMessages.map(m =>
+                m.id === execId ? { ...m, execution: runningStatus } : m
+              ),
+            }))
+            
+            // 轮询任务状态
+            localServerService.pollTaskStatus(
+              result.taskId,
+              (status) => {
+                const finalStatus: ExecutionStatus = {
+                  id: execId,
+                  status: status.status === 'done' ? 'success' : status.status === 'error' ? 'error' : 'running',
+                  sessionKey: result.taskId,
+                  output: status.output,
+                  error: status.error,
+                  timestamp: Date.now(),
+                }
+                set((state) => ({
+                  executionStatuses: { ...state.executionStatuses, [execId]: finalStatus },
+                  chatMessages: state.chatMessages.map(m =>
+                    m.id === execId ? { ...m, execution: finalStatus } : m
+                  ),
+                }))
+              }
+            )
+          } catch (err: any) {
+            // 执行失败
+            const errorStatus: ExecutionStatus = {
+              id: execId,
+              status: 'error',
+              error: err.message,
+              timestamp: Date.now(),
+            }
+            set((state) => ({
+              executionStatuses: { ...state.executionStatuses, [execId]: errorStatus },
+              chatMessages: state.chatMessages.map(m =>
+                m.id === execId ? { ...m, execution: errorStatus } : m
+              ),
+            }))
+          }
         }
       }
     } catch (err: any) {
