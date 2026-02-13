@@ -379,9 +379,10 @@ def run_task_in_background(task_id, prompt, clawd_path):
         }
     
     try:
-        # 尝试使用 claw CLI（如果可用）
+        # 使用 clawdbot CLI 执行 agent turn
+        # clawdbot agent --message "prompt" 通过 Gateway 触发任务执行
         result = subprocess.run(
-            ['claw', 'run', prompt],
+            ['clawdbot', 'agent', '--message', prompt],
             cwd=str(clawd_path),
             capture_output=True,
             text=True,
@@ -396,10 +397,10 @@ def run_task_in_background(task_id, prompt, clawd_path):
                 ClawdDataHandler.tasks[task_id]['status'] = 'error'
                 ClawdDataHandler.tasks[task_id]['error'] = result.stderr or f'Exit code: {result.returncode}'
     except FileNotFoundError:
-        # claw CLI 不可用，记录提示
+        # clawdbot CLI 不可用，记录提示
         with ClawdDataHandler.tasks_lock:
-            ClawdDataHandler.tasks[task_id]['status'] = 'done'
-            ClawdDataHandler.tasks[task_id]['output'] = f'任务已记录: {prompt}\n(claw CLI 未安装，任务已保存供后续处理)'
+            ClawdDataHandler.tasks[task_id]['status'] = 'error'
+            ClawdDataHandler.tasks[task_id]['error'] = 'clawdbot CLI 未找到。请确认已通过 npm install -g clawdbot 安装。'
     except subprocess.TimeoutExpired:
         with ClawdDataHandler.tasks_lock:
             ClawdDataHandler.tasks[task_id]['status'] = 'error'
