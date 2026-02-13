@@ -281,47 +281,29 @@ class OpenClawService {
     this.storeActions?.setReconnectCountdown(null)
   }
 
-  private async handleChallenge(payload: { nonce: string; ts: number }): Promise<void> {
-    console.log('[OpenClawService] Received challenge, signing device identity...')
+  private async handleChallenge(_payload: { nonce: string; ts: number }): Promise<void> {
+    console.log('[OpenClawService] Received challenge, sending connect request...')
     
-    const deviceId = this.getDeviceId()
+    const instanceId = this.getDeviceId()
 
     try {
-      // 生成/获取设备密钥对并签名 nonce
-      const { publicKey, privateKey } = await this.getOrCreateDeviceKeys()
-      const signature = await this.signNonce(privateKey, payload.nonce)
-      const now = Date.now()
-
-      console.log('[OpenClawService] Device signed, sending connect request...')
-
+      // webclaw 风格: 不发送 device，只用 token/password 认证
       const response = await this.send('connect', {
         minProtocol: CONFIG.PROTOCOL_VERSION,
         maxProtocol: CONFIG.PROTOCOL_VERSION,
         client: {
           id: 'gateway-client',
-          displayName: 'openclaw-os',
+          displayName: 'DD-OS',
           version: '1.0.0',
-          mode: 'ui',
           platform: 'browser',
-          instanceId: deviceId,
+          mode: 'ui',
+          instanceId,
+        },
+        auth: {
+          token: this.authToken || undefined,
         },
         role: 'operator',
-        scopes: ['operator.read', 'operator.write'],
-        caps: [],
-        commands: [],
-        permissions: {},
-        auth: {
-          token: this.authToken,
-        },
-        locale: navigator.language || 'zh-CN',
-        userAgent: navigator.userAgent,
-        device: {
-          id: deviceId,
-          nonce: payload.nonce,
-          publicKey,
-          signature,
-          signedAt: now,
-        },
+        scopes: ['operator.admin'],
       })
 
       console.log('[OpenClawService] Connect response:', response)
