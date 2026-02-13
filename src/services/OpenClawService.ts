@@ -261,10 +261,12 @@ class OpenClawService {
       if (skillsResult.status === 'fulfilled' && skillsResult.value) {
         const skillsResponse = skillsResult.value as { skills?: OpenClawSkill[] }
         console.log('[OpenClawService] skills.list raw response:', skillsResponse)
-        if (skillsResponse.skills && skillsResponse.skills.length > 0) {
+        if (skillsResponse.skills && Array.isArray(skillsResponse.skills) && skillsResponse.skills.length > 0) {
           this.storeActions?.setOpenClawSkills(skillsResponse.skills)
           skillsLoaded = true
         }
+      } else if (skillsResult.status === 'rejected') {
+        console.log('[OpenClawService] skills.list API not available:', skillsResult.reason)
       }
       
       // 如果 skills.list 没有返回数据，回退到 channels.status
@@ -272,6 +274,8 @@ class OpenClawService {
         console.log('[OpenClawService] channels.status raw response (fallback):', channelsResult.value)
         this.storeActions?.setChannelsSnapshot(channelsResult.value as ChannelsSnapshot)
       }
+      
+      // 确保 channelsLoading 变为 false（无论 API 是否成功）
       this.storeActions?.setChannelsLoading(false)
 
       // 处理 Agent Identity
@@ -289,6 +293,11 @@ class OpenClawService {
 
     } catch (error) {
       console.error('[OpenClawService] Failed to load initial data:', error)
+      // 即使出错也要确保 loading 状态结束
+      this.storeActions?.setSessionsLoading(false)
+      this.storeActions?.setChannelsLoading(false)
+      this.storeActions?.setAgentLoading(false)
+      this.storeActions?.setDevicesLoading(false)
     }
   }
 

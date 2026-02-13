@@ -44,22 +44,15 @@ export interface SkillNode {
   dependencies: string[]
   // 原始数据引用
   skillName?: string
-  category?: SkillCategory
+  category?: string  // 动态分类，由 API 返回决定 (如 global/local/extension)
   version?: string
   status?: 'active' | 'inactive' | 'error'
   description?: string
+  // 兼容 Channel 映射
+  channelId?: string
+  connected?: boolean
+  accountCount?: number
 }
-
-// 技能类别
-export type SkillCategory = 
-  | 'core'        // 核心工具
-  | 'creative'    // 创作设计
-  | 'ai'          // AI与记忆
-  | 'search'      // 搜索网络
-  | 'integration' // 通道集成
-  | 'domain'      // 专业领域
-  | 'devops'      // 开发运维
-  | 'other'       // 其他
 
 // 记忆条目 (映射自 Session Message)
 export interface MemoryEntry {
