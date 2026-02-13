@@ -2,9 +2,10 @@ import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import { 
   Monitor, Cpu, Info, Database, Upload, Download, Trash2, 
-  Check, Ghost, Brain, ScrollText, RefreshCw
+  Check, Ghost, Brain, ScrollText, RefreshCw, Server, Wifi
 } from 'lucide-react'
 import { GlassCard } from '@/components/GlassCard'
+import { FileDropZone } from '@/components/FileDropZone'
 import { staggerContainer, staggerItem } from '@/utils/animations'
 import { useStore } from '@/store'
 import {
@@ -17,7 +18,7 @@ import {
   clearLocalData, hasLocalData,
   exportConfig, importConfig,
 } from '@/utils/localDataProvider'
-import { openClawSkillsToNodes } from '@/utils/dataMapper'
+import { fetchLocalServerData, LOCAL_SERVER_URL, type LocalServerData } from '@/utils/localServerClient'
 
 interface SettingToggle {
   id: string
@@ -200,6 +201,111 @@ export function SettingsHouse() {
     setDataMode(mode)
   }
   
+  // 本地服务状态
+  const [serverStatus, setServerStatus] = useState<'checking' | 'connected' | 'disconnected'>('disconnected')
+  const [serverUrl, setServerUrl] = useState(LOCAL_SERVER_URL)
+  
+  // 检查本地服务
+  const checkServer = async () => {
+    setServerStatus('checking')
+    try {
+      const res = await fetch(`${serverUrl}/status`, { method: 'GET' })
+      if (res.ok) {
+        setServerStatus('connected')
+      } else {
+        setServerStatus('disconnected')
+      }
+    } catch {
+      setServerStatus('disconnected')
+    }
+  }
+  
+  // 从本地服务加载数据
+  const loadFromServer = async () => {
+    try {
+      const data = await fetchLocalServerData(serverUrl)
+      
+      if (data.soul?.content) {
+        setSoulMdInput(data.soul.content)
+        saveSoulMd(data.soul.content)
+        if (data.soul.identity) {
+          setIdentityMdInput(data.soul.identity)
+          saveIdentityMd(data.soul.identity)
+        }
+      }
+      
+      if (data.skills && data.skills.length > 0) {
+        setSkillsText(data.skills.map(s => `${s.name} - ${s.description || ''} (${s.location})`).join('\n'))
+        saveSkillsJson(data.skills)
+        setOpenClawSkills(data.skills)
+      }
+      
+      if (data.memories && data.memories.length > 0) {
+        setMemoriesMd(data.memories.map(m => `## ${m.title}\n${m.content}`).join('\n\n'))
+        saveMemoriesJson(data.memories)
+        setMemoriesFromLocal(data.memories)
+      }
+      
+      loadLocalDataToStore()
+      setServerStatus('connected')
+    } catch (err) {
+      console.error('Failed to load from server:', err)
+      setServerStatus('disconnected')
+    }
+  }
+  
+  // 处理拖拽文件
+  const handleFileDrop = (content: string, fileName: string, fileType: string) => {
+    switch (fileType) {
+      case 'soul':
+        setSoulMdInput(content)
+        saveSoulMd(content)
+        applySoul()
+        break
+      case 'identity':
+        setIdentityMdInput(content)
+        saveIdentityMd(content)
+        break
+      case 'skills':
+        if (fileName.endsWith('.json')) {
+          try {
+            const skills = JSON.parse(content)
+            if (Array.isArray(skills)) {
+              setSkillsText(skills.map((s: any) => `${s.name} - ${s.description || ''}`).join('\n'))
+              saveSkillsJson(skills)
+              setOpenClawSkills(skills)
+            }
+          } catch {}
+        } else {
+          setSkillsText(content)
+          applySkills()
+        }
+        break
+      case 'memory':
+        setMemoriesMd(content)
+        applyMemories()
+        break
+      case 'config':
+        try {
+          const config = JSON.parse(content)
+          importConfig(config)
+          setSoulMdInput(config.soulMd || '')
+          setIdentityMdInput(config.identityMd || '')
+          if (config.skills?.length) {
+            setSkillsText(config.skills.map((s: any) => `${s.name} - ${s.description || ''}`).join('\n'))
+          }
+          loadLocalDataToStore()
+        } catch {}
+        break
+      default:
+        // 尝试自动检测
+        if (content.includes('Core Truths') || content.includes('Boundaries')) {
+          setSoulMdInput(content)
+          saveSoulMd(content)
+        }
+    }
+  }
+  
   // 导出配置
   const handleExport = () => {
     const config = exportConfig()
@@ -324,6 +430,74 @@ export function SettingsHouse() {
             : `网络模式：从 OpenClaw Gateway 加载数据 (${connectionStatus})`}
         </p>
       </div>
+
+      {/* 拖拽上传区域 */}
+      {dataMode === 'local' && (
+        <div>
+          <div className="flex items-center gap-2 mb-3">
+            <Upload className="w-4 h-4 text-emerald-400" />
+            <h3 className="font-mono text-sm text-emerald-300 tracking-wider">
+              快速导入
+            </h3>
+          </div>
+          <FileDropZone onFileDrop={handleFileDrop} />
+        </div>
+      )}
+
+      {/* 本地服务连接 */}
+      {dataMode === 'local' && (
+        <GlassCard className="p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <Server className="w-4 h-4 text-purple-400" />
+            <h3 className="font-mono text-sm text-purple-300 tracking-wider">
+              本地数据服务
+            </h3>
+            <div className={`ml-auto flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-mono ${
+              serverStatus === 'connected' ? 'bg-emerald-500/20 text-emerald-400' :
+              serverStatus === 'checking' ? 'bg-yellow-500/20 text-yellow-400' :
+              'bg-white/10 text-white/40'
+            }`}>
+              <Wifi className="w-3 h-3" />
+              {serverStatus === 'connected' ? '已连接' : 
+               serverStatus === 'checking' ? '检查中...' : '未连接'}
+            </div>
+          </div>
+          
+          <div className="flex gap-2 mb-3">
+            <input
+              type="text"
+              value={serverUrl}
+              onChange={(e) => setServerUrl(e.target.value)}
+              placeholder="http://localhost:3001"
+              className="flex-1 px-3 py-2 bg-black/30 border border-white/10 rounded-lg 
+                         text-xs font-mono text-white/70 placeholder-white/30
+                         focus:border-purple-500/50 focus:outline-none"
+            />
+            <button
+              onClick={checkServer}
+              className="px-3 py-2 bg-purple-500/20 border border-purple-500/30 
+                         rounded-lg text-xs font-mono text-purple-400 hover:bg-purple-500/30 transition-colors"
+            >
+              检测
+            </button>
+            <button
+              onClick={loadFromServer}
+              disabled={serverStatus !== 'connected'}
+              className={`px-3 py-2 rounded-lg text-xs font-mono transition-colors ${
+                serverStatus === 'connected'
+                  ? 'bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/30'
+                  : 'bg-white/5 border border-white/10 text-white/30 cursor-not-allowed'
+              }`}
+            >
+              加载数据
+            </button>
+          </div>
+          
+          <p className="text-[10px] text-white/30 font-mono">
+            运行本地服务: <code className="text-purple-400">python ddos-local-server.py --path ~/clawd</code>
+          </p>
+        </GlassCard>
+      )}
 
       {/* 本地数据输入 */}
       {dataMode === 'local' && (
