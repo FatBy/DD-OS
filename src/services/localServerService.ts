@@ -4,8 +4,19 @@
  * 用于执行任务（绕过 WebSocket chat 层，直接调用 claw CLI）
  */
 
+// 自动推断本地服务地址
+// 如果通过远程访问（非 localhost），使用当前页面的 host + 3001 端口
+function getDefaultServerUrl(): string {
+  const hostname = window.location.hostname
+  if (hostname === 'localhost' || hostname === '127.0.0.1') {
+    return 'http://localhost:3001'
+  }
+  // 远程访问时，使用同一 host 的 3001 端口
+  return `http://${hostname}:3001`
+}
+
 // 默认本地服务地址
-const DEFAULT_LOCAL_SERVER = 'http://localhost:3001'
+const DEFAULT_LOCAL_SERVER = getDefaultServerUrl()
 
 // 配置 key
 const STORAGE_KEY = 'ddos_local_server_url'

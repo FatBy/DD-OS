@@ -415,7 +415,7 @@ def main():
     parser = argparse.ArgumentParser(description='DD-OS Local Data Server')
     parser.add_argument('--port', type=int, default=3001, help='Server port (default: 3001)')
     parser.add_argument('--path', type=str, default='~/clawd', help='Clawd directory path (default: ~/clawd)')
-    parser.add_argument('--host', type=str, default='localhost', help='Server host (default: localhost)')
+    parser.add_argument('--host', type=str, default='0.0.0.0', help='Server host (default: 0.0.0.0)')
     args = parser.parse_args()
     
     clawd_path = Path(args.path).expanduser().resolve()
