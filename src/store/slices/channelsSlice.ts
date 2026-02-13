@@ -27,12 +27,18 @@ export const createChannelsSlice: StateCreator<ChannelsSlice> = (set) => ({
   selectedChannelId: null,
   skills: [],
 
-  setChannelsSnapshot: (snapshot) => set({
-    channelOrder: snapshot.channelOrder,
-    channels: snapshot.channels,
-    skills: channelsToSkills(snapshot.channels, snapshot.channelOrder),
-    channelsLoading: false,
-  }),
+  setChannelsSnapshot: (snapshot) => {
+    // 规范化响应: 确保 channelOrder 存在
+    const channelOrder = snapshot.channelOrder || Object.keys(snapshot.channels || {}) as ChannelType[]
+    const channels = snapshot.channels || {}
+    
+    set({
+      channelOrder,
+      channels,
+      skills: channelsToSkills(channels, channelOrder),
+      channelsLoading: false,
+    })
+  },
   
   updateChannel: (id, updates) => set((state) => {
     const newChannels = {

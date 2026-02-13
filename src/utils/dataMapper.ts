@@ -150,6 +150,16 @@ export function channelToSkill(channel: Channel): SkillNode {
 }
 
 export function channelsToSkills(channels: Record<string, Channel>, order: ChannelType[]): SkillNode[] {
+  // 如果 order 为空，从 channels 的 keys 中提取
+  if (!order || order.length === 0) {
+    order = Object.keys(channels || {}) as ChannelType[]
+  }
+  
+  // 如果 channels 也为空，返回空数组
+  if (!channels || Object.keys(channels).length === 0) {
+    return []
+  }
+  
   return order
     .map(id => channels[id])
     .filter(Boolean)
@@ -216,6 +226,7 @@ export function sessionsToMemories(sessions: Session[]): MemoryEntry[] {
 
 /**
  * 将系统状态映射为灵魂维度
+ * 始终返回 6 个维度，使用默认值填充缺失数据
  */
 export function healthToSoulDimensions(
   health: HealthSnapshot | null,
@@ -224,39 +235,42 @@ export function healthToSoulDimensions(
 ): SoulDimension[] {
   const dimensions: SoulDimension[] = []
   
-  // 系统健康度 → 生命力
-  if (health) {
-    const healthValue = health.status === 'healthy' ? 90 : health.status === 'degraded' ? 60 : 30
-    dimensions.push({ name: '生命力', value: healthValue })
-    
-    // 运行时间 → 经验值 (最大100小时算满)
-    const expValue = Math.min(Math.floor(health.uptime / 3600000), 100)
-    dimensions.push({ name: '经验', value: expValue })
-  }
+  // 生命力: 基于 health.status，默认 50
+  const healthValue = health 
+    ? (health.status === 'healthy' ? 90 : health.status === 'degraded' ? 60 : 30)
+    : 50
+  dimensions.push({ name: '生命力', value: healthValue })
   
-  // 操作者数量 → 感知
-  if (presence) {
-    const perceptionValue = Math.min(presence.operators.length * 25 + 25, 100)
-    dimensions.push({ name: '感知', value: perceptionValue })
-    
-    // 节点数量 → 力量
-    const powerValue = Math.min(presence.nodes.length * 20 + 20, 100)
-    dimensions.push({ name: '力量', value: powerValue })
-  }
+  // 经验: 基于 uptime，默认 0
+  const expValue = health ? Math.min(Math.floor(health.uptime / 3600000), 100) : 0
+  dimensions.push({ name: '经验', value: expValue })
   
-  // Agent 身份存在 → 智慧
-  if (identity) {
-    dimensions.push({ name: '智慧', value: 85 })
-  }
+  // 感知: 基于 operators 数量，默认 25
+  const perceptionValue = presence 
+    ? Math.min(presence.operators.length * 25 + 25, 100)
+    : 25
+  dimensions.push({ name: '感知', value: perceptionValue })
   
-  // 默认连接性
-  dimensions.push({ name: '连接', value: health?.status === 'healthy' ? 95 : 50 })
+  // 力量: 基于 nodes 数量，默认 20
+  const powerValue = presence
+    ? Math.min(presence.nodes.length * 20 + 20, 100)
+    : 20
+  dimensions.push({ name: '力量', value: powerValue })
+  
+  // 智慧: 基于 identity 存在，默认 0
+  const wisdomValue = identity ? 85 : 0
+  dimensions.push({ name: '智慧', value: wisdomValue })
+  
+  // 连接: 基于 health.status，默认 50
+  const connectionValue = health?.status === 'healthy' ? 95 : 50
+  dimensions.push({ name: '连接', value: connectionValue })
   
   return dimensions
 }
 
 /**
  * 生成灵魂配置
+ * 确保 prompts 始终有值，即使数据源为空
  */
 export function generateSoulConfig(
   health: HealthSnapshot | null,
@@ -265,17 +279,17 @@ export function generateSoulConfig(
 ): SoulConfig {
   const dimensions = healthToSoulDimensions(health, presence, identity)
   
-  // 根据系统状态生成 prompts
+  // 根据系统状态生成 prompts，提供友好的默认文案
   const prompts = {
     identity: identity 
       ? `我是 ${identity.name || 'OpenClaw Agent'}，ID: ${identity.agentId}。${identity.emoji || '🤖'}`
-      : '等待连接到 OpenClaw Gateway...',
+      : '已连接，等待获取 Agent 身份...',
     constraints: health
       ? `系统状态: ${health.status}\n运行时间: ${Math.floor(health.uptime / 3600000)}小时\n版本: ${health.version || '未知'}`
-      : '系统状态未知',
+      : '系统状态获取中...',
     goals: presence
       ? `当前连接:\n- 操作者: ${presence.operators.length} 个\n- 节点: ${presence.nodes.length} 个`
-      : '等待设备连接...',
+      : '设备连接状态获取中...',
   }
   
   return { dimensions, prompts }

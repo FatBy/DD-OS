@@ -244,6 +244,7 @@ class OpenClawService {
 
       // 处理 Sessions → Tasks + Memories
       if (sessionsResult.status === 'fulfilled' && sessionsResult.value) {
+        console.log('[OpenClawService] sessions.list raw response:', sessionsResult.value)
         sessions = (sessionsResult.value as { sessions?: Session[] }).sessions || []
         this.storeActions?.setSessions(sessions)
         this.storeActions?.setMemoriesFromSessions(sessions)
@@ -252,6 +253,7 @@ class OpenClawService {
 
       // 处理 Channels → Skills
       if (channelsResult.status === 'fulfilled' && channelsResult.value) {
+        console.log('[OpenClawService] channels.status raw response:', channelsResult.value)
         this.storeActions?.setChannelsSnapshot(channelsResult.value as ChannelsSnapshot)
       }
       this.storeActions?.setChannelsLoading(false)
@@ -264,6 +266,10 @@ class OpenClawService {
         this.storeActions?.updateSoulFromState(agentIdentity)
       }
       this.storeActions?.setAgentLoading(false)
+
+      // 确保 devicesLoading 最终为 false（兜底逻辑）
+      // 如果握手响应不包含 presence 数据，这里保证 loading 状态结束
+      this.storeActions?.setDevicesLoading(false)
 
     } catch (error) {
       console.error('[OpenClawService] Failed to load initial data:', error)
@@ -325,6 +331,9 @@ class OpenClawService {
     // 处理初始 presence 数据
     if (response?.presence) {
       this.storeActions?.setPresenceSnapshot(response.presence)
+    } else {
+      // 如果握手响应不包含 presence，也要确保 loading 结束
+      this.storeActions?.setDevicesLoading(false)
     }
     
     // 处理初始 health 数据
