@@ -380,9 +380,9 @@ def run_task_in_background(task_id, prompt, clawd_path):
     
     try:
         # 使用 clawdbot CLI 执行 agent turn
-        # clawdbot agent --message "prompt" 通过 Gateway 触发任务执行
+        # --agent main 指定主 agent，避免 "choose a session" 错误
         result = subprocess.run(
-            ['clawdbot', 'agent', '--message', prompt],
+            ['clawdbot', 'agent', '--agent', 'main', '--message', prompt],
             cwd=str(clawd_path),
             capture_output=True,
             text=True,
