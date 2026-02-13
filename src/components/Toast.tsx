@@ -1,0 +1,131 @@
+import { useEffect } from 'react'
+import { motion, AnimatePresence } from 'framer-motion'
+import { CheckCircle2, XCircle, AlertTriangle, Info, X } from 'lucide-react'
+import { useStore } from '@/store'
+import { cn } from '@/utils/cn'
+
+const toastConfig = {
+  success: {
+    icon: CheckCircle2,
+    bgColor: 'bg-emerald-500/20',
+    borderColor: 'border-emerald-500/30',
+    iconColor: 'text-emerald-400',
+    titleColor: 'text-emerald-300',
+  },
+  error: {
+    icon: XCircle,
+    bgColor: 'bg-red-500/20',
+    borderColor: 'border-red-500/30',
+    iconColor: 'text-red-400',
+    titleColor: 'text-red-300',
+  },
+  warning: {
+    icon: AlertTriangle,
+    bgColor: 'bg-amber-500/20',
+    borderColor: 'border-amber-500/30',
+    iconColor: 'text-amber-400',
+    titleColor: 'text-amber-300',
+  },
+  info: {
+    icon: Info,
+    bgColor: 'bg-cyan-500/20',
+    borderColor: 'border-cyan-500/30',
+    iconColor: 'text-cyan-400',
+    titleColor: 'text-cyan-300',
+  },
+}
+
+interface ToastItemProps {
+  id: string
+  type: 'success' | 'error' | 'warning' | 'info'
+  title: string
+  message?: string
+  duration?: number
+  onClose: (id: string) => void
+}
+
+function ToastItem({ id, type, title, message, duration = 4000, onClose }: ToastItemProps) {
+  const config = toastConfig[type]
+  const Icon = config.icon
+
+  useEffect(() => {
+    if (duration > 0) {
+      const timer = setTimeout(() => {
+        onClose(id)
+      }, duration)
+      return () => clearTimeout(timer)
+    }
+  }, [id, duration, onClose])
+
+  return (
+    <motion.div
+      layout
+      initial={{ opacity: 0, x: 50, scale: 0.9 }}
+      animate={{ opacity: 1, x: 0, scale: 1 }}
+      exit={{ opacity: 0, x: 50, scale: 0.9 }}
+      transition={{ type: 'spring', stiffness: 300, damping: 25 }}
+      className={cn(
+        'relative w-80 p-4 rounded-xl border backdrop-blur-xl shadow-2xl',
+        config.bgColor,
+        config.borderColor
+      )}
+    >
+      <button
+        onClick={() => onClose(id)}
+        className="absolute top-2 right-2 p-1 rounded-lg hover:bg-white/10 transition-colors text-white/40 hover:text-white/70"
+      >
+        <X className="w-3.5 h-3.5" />
+      </button>
+
+      <div className="flex gap-3">
+        <Icon className={cn('w-5 h-5 shrink-0 mt-0.5', config.iconColor)} />
+        <div className="flex-1 min-w-0 pr-4">
+          <h4 className={cn('text-sm font-mono font-medium', config.titleColor)}>
+            {title}
+          </h4>
+          {message && (
+            <p className="mt-1 text-xs text-white/50 leading-relaxed">
+              {message}
+            </p>
+          )}
+        </div>
+      </div>
+
+      {/* 进度条 */}
+      {duration > 0 && (
+        <motion.div
+          className={cn(
+            'absolute bottom-0 left-0 h-0.5 rounded-b-xl',
+            config.iconColor.replace('text-', 'bg-')
+          )}
+          initial={{ width: '100%' }}
+          animate={{ width: '0%' }}
+          transition={{ duration: duration / 1000, ease: 'linear' }}
+        />
+      )}
+    </motion.div>
+  )
+}
+
+export function ToastContainer() {
+  const toasts = useStore((s) => s.toasts)
+  const removeToast = useStore((s) => s.removeToast)
+
+  return (
+    <div className="fixed top-4 right-4 z-50 flex flex-col gap-3">
+      <AnimatePresence mode="popLayout">
+        {toasts.map((toast) => (
+          <ToastItem
+            key={toast.id}
+            id={toast.id}
+            type={toast.type}
+            title={toast.title}
+            message={toast.message}
+            duration={toast.duration}
+            onClose={removeToast}
+          />
+        ))}
+      </AnimatePresence>
+    </div>
+  )
+}

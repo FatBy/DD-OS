@@ -1,0 +1,58 @@
+import { create } from 'zustand'
+import type { ViewType } from '@/types'
+import { createConnectionSlice, type ConnectionSlice } from './slices/connectionSlice'
+import { createSessionsSlice, type SessionsSlice } from './slices/sessionsSlice'
+import { createChannelsSlice, type ChannelsSlice } from './slices/channelsSlice'
+import { createAgentSlice, type AgentSlice } from './slices/agentSlice'
+import { createDevicesSlice, type DevicesSlice } from './slices/devicesSlice'
+
+// ============================================
+// 视图状态
+// ============================================
+interface ViewSlice {
+  currentView: ViewType
+  setView: (view: ViewType) => void
+}
+
+// ============================================
+// 合并后的 Store 类型
+// ============================================
+export type AppStore = ViewSlice & ConnectionSlice & SessionsSlice & ChannelsSlice & AgentSlice & DevicesSlice
+
+// ============================================
+// 创建 Store
+// ============================================
+export const useStore = create<AppStore>()((...args) => ({
+  // 视图状态
+  currentView: 'world',
+  setView: (view) => args[0]({ currentView: view }),
+  
+  // 合并各业务 slice
+  ...createConnectionSlice(...args),
+  ...createSessionsSlice(...args),
+  ...createChannelsSlice(...args),
+  ...createAgentSlice(...args),
+  ...createDevicesSlice(...args),
+}))
+
+// ============================================
+// 导出选择器 (性能优化)
+// ============================================
+export const selectCurrentView = (state: AppStore) => state.currentView
+export const selectConnectionStatus = (state: AppStore) => state.connectionStatus
+
+// 原始数据选择器
+export const selectSessions = (state: AppStore) => state.sessions
+export const selectChannels = (state: AppStore) => state.channels
+export const selectHealth = (state: AppStore) => state.health
+export const selectDevices = (state: AppStore) => state.devices
+
+// 映射后的 UI 数据选择器
+export const selectTasks = (state: AppStore) => state.tasks
+export const selectSkills = (state: AppStore) => state.skills
+export const selectMemories = (state: AppStore) => state.memories
+export const selectSoulDimensions = (state: AppStore) => state.soulDimensions
+export const selectSoulPrompts = (state: AppStore) => state.soulPrompts
+
+export const selectToasts = (state: AppStore) => state.toasts
+export const selectLogs = (state: AppStore) => state.logs
