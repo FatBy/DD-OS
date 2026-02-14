@@ -6,6 +6,7 @@ import { createChannelsSlice, type ChannelsSlice } from './slices/channelsSlice'
 import { createAgentSlice, type AgentSlice } from './slices/agentSlice'
 import { createDevicesSlice, type DevicesSlice } from './slices/devicesSlice'
 import { createAiSlice, type AiSlice } from './slices/aiSlice'
+import { createWorldSlice, type WorldSlice } from './slices/worldSlice'
 
 // ============================================
 // 视图状态
@@ -18,7 +19,7 @@ interface ViewSlice {
 // ============================================
 // 合并后的 Store 类型
 // ============================================
-export type AppStore = ViewSlice & ConnectionSlice & SessionsSlice & ChannelsSlice & AgentSlice & DevicesSlice & AiSlice
+export type AppStore = ViewSlice & ConnectionSlice & SessionsSlice & ChannelsSlice & AgentSlice & DevicesSlice & AiSlice & WorldSlice
 
 // ============================================
 // 创建 Store
@@ -35,6 +36,7 @@ export const useStore = create<AppStore>()((...args) => ({
   ...createAgentSlice(...args),
   ...createDevicesSlice(...args),
   ...createAiSlice(...args),
+  ...createWorldSlice(...args),
 }))
 
 // ============================================
@@ -63,3 +65,9 @@ export const selectLogs = (state: AppStore) => state.logs
 export const selectLlmConfig = (state: AppStore) => state.llmConfig
 export const selectChatMessages = (state: AppStore) => state.chatMessages
 export const selectChatStreaming = (state: AppStore) => state.chatStreaming
+
+// World 选择器
+export const selectNexuses = (state: AppStore) => state.nexuses
+export const selectCamera = (state: AppStore) => state.camera
+export const selectSelectedNexusId = (state: AppStore) => state.selectedNexusId
+export const selectRenderSettings = (state: AppStore) => state.renderSettings

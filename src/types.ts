@@ -350,3 +350,50 @@ export interface ExecutionStatus {
   error?: string
   timestamp: number
 }
+
+// ============================================
+// World Genesis 类型
+// ============================================
+
+export type NexusArchetype = 'MONOLITH' | 'SPIRE' | 'REACTOR' | 'VAULT'
+
+export interface VisualDNA {
+  primaryHue: number        // 0-360
+  primarySaturation: number // 40-100
+  primaryLightness: number  // 30-70
+  accentHue: number         // 0-360
+  archetype: NexusArchetype
+  textureMode: 'solid' | 'wireframe' | 'gradient'
+  glowIntensity: number     // 0-1
+  geometryVariant: number   // 0-3 (sub-variant within archetype)
+}
+
+export interface GridPosition {
+  gridX: number
+  gridY: number
+}
+
+export interface NexusEntity {
+  id: string
+  archetype: NexusArchetype
+  position: GridPosition
+  level: number             // 1-4
+  xp: number
+  visualDNA: VisualDNA
+  label?: string            // Phase 2: LLM-generated name
+  constructionProgress: number // 0-1 (1 = fully built)
+  createdAt: number
+}
+
+export interface CameraState {
+  x: number
+  y: number
+  zoom: number              // 0.5-2.0
+}
+
+export interface RenderSettings {
+  showGrid: boolean
+  showParticles: boolean
+  showLabels: boolean
+  enableGlow: boolean
+}
