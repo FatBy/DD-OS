@@ -1,12 +1,51 @@
-import { useState } from 'react'
+import { useState, useMemo, useRef, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import { User, Bot, AlertCircle, Clock, Loader2, CheckCircle2, XCircle, Zap, Copy, Check, MessageSquare } from 'lucide-react'
+import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { cn } from '@/utils/cn'
 import type { ChatMessage as ChatMessageType, ExecutionStatus } from '@/types'
+
+// 虚拟化日志查看器
+function LogViewer({ lines }: { lines: string[] }) {
+  const virtuosoRef = useRef<VirtuosoHandle>(null)
+  const [atBottom, setAtBottom] = useState(true)
+  
+  // 当有新行且用户在底部时自动滚动
+  useEffect(() => {
+    if (atBottom && virtuosoRef.current) {
+      virtuosoRef.current.scrollToIndex({ index: lines.length - 1, behavior: 'smooth' })
+    }
+  }, [lines.length, atBottom])
+
+  return (
+    <Virtuoso
+      ref={virtuosoRef}
+      style={{ height: '10rem' }}
+      data={lines}
+      atBottomStateChange={setAtBottom}
+      itemContent={(_index: number, line: string) => (
+        <div className="text-xs font-mono text-emerald-400/80 leading-relaxed px-1 min-h-[1.25rem]">
+          {line || '\u00A0'}
+        </div>
+      )}
+    />
+  )
+}
 
 // 执行状态卡片
 function ExecutionCard({ execution, content }: { execution: ExecutionStatus; content?: string }) {
   const [copied, setCopied] = useState(false)
+  
+  // 按行分割日志输出，使用 outputLines 或从 output 计算
+  const logLines = useMemo(() => {
+    if (execution.outputLines && execution.outputLines.length > 0) {
+      return execution.outputLines
+    }
+    if (execution.output) {
+      return execution.output.split('\n')
+    }
+    return []
+  }, [execution.outputLines, execution.output])
   
   // 任务建议模式（本地服务不可用时的降级方案）
   if (execution.status === 'suggestion') {
@@ -112,13 +151,11 @@ function ExecutionCard({ execution, content }: { execution: ExecutionStatus; con
         {content}
       </p>
       
-      {/* 执行输出 */}
-      {execution.output && (
-        <div className="mt-2 p-2 bg-black/20 rounded border border-white/5 max-h-40 overflow-y-auto">
-          <p className="text-[10px] font-mono text-white/40 mb-1">输出:</p>
-          <p className="text-xs font-mono text-emerald-400/80 whitespace-pre-wrap break-all">
-            {typeof execution.output === 'string' ? execution.output.slice(0, 3000) : String(execution.output)}
-          </p>
+      {/* 执行输出 - 虚拟化渲染 */}
+      {logLines.length > 0 && (
+        <div className="mt-2 bg-black/20 rounded border border-white/5">
+          <p className="text-[10px] font-mono text-white/40 px-2 pt-1 pb-0.5">输出:</p>
+          <LogViewer lines={logLines} />
         </div>
       )}
       

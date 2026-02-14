@@ -3,7 +3,7 @@ import type { ChatMessage, AISummary, LLMConfig, ViewType, SkillEnhancement, Tas
 import type { SkillNode, TaskItem } from '@/types'
 import { getLLMConfig, saveLLMConfig, isLLMConfigured, streamChat, chat } from '@/services/llmService'
 import { buildSummaryMessages, buildChatMessages, buildSkillEnhancementPrompt, buildTaskNamingPrompt, parseJSONFromLLM, parseExecutionCommands, stripExecutionBlocks } from '@/services/contextBuilder'
-import { localServerService } from '@/services/localServerService'
+import { localServerService, type IncrementalTaskResponse } from '@/services/localServerService'
 
 // 摘要缓存时间 (5分钟)
 const SUMMARY_CACHE_MS = 5 * 60 * 1000
@@ -346,28 +346,38 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
               ),
             }))
             
-            // 轮询任务状态
+            // 轮询任务状态 (增量模式)
             localServerService.pollTaskStatus(
               result.taskId,
-              (status) => {
-                // 截断过长的输出，防止渲染崩溃
-                const maxOutputLen = 5000
-                const truncatedOutput = status.output && status.output.length > maxOutputLen
-                  ? status.output.slice(0, maxOutputLen) + '\n\n... [输出过长，已截断]'
-                  : status.output
-
-                const finalStatus: ExecutionStatus = {
+              (response: IncrementalTaskResponse) => {
+                // 增量追加：从 state 中取当前累积内容，追加新增量
+                const currentState = get()
+                const current = currentState.executionStatuses[execId]
+                const prevOutput = current?.output || ''
+                
+                // 追加新内容，限制总量 200KB 防止内存膨胀
+                const maxAccumulated = 200 * 1024
+                let newOutput = prevOutput + (response.content || '')
+                if (newOutput.length > maxAccumulated) {
+                  newOutput = newOutput.slice(newOutput.length - maxAccumulated)
+                  newOutput = '[...前部分已省略]\n' + newOutput
+                }
+                
+                const newLines = newOutput.split('\n')
+                
+                const updatedStatus: ExecutionStatus = {
                   id: execId,
-                  status: status.status === 'done' ? 'success' : status.status === 'error' ? 'error' : 'running',
+                  status: response.status === 'done' ? 'success' : response.status === 'error' ? 'error' : 'running',
                   sessionKey: result.taskId,
-                  output: truncatedOutput,
-                  error: status.error,
+                  output: newOutput,
+                  outputLines: newLines,
+                  currentOffset: response.offset,
                   timestamp: Date.now(),
                 }
                 set((state) => ({
-                  executionStatuses: { ...state.executionStatuses, [execId]: finalStatus },
+                  executionStatuses: { ...state.executionStatuses, [execId]: updatedStatus },
                   chatMessages: state.chatMessages.map(m =>
-                    m.id === execId ? { ...m, execution: finalStatus } : m
+                    m.id === execId ? { ...m, execution: updatedStatus } : m
                   ),
                 }))
               }

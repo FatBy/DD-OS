@@ -344,7 +344,9 @@ export interface ExecutionStatus {
   id: string
   status: 'pending' | 'running' | 'success' | 'error' | 'suggestion'
   sessionKey?: string
-  output?: string
+  output?: string           // 累积的输出文本
+  outputLines?: string[]    // 按行分割，供虚拟化渲染
+  currentOffset?: number    // 当前读取位置
   error?: string
   timestamp: number
 }

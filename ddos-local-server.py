@@ -13,6 +13,8 @@ API:
     GET /skills          - 获取技能列表
     GET /memories        - 获取记忆数据
     GET /all             - 获取所有数据
+    POST /task/execute   - 执行任务
+    GET /task/status/<id>?offset=N - 查询任务状态(增量读取日志)
 """
 
 import os
@@ -20,17 +22,18 @@ import sys
 import json
 import argparse
 import threading
+import time
 import uuid
 import subprocess
 from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import unquote
+from urllib.parse import unquote, urlparse, parse_qs
 
-VERSION = "1.0.0"
+VERSION = "2.0.0"
 
 class ClawdDataHandler(BaseHTTPRequestHandler):
     clawd_path = None
-    # 任务存储 (内存)
+    # 任务存储 (仅元数据，不存输出内容)
     tasks = {}
     tasks_lock = threading.Lock()
     
@@ -39,7 +42,7 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
     
     def send_cors_headers(self):
         self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
         self.send_header('Access-Control-Allow-Headers', 'Content-Type')
     
     def send_json(self, data, status=200):
@@ -65,7 +68,9 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
         self.end_headers()
     
     def do_GET(self):
-        path = unquote(self.path)
+        parsed = urlparse(self.path)
+        path = unquote(parsed.path)
+        query = parse_qs(parsed.query)
         
         if path == '/status':
             self.handle_status()
@@ -82,14 +87,16 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
             self.handle_all()
         elif path.startswith('/task/status/'):
             task_id = path[13:]
-            self.handle_task_status(task_id)
+            offset = int(query.get('offset', ['0'])[0])
+            self.handle_task_status(task_id, offset)
         elif path == '/' or path == '':
             self.handle_index()
         else:
             self.send_error_json(f'Unknown endpoint: {path}', 404)
     
     def do_POST(self):
-        path = unquote(self.path)
+        parsed = urlparse(self.path)
+        path = unquote(parsed.path)
         
         if path == '/task/execute':
             content_length = int(self.headers.get('Content-Length', 0))
@@ -314,8 +321,8 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
             'status': 'running',
         })
     
-    def handle_task_status(self, task_id):
-        """查询任务状态"""
+    def handle_task_status(self, task_id, offset=0):
+        """查询任务状态 (支持增量读取)"""
         with self.tasks_lock:
             task = self.tasks.get(task_id)
         
@@ -323,7 +330,29 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
             self.send_error_json(f'Task not found: {task_id}', 404)
             return
         
-        self.send_json(task)
+        # 从日志文件增量读取
+        log_path = task.get('logPath')
+        content = ''
+        new_offset = offset
+        has_more = False
+        file_size = task.get('fileSize', 0)
+        
+        if log_path:
+            content, new_offset, has_more = read_log_chunk(log_path, offset)
+            # 更新 fileSize（可能已变化）
+            try:
+                file_size = Path(log_path).stat().st_size
+            except:
+                pass
+        
+        self.send_json({
+            'taskId': task_id,
+            'status': task['status'],
+            'content': content,
+            'offset': new_offset,
+            'hasMore': has_more,
+            'fileSize': file_size,
+        })
 
 
 def list_files(clawd_path):
@@ -365,50 +394,145 @@ def parse_memory_md(content):
 
 
 # ============================================
-# 任务执行
+# 日志读取
+# ============================================
+
+def read_log_chunk(log_path, offset=0, max_bytes=51200):
+    """从日志文件增量读取内容
+    
+    Args:
+        log_path: 日志文件路径
+        offset: 起始字节偏移
+        max_bytes: 最大读取字节数 (默认 50KB)
+    
+    Returns:
+        (content, new_offset, has_more)
+    """
+    path = Path(log_path)
+    if not path.exists():
+        return ('', offset, False)
+    
+    try:
+        file_size = path.stat().st_size
+    except:
+        return ('', offset, False)
+    
+    if offset >= file_size:
+        return ('', offset, False)
+    
+    try:
+        with open(path, 'rb') as f:
+            f.seek(offset)
+            raw = f.read(max_bytes)
+        
+        content = raw.decode('utf-8', errors='replace')
+        new_offset = offset + len(raw)
+        has_more = new_offset < file_size
+        return (content, new_offset, has_more)
+    except Exception as e:
+        return (f'[日志读取错误: {e}]', offset, False)
+
+
+# ============================================
+# 任务执行 (文件流式)
 # ============================================
 
 def run_task_in_background(task_id, prompt, clawd_path):
-    """在后台线程中执行任务"""
+    """在后台线程中执行任务，输出写入日志文件"""
+    logs_dir = clawd_path / 'logs'
+    logs_dir.mkdir(exist_ok=True)
+    log_file = logs_dir / f"{task_id}.log"
+    
     with ClawdDataHandler.tasks_lock:
         ClawdDataHandler.tasks[task_id] = {
             'taskId': task_id,
             'status': 'running',
-            'output': '',
-            'error': None,
+            'logPath': str(log_file),
+            'fileSize': 0,
         }
     
     try:
-        # 使用 clawdbot CLI 执行 agent turn
-        # --agent main 指定主 agent，避免 "choose a session" 错误
-        result = subprocess.run(
-            ['clawdbot', 'agent', '--agent', 'main', '--message', prompt],
-            cwd=str(clawd_path),
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
+        with open(log_file, 'wb') as f:
+            process = subprocess.Popen(
+                ['clawdbot', 'agent', '--agent', 'main', '--message', prompt],
+                cwd=str(clawd_path),
+                stdout=f,
+                stderr=subprocess.STDOUT,
+            )
+            
+            # 监控进程，定期更新文件大小
+            start_time = time.time()
+            timeout = 300  # 5 分钟超时
+            
+            while process.poll() is None:
+                time.sleep(0.5)
+                try:
+                    with ClawdDataHandler.tasks_lock:
+                        ClawdDataHandler.tasks[task_id]['fileSize'] = log_file.stat().st_size
+                except:
+                    pass
+                
+                # 超时检查
+                if time.time() - start_time > timeout:
+                    process.kill()
+                    process.wait()
+                    with ClawdDataHandler.tasks_lock:
+                        ClawdDataHandler.tasks[task_id]['status'] = 'error'
+                        ClawdDataHandler.tasks[task_id]['fileSize'] = log_file.stat().st_size
+                    # 写入超时提示
+                    with open(log_file, 'a', encoding='utf-8') as ef:
+                        ef.write(f'\n\n[错误] 任务执行超时 ({timeout}s)\n')
+                    with ClawdDataHandler.tasks_lock:
+                        ClawdDataHandler.tasks[task_id]['fileSize'] = log_file.stat().st_size
+                    return
+            
+            process.wait()
         
+        # 更新最终状态
         with ClawdDataHandler.tasks_lock:
-            if result.returncode == 0:
-                ClawdDataHandler.tasks[task_id]['status'] = 'done'
-                ClawdDataHandler.tasks[task_id]['output'] = result.stdout or '任务执行完成'
-            else:
-                ClawdDataHandler.tasks[task_id]['status'] = 'error'
-                ClawdDataHandler.tasks[task_id]['error'] = result.stderr or f'Exit code: {result.returncode}'
+            ClawdDataHandler.tasks[task_id]['status'] = 'done' if process.returncode == 0 else 'error'
+            ClawdDataHandler.tasks[task_id]['fileSize'] = log_file.stat().st_size
+        
+        # 如果返回码非0且日志为空，写入退出码信息
+        if process.returncode != 0 and log_file.stat().st_size == 0:
+            with open(log_file, 'w', encoding='utf-8') as ef:
+                ef.write(f'Exit code: {process.returncode}\n')
+            with ClawdDataHandler.tasks_lock:
+                ClawdDataHandler.tasks[task_id]['fileSize'] = log_file.stat().st_size
+    
     except FileNotFoundError:
-        # clawdbot CLI 不可用，记录提示
+        with open(log_file, 'w', encoding='utf-8') as ef:
+            ef.write('clawdbot CLI 未找到。请确认已通过 npm install -g clawdbot 安装。\n')
         with ClawdDataHandler.tasks_lock:
             ClawdDataHandler.tasks[task_id]['status'] = 'error'
-            ClawdDataHandler.tasks[task_id]['error'] = 'clawdbot CLI 未找到。请确认已通过 npm install -g clawdbot 安装。'
-    except subprocess.TimeoutExpired:
-        with ClawdDataHandler.tasks_lock:
-            ClawdDataHandler.tasks[task_id]['status'] = 'error'
-            ClawdDataHandler.tasks[task_id]['error'] = '任务执行超时 (120s)'
+            ClawdDataHandler.tasks[task_id]['fileSize'] = log_file.stat().st_size
     except Exception as e:
+        with open(log_file, 'a', encoding='utf-8') as ef:
+            ef.write(f'\n\n[错误] {str(e)}\n')
         with ClawdDataHandler.tasks_lock:
             ClawdDataHandler.tasks[task_id]['status'] = 'error'
-            ClawdDataHandler.tasks[task_id]['error'] = str(e)
+            ClawdDataHandler.tasks[task_id]['fileSize'] = log_file.stat().st_size
+
+
+def cleanup_old_logs(clawd_path, max_age_hours=24):
+    """清理超过 max_age_hours 小时的旧日志文件"""
+    logs_dir = clawd_path / 'logs'
+    if not logs_dir.exists():
+        return
+    
+    now = time.time()
+    count = 0
+    for f in logs_dir.glob('*.log'):
+        try:
+            age = now - f.stat().st_mtime
+            if age > max_age_hours * 3600:
+                f.unlink()
+                count += 1
+        except:
+            pass
+    
+    if count > 0:
+        print(f"[Cleanup] Removed {count} old log files")
 
 
 def main():
@@ -425,6 +549,13 @@ def main():
         print(f"Please create the directory or specify a different path with --path")
         sys.exit(1)
     
+    # 初始化日志目录
+    logs_dir = clawd_path / 'logs'
+    logs_dir.mkdir(exist_ok=True)
+    
+    # 清理旧日志
+    cleanup_old_logs(clawd_path)
+    
     ClawdDataHandler.clawd_path = clawd_path
     
     server = HTTPServer((args.host, args.port), ClawdDataHandler)
@@ -435,6 +566,7 @@ def main():
 ╠══════════════════════════════════════════════════════════════╣
 ║  Server:  http://{args.host}:{args.port}                              ║
 ║  Clawd:   {str(clawd_path)[:45]:<45} ║
+║  Logs:    {str(logs_dir)[:45]:<45} ║
 ╚══════════════════════════════════════════════════════════════╝
     """)
     

@@ -7,6 +7,10 @@
  * - 本地开发时直连 http://localhost:3001
  * - 远程访问时通过 Vite 代理 /local-api → localhost:3001
  *   这样浏览器只需连接 Vite dev server 端口，无需额外开放 3001 端口
+ *
+ * 输出流式策略：
+ * - 使用 offset 参数增量读取日志
+ * - 每次只获取新产生的内容，避免全量传输
  */
 
 // 自动推断本地服务地址
@@ -30,15 +34,15 @@ const STORAGE_KEY = 'ddos_local_server_url'
 export interface TaskExecuteResponse {
   taskId: string
   status: 'running' | 'done' | 'error'
-  output?: string
-  error?: string
 }
 
-export interface TaskStatusResponse {
+export interface IncrementalTaskResponse {
   taskId: string
   status: 'running' | 'done' | 'error'
-  output?: string
-  error?: string
+  content: string      // 增量内容 (仅 offset 之后的部分)
+  offset: number       // 新的游标位置
+  hasMore: boolean     // 是否还有更多内容
+  fileSize: number     // 当前日志文件总大小
 }
 
 class LocalServerService {
@@ -100,11 +104,11 @@ class LocalServerService {
   }
 
   /**
-   * 查询任务状态
-   * GET /task/status/<taskId>
+   * 查询任务状态 (支持增量读取)
+   * GET /task/status/<taskId>?offset=N
    */
-  async getTaskStatus(taskId: string): Promise<TaskStatusResponse> {
-    const response = await fetch(`${this.baseUrl}/task/status/${taskId}`, {
+  async getTaskStatus(taskId: string, offset = 0): Promise<IncrementalTaskResponse> {
+    const response = await fetch(`${this.baseUrl}/task/status/${taskId}?offset=${offset}`, {
       method: 'GET',
     })
 
@@ -117,27 +121,41 @@ class LocalServerService {
   }
 
   /**
-   * 轮询任务状态直到完成
+   * 轮询任务状态直到完成 (增量模式)
    * @param taskId 任务 ID
-   * @param onUpdate 状态更新回调
-   * @param intervalMs 轮询间隔 (默认 2000ms)
-   * @param maxAttempts 最大尝试次数 (默认 60 次 = 2 分钟)
+   * @param onUpdate 增量更新回调
+   * @param intervalMs 轮询间隔 (默认 1500ms)
+   * @param maxAttempts 最大尝试次数 (默认 200 次 = 5 分钟)
    */
   async pollTaskStatus(
     taskId: string,
-    onUpdate: (status: TaskStatusResponse) => void,
-    intervalMs = 2000,
-    maxAttempts = 60
-  ): Promise<TaskStatusResponse> {
+    onUpdate: (response: IncrementalTaskResponse) => void,
+    intervalMs = 1500,
+    maxAttempts = 200
+  ): Promise<IncrementalTaskResponse> {
     let attempts = 0
+    let currentOffset = 0
 
     while (attempts < maxAttempts) {
       try {
-        const status = await this.getTaskStatus(taskId)
-        onUpdate(status)
+        const response = await this.getTaskStatus(taskId, currentOffset)
+        
+        // 更新游标
+        currentOffset = response.offset
+        
+        // 有新内容或状态变化时回调
+        if (response.content || response.status !== 'running') {
+          onUpdate(response)
+        }
 
-        if (status.status === 'done' || status.status === 'error') {
-          return status
+        // 完成条件: 状态已结束 且 没有更多内容
+        if ((response.status === 'done' || response.status === 'error') && !response.hasMore) {
+          return response
+        }
+        
+        // 还有未读内容时立即继续读取，不等待
+        if (response.hasMore) {
+          continue
         }
       } catch (error) {
         console.error('[LocalServer] Poll error:', error)
@@ -149,10 +167,13 @@ class LocalServerService {
     }
 
     // 超时
-    const timeoutResult: TaskStatusResponse = {
+    const timeoutResult: IncrementalTaskResponse = {
       taskId,
       status: 'error',
-      error: `轮询超时 (${maxAttempts * intervalMs / 1000}s)`,
+      content: `\n\n[轮询超时 (${maxAttempts * intervalMs / 1000}s)]`,
+      offset: currentOffset,
+      hasMore: false,
+      fileSize: 0,
     }
     onUpdate(timeoutResult)
     return timeoutResult
