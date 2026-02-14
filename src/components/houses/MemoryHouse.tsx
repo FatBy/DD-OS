@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { ScrollText, Clock, Inbox, Loader2, Brain, ChevronDown } from 'lucide-react'
+import { ScrollText, Clock, Inbox, Loader2, Brain, ChevronDown, ChevronRight } from 'lucide-react'
 import { GlassCard } from '@/components/GlassCard'
 import { AISummaryCard } from '@/components/ai/AISummaryCard'
 import { useStore } from '@/store'
@@ -43,33 +43,37 @@ interface TimelineGroup {
 
 function getDisplayDate(dateStr: string): string {
   const today = new Date()
-  const date = new Date(dateStr)
-  const todayStr = today.toISOString().split('T')[0]
+  const todayStr = today.toLocaleDateString('sv-SE') // YYYY-MM-DD format
   const yesterdayDate = new Date(today)
   yesterdayDate.setDate(yesterdayDate.getDate() - 1)
-  const yesterdayStr = yesterdayDate.toISOString().split('T')[0]
+  const yesterdayStr = yesterdayDate.toLocaleDateString('sv-SE')
 
   if (dateStr === todayStr) return '今天'
   if (dateStr === yesterdayStr) return '昨天'
   return dateStr
 }
 
-// 安全解析时间
+// 安全解析时间 - 使用 Intl.DateTimeFormat 确保本地时区
 function safeParseTime(timestamp: string): string {
   try {
     const date = new Date(timestamp)
     if (isNaN(date.getTime())) return '--:--'
-    return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+    return new Intl.DateTimeFormat('zh-CN', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).format(date)
   } catch {
     return '--:--'
   }
 }
 
+// 安全解析日期 - 使用本地时区
 function safeParseDate(timestamp: string): string {
   try {
     const date = new Date(timestamp)
     if (isNaN(date.getTime())) return 'unknown'
-    return date.toISOString().split('T')[0]
+    return date.toLocaleDateString('sv-SE') // YYYY-MM-DD in local timezone
   } catch {
     return 'unknown'
   }
@@ -199,13 +203,32 @@ function TimelineMemoryCard({
   )
 }
 
-// 日期分组标题
-function TimelineDateHeader({ group }: { group: TimelineGroup }) {
+// 日期分组标题 (支持折叠)
+function TimelineDateHeader({ 
+  group, 
+  isCollapsed, 
+  onToggle 
+}: { 
+  group: TimelineGroup
+  isCollapsed: boolean
+  onToggle: () => void 
+}) {
   return (
-    <div className="relative pl-8 pb-4 pt-2">
+    <div 
+      className="relative pl-8 pb-4 pt-2 cursor-pointer group select-none"
+      onClick={onToggle}
+    >
       {/* 日期大节点 */}
-      <div className="absolute left-[-4px] top-2 w-5 h-5 rounded-full bg-emerald-500/30 border-2 border-emerald-400/60 flex items-center justify-center">
-        <div className="w-2 h-2 rounded-full bg-emerald-400" />
+      <div className={cn(
+        "absolute left-[-4px] top-2 w-5 h-5 rounded-full border-2 flex items-center justify-center transition-colors",
+        isCollapsed 
+          ? "bg-white/10 border-white/20" 
+          : "bg-emerald-500/30 border-emerald-400/60"
+      )}>
+        <div className={cn(
+          "w-2 h-2 rounded-full transition-colors",
+          isCollapsed ? "bg-white/40" : "bg-emerald-400"
+        )} />
       </div>
 
       <div className="flex items-center gap-3">
@@ -215,6 +238,11 @@ function TimelineDateHeader({ group }: { group: TimelineGroup }) {
         <span className="text-[10px] font-mono text-white/30 bg-white/5 px-2 py-0.5 rounded">
           {group.memories.length} 条记忆
         </span>
+        {/* 折叠指示箭头 */}
+        <ChevronRight className={cn(
+          "w-4 h-4 text-white/20 transition-transform duration-200 ml-auto mr-4 group-hover:text-white/40",
+          !isCollapsed && "rotate-90"
+        )} />
       </div>
     </div>
   )
@@ -230,9 +258,15 @@ export function MemoryHouse() {
 
   // 展开状态
   const [expandedId, setExpandedId] = useState<string | null>(null)
+  // 日期折叠状态
+  const [collapsedDates, setCollapsedDates] = useState<Record<string, boolean>>({})
 
   const toggleExpand = (id: string) => {
     setExpandedId(prev => prev === id ? null : id)
+  }
+
+  const toggleDateGroup = (date: string) => {
+    setCollapsedDates(prev => ({ ...prev, [date]: !prev[date] }))
   }
 
   // 按日期分组并排序（编年体：从早到晚）
@@ -297,20 +331,37 @@ export function MemoryHouse() {
               <div className="absolute left-[5px] top-4 bottom-0 w-0.5 bg-gradient-to-b from-emerald-500/40 via-white/10 to-transparent" />
 
               {/* 时间轴内容 */}
-              {timelineGroups.map((group) => (
-                <div key={group.date} className="mb-6">
-                  <TimelineDateHeader group={group} />
-                  {group.memories.map((memory, idx) => (
-                    <TimelineMemoryCard
-                      key={memory.id}
-                      memory={memory}
-                      index={idx}
-                      isExpanded={expandedId === memory.id}
-                      onToggle={() => toggleExpand(memory.id)}
+              {timelineGroups.map((group, groupIdx) => {
+                // 默认：今天或最后一组展开，其他折叠
+                const isCollapsed = collapsedDates[group.date] ?? (
+                  group.displayDate !== '今天' && groupIdx !== timelineGroups.length - 1
+                )
+
+                return (
+                  <div key={group.date} className="mb-6">
+                    <TimelineDateHeader 
+                      group={group} 
+                      isCollapsed={isCollapsed}
+                      onToggle={() => toggleDateGroup(group.date)}
                     />
-                  ))}
-                </div>
-              ))}
+                    
+                    <div className={cn(
+                      "transition-all duration-300 overflow-hidden",
+                      isCollapsed ? "max-h-0 opacity-0" : "max-h-[5000px] opacity-100"
+                    )}>
+                      {group.memories.map((memory, idx) => (
+                        <TimelineMemoryCard
+                          key={memory.id}
+                          memory={memory}
+                          index={idx}
+                          isExpanded={expandedId === memory.id}
+                          onToggle={() => toggleExpand(memory.id)}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                )
+              })}
             </div>
           ) : (
             <div className="flex flex-col items-center justify-center h-48 text-center">
@@ -364,7 +415,7 @@ export function MemoryHouse() {
 
           <div className="pt-4 border-t border-white/10">
             <p className="text-[9px] font-mono text-white/30 leading-relaxed">
-              记忆按时间顺序排列，点击卡片展开查看完整内容。
+              记忆按时间顺序排列，点击日期折叠/展开，点击卡片查看完整内容。
             </p>
           </div>
         </div>

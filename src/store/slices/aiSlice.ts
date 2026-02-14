@@ -15,6 +15,8 @@ const STORAGE_KEYS = {
   TASK_ENHANCEMENTS: 'ddos_task_enhancements',
   SKILL_TIMESTAMP: 'ddos_skill_enhancements_ts',
   TASK_TIMESTAMP: 'ddos_task_enhancements_ts',
+  CHAT_HISTORY: 'ddos_chat_history',
+  EXECUTION_STATUS: 'ddos_execution_status',
 }
 
 // 从 localStorage 加载持久化数据
@@ -62,11 +64,43 @@ function saveTaskEnhancements(data: Record<string, TaskEnhancement>, timestamp: 
   }
 }
 
+// 聊天记录持久化
+function loadChatHistory(): { messages: ChatMessage[]; statuses: Record<string, ExecutionStatus> } {
+  try {
+    const msgs = localStorage.getItem(STORAGE_KEYS.CHAT_HISTORY)
+    const stats = localStorage.getItem(STORAGE_KEYS.EXECUTION_STATUS)
+    return {
+      messages: msgs ? JSON.parse(msgs) : [],
+      statuses: stats ? JSON.parse(stats) : {},
+    }
+  } catch (e) {
+    console.warn('[AI] Failed to load chat history from localStorage:', e)
+    return { messages: [], statuses: {} }
+  }
+}
+
+function persistChatState(messages: ChatMessage[], statuses: Record<string, ExecutionStatus>) {
+  try {
+    // 只存最近 50 条消息，避免 localStorage 溢出
+    const trimmed = messages.slice(-50)
+    // 清理 outputLines (太大不适合存 localStorage)
+    const cleanStatuses: Record<string, ExecutionStatus> = {}
+    for (const [k, v] of Object.entries(statuses)) {
+      cleanStatuses[k] = { ...v, outputLines: undefined }
+    }
+    localStorage.setItem(STORAGE_KEYS.CHAT_HISTORY, JSON.stringify(trimmed))
+    localStorage.setItem(STORAGE_KEYS.EXECUTION_STATUS, JSON.stringify(cleanStatuses))
+  } catch (e) {
+    console.warn('[AI] Failed to persist chat state:', e)
+  }
+}
+
 const emptySummary = (): AISummary => ({ content: '', loading: false, error: null, timestamp: 0 })
 
 // 初始化时加载持久化数据
 const initialSkillEnhancements = loadSkillEnhancements()
 const initialTaskEnhancements = loadTaskEnhancements()
+const initialChatHistory = loadChatHistory()
 
 export interface AiSlice {
   // LLM 配置
@@ -123,7 +157,7 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
   llmConfig: getLLMConfig(),
   llmConnected: false,
   summaries: {},
-  chatMessages: [],
+  chatMessages: initialChatHistory.messages,
   chatStreaming: false,
   chatStreamContent: '',
   chatContext: 'world',
@@ -136,7 +170,7 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
   taskEnhancements: initialTaskEnhancements.data,
   taskEnhancementsLoading: false,
   taskEnhancementsTimestamp: initialTaskEnhancements.timestamp,
-  executionStatuses: {},
+  executionStatuses: initialChatHistory.statuses,
 
   setLlmConfig: (config) => {
     saveLLMConfig(config)
@@ -234,6 +268,8 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
       chatContext: view,
       _chatAbort: abortController,
     }))
+    // 持久化用户消息
+    persistChatState(get().chatMessages, get().executionStatuses)
 
     try {
       const state = get() as any
@@ -280,6 +316,8 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
         chatStreamContent: '',
         _chatAbort: null,
       }))
+      // 持久化 assistant 消息
+      persistChatState(get().chatMessages, get().executionStatuses)
 
       // 通过本地服务执行 OpenClaw 任务
       if (commands.length > 0) {
@@ -380,6 +418,10 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
                     m.id === execId ? { ...m, execution: updatedStatus } : m
                   ),
                 }))
+                // 仅在状态终结时持久化（running 中不频繁写入）
+                if (response.status === 'done' || response.status === 'error') {
+                  persistChatState(get().chatMessages, get().executionStatuses)
+                }
               }
             )
           } catch (err: any) {
@@ -433,7 +475,9 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
   clearChat: () => {
     const abort = get()._chatAbort
     if (abort) abort.abort()
-    set({ chatMessages: [], chatStreaming: false, chatStreamContent: '', chatError: null, _chatAbort: null })
+    localStorage.removeItem(STORAGE_KEYS.CHAT_HISTORY)
+    localStorage.removeItem(STORAGE_KEYS.EXECUTION_STATUS)
+    set({ chatMessages: [], chatStreaming: false, chatStreamContent: '', chatError: null, _chatAbort: null, executionStatuses: {} })
   },
 
   abortChat: () => {
@@ -548,11 +592,15 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
       const current = state.executionStatuses[id]
       if (!current) return state
       const updated = { ...current, ...updates }
+      const newStatuses = { ...state.executionStatuses, [id]: updated }
+      const newMessages = state.chatMessages.map(m =>
+        m.id === id ? { ...m, execution: updated } : m
+      )
+      // 持久化
+      persistChatState(newMessages, newStatuses)
       return {
-        executionStatuses: { ...state.executionStatuses, [id]: updated },
-        chatMessages: state.chatMessages.map(m =>
-          m.id === id ? { ...m, execution: updated } : m
-        ),
+        executionStatuses: newStatuses,
+        chatMessages: newMessages,
       }
     })
   },

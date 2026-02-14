@@ -2,8 +2,8 @@ import { useEffect, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { 
   Inbox, Clock, CheckCircle2, Play,
-  Loader2, MessageSquare, ChevronRight, ChevronDown, Sparkles,
-  Calendar, Hash, Send
+  Loader2, MessageSquare, ChevronRight, Sparkles,
+  Calendar, Hash
 } from 'lucide-react'
 import { GlassCard } from '@/components/GlassCard'
 import { AISummaryCard } from '@/components/ai/AISummaryCard'
@@ -29,19 +29,6 @@ const priorityConfig = {
   high: { color: 'red', label: '高' },
   medium: { color: 'amber', label: '中' },
   low: { color: 'slate', label: '低' },
-}
-
-function TaskSkeleton() {
-  return (
-    <div className="space-y-3">
-      {[1, 2, 3].map((i) => (
-        <div key={i} className="p-4 bg-white/5 rounded-xl animate-pulse">
-          <div className="h-4 bg-white/10 rounded w-2/3 mb-2" />
-          <div className="h-3 bg-white/5 rounded w-full" />
-        </div>
-      ))}
-    </div>
-  )
 }
 
 function EmptyColumn({ status }: { status: TaskItem['status'] }) {
@@ -184,6 +171,73 @@ function TaskCard({ task, index, enhancement, isEnhancing, isExpanded, onToggle 
   )
 }
 
+// System Inbox: 折叠式待处理任务面板
+function SystemInbox({ 
+  tasks, 
+  isExpanded, 
+  onToggle,
+  taskEnhancements,
+  isEnhancing,
+  expandedTaskId,
+  onToggleTask,
+}: { 
+  tasks: TaskItem[]
+  isExpanded: boolean
+  onToggle: () => void
+  taskEnhancements: Record<string, TaskEnhancement>
+  isEnhancing: boolean
+  expandedTaskId: string | null
+  onToggleTask: (id: string) => void
+}) {
+  if (tasks.length === 0) return null
+
+  return (
+    <div className="mb-4 flex-shrink-0">
+      <div 
+        onClick={onToggle}
+        className="flex items-center gap-2 p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg cursor-pointer hover:bg-amber-500/15 transition-colors"
+      >
+        <Inbox className="w-4 h-4 text-amber-400" />
+        <h3 className="text-sm font-mono text-amber-200">System Inbox</h3>
+        <span className="text-[10px] font-mono text-white/40 ml-1">来自 IM / 系统</span>
+        <span className="bg-amber-500/20 text-amber-300 text-[10px] font-mono px-2 py-0.5 rounded-full ml-auto">
+          {tasks.length}
+        </span>
+        <ChevronRight className={cn(
+          "w-4 h-4 text-amber-400/50 transition-transform duration-200",
+          isExpanded && "rotate-90"
+        )} />
+      </div>
+
+      <AnimatePresence>
+        {isExpanded && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.25 }}
+            className="overflow-hidden"
+          >
+            <div className="pt-3 space-y-3 max-h-[300px] overflow-y-auto pr-1">
+              {tasks.map((task, i) => (
+                <TaskCard 
+                  key={task.id} 
+                  task={task} 
+                  index={i} 
+                  enhancement={taskEnhancements[task.id]}
+                  isEnhancing={isEnhancing}
+                  isExpanded={expandedTaskId === task.id}
+                  onToggle={() => onToggleTask(task.id)}
+                />
+              ))}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  )
+}
+
 export function TaskHouse() {
   const storeTasks = useStore((s) => s.tasks)
   const loading = useStore((s) => s.sessionsLoading)
@@ -202,6 +256,8 @@ export function TaskHouse() {
 
   // 展开状态
   const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null)
+  // Inbox 折叠状态（默认收起）
+  const [isInboxExpanded, setIsInboxExpanded] = useState(false)
 
   const toggleExpand = (id: string) => {
     setExpandedTaskId(prev => prev === id ? null : id)
@@ -219,7 +275,7 @@ export function TaskHouse() {
     enhanceTaskNames(tasks)
   }
   
-  // 按状态分组
+  // 分类：Pending → System Inbox，Executing/Done → OS Workspace
   const pendingTasks = tasks.filter((t) => t.status === 'pending')
   const executingTasks = tasks.filter((t) => t.status === 'executing')
   const doneTasks = tasks.filter((t) => t.status === 'done')
@@ -297,8 +353,25 @@ export function TaskHouse() {
         </div>
       )}
 
+      {/* System Inbox: 折叠式待处理任务 */}
+      <SystemInbox
+        tasks={pendingTasks}
+        isExpanded={isInboxExpanded}
+        onToggle={() => setIsInboxExpanded(!isInboxExpanded)}
+        taskEnhancements={taskEnhancements}
+        isEnhancing={taskEnhancementsLoading}
+        expandedTaskId={expandedTaskId}
+        onToggleTask={toggleExpand}
+      />
+
+      {/* OS Workspace 标题 */}
+      <div className="flex items-center gap-2 mb-4">
+        <Hash className="w-4 h-4 text-cyan-400" />
+        <h3 className="font-mono text-sm text-cyan-200 tracking-wider">OS Workspace</h3>
+      </div>
+
+      {/* 主工作区: 进行中 & 已完成 */}
       <div className="flex flex-1 gap-4 min-h-0">
-        {renderColumn(pendingTasks, 'pending', statusConfig.pending)}
         {renderColumn(executingTasks, 'executing', statusConfig.executing)}
         {renderColumn(doneTasks, 'done', statusConfig.done)}
       </div>
