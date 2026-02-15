@@ -25,10 +25,37 @@ interface RenderState {
   renderSettings: RenderSettings
 }
 
+// 兼容类型定义
+type BufferCanvas = HTMLCanvasElement | OffscreenCanvas
 type Ctx2D = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D
 
 // 建筑基础尺寸 (按等级)
 const NEXUS_BASE_SIZE = [32, 48, 64, 80] as const
+
+// ============================================
+// 辅助函数：创建离屏缓冲 (OffscreenCanvas 降级兼容)
+// ============================================
+
+function createBufferCanvas(w: number, h: number): BufferCanvas {
+  if (typeof OffscreenCanvas !== 'undefined') {
+    try {
+      const oc = new OffscreenCanvas(w, h)
+      // 验证 2d 上下文可用
+      const testCtx = oc.getContext('2d')
+      if (testCtx) return oc
+    } catch (_e) {
+      console.warn('[GameCanvas] OffscreenCanvas not available, using fallback')
+    }
+  }
+  const canvas = document.createElement('canvas')
+  canvas.width = w
+  canvas.height = h
+  return canvas
+}
+
+function getBufferContext(canvas: BufferCanvas): Ctx2D | null {
+  return canvas.getContext('2d') as Ctx2D | null
+}
 
 // ============================================
 // GameCanvas 渲染引擎
@@ -39,7 +66,7 @@ export class GameCanvas {
   private ctx: CanvasRenderingContext2D
   private dpr: number = 1
   private animFrameId = 0
-  private nexusCache: Map<string, OffscreenCanvas> = new Map()
+  private nexusCache: Map<string, BufferCanvas> = new Map()
   private particles: Particle[] = []
 
   // 当前渲染状态 (由 React 注入)
@@ -68,6 +95,7 @@ export class GameCanvas {
     this.dpr = window.devicePixelRatio || 1
     const w = this.canvas.clientWidth
     const h = this.canvas.clientHeight
+    if (w === 0 || h === 0) return
     this.canvas.width = w * this.dpr
     this.canvas.height = h * this.dpr
     this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0)
@@ -141,8 +169,14 @@ export class GameCanvas {
       this.renderLayer2_IsoGrid(ctx, w, h, camera)
     }
 
-    // Layer 3: Nexuses
-    this.renderLayer3_Nexuses(ctx, w, h, nexuses, camera, selectedNexusId, timestamp)
+    // Layer 3: Nexuses (try-catch 保护渲染循环)
+    try {
+      if (nexuses && nexuses.size > 0) {
+        this.renderLayer3_Nexuses(ctx, w, h, nexuses, camera, selectedNexusId, timestamp)
+      }
+    } catch (e) {
+      console.error('[GameCanvas] Layer 3 render error:', e)
+    }
 
     // Layer 4: Effects
     if (renderSettings.enableGlow) {
@@ -153,7 +187,6 @@ export class GameCanvas {
   // ---- Layer 1: 背景粒子 ----
 
   private renderLayer1_Background(ctx: CanvasRenderingContext2D, w: number, h: number): void {
-    // 更新和绘制粒子
     for (const p of this.particles) {
       p.x += p.speedX
       p.y += p.speedY
@@ -168,7 +201,6 @@ export class GameCanvas {
       ctx.fill()
     }
 
-    // 粒子连接线
     for (let i = 0; i < this.particles.length; i++) {
       for (let j = i + 1; j < this.particles.length; j++) {
         const dx = this.particles[i].x - this.particles[j].x
@@ -188,15 +220,14 @@ export class GameCanvas {
 
   // ---- Layer 2: 等轴网格 ----
 
-  private renderLayer2_IsoGrid(ctx: CanvasRenderingContext2D, w: number, h: number, camera: CameraState): void {
+  private renderLayer2_IsoGrid(ctx: CanvasRenderingContext2D, _w: number, _h: number, camera: CameraState): void {
     ctx.save()
     ctx.strokeStyle = 'rgba(100, 200, 255, 0.12)'
     ctx.lineWidth = 1
 
-    const gridRange = 12 // 渲染 -12 到 +12 的网格范围
+    const gridRange = 12
 
     for (let i = -gridRange; i <= gridRange; i++) {
-      // 水平线 (从 (-gridRange, i) 到 (gridRange, i))
       const startH = this.worldToScreen(-gridRange, i, camera)
       const endH = this.worldToScreen(gridRange, i, camera)
       ctx.beginPath()
@@ -204,7 +235,6 @@ export class GameCanvas {
       ctx.lineTo(endH.x, endH.y)
       ctx.stroke()
 
-      // 垂直线 (从 (i, -gridRange) 到 (i, gridRange))
       const startV = this.worldToScreen(i, -gridRange, camera)
       const endV = this.worldToScreen(i, gridRange, camera)
       ctx.beginPath()
@@ -226,7 +256,8 @@ export class GameCanvas {
     selectedId: string | null,
     timestamp: number,
   ): void {
-    // 按 y 坐标排序实现遮挡 (painter's algorithm)
+    if (!nexuses || typeof nexuses.values !== 'function') return
+
     const sorted = [...nexuses.values()].sort(
       (a, b) => (a.position.gridX + a.position.gridY) - (b.position.gridX + b.position.gridY)
     )
@@ -256,25 +287,25 @@ export class GameCanvas {
     ctx.save()
     ctx.translate(screenX, screenY)
 
-    // 建造中动画
     if (progress < 1) {
       this.renderConstruction(ctx, nexus, size, progress, timestamp)
     } else {
-      // 尝试使用缓存
       const cacheKey = `${nexus.id}_lv${nexus.level}_done`
       let cached = this.nexusCache.get(cacheKey)
       if (!cached) {
         cached = this.createNexusCache(nexus, size)
-        this.nexusCache.set(cacheKey, cached)
+        if (cached) {
+          this.nexusCache.set(cacheKey, cached)
+        }
       }
-      // 缓存含 padding，需要对齐绘制
-      const pad = 4
-      const cw = size + pad * 2
-      const ch = size + pad * 2
-      ctx.drawImage(cached, -cw / 2, -ch + pad, cw, ch)
+      if (cached) {
+        const pad = 4
+        const cw = size + pad * 2
+        const ch = size + pad * 2
+        ctx.drawImage(cached as CanvasImageSource, -cw / 2, -ch + pad, cw, ch)
+      }
     }
 
-    // 选中高亮
     if (isSelected) {
       ctx.strokeStyle = 'rgba(255, 255, 100, 0.8)'
       ctx.lineWidth = 2
@@ -283,7 +314,6 @@ export class GameCanvas {
       ctx.setLineDash([])
     }
 
-    // 标签
     if (this.state.renderSettings.showLabels && nexus.label) {
       ctx.fillStyle = 'rgba(200, 220, 255, 0.8)'
       ctx.font = `${11 * zoom}px monospace`
@@ -308,7 +338,6 @@ export class GameCanvas {
     const h = size
 
     if (progress < 0.33) {
-      // Phase 1: Wireframe
       const alpha = 0.3 + progress * 2
       ctx.strokeStyle = `hsla(${hue}, ${sat}%, ${lit}%, ${alpha})`
       ctx.lineWidth = 1
@@ -316,14 +345,11 @@ export class GameCanvas {
       this.drawArchetypeOutline(ctx, nexus.archetype, w, h)
       ctx.setLineDash([])
     } else if (progress < 0.66) {
-      // Phase 2: Fill injection (gradient wipe bottom-to-top)
       const fillRatio = (progress - 0.33) / 0.33
       ctx.save()
-      // 先画线框
       ctx.strokeStyle = `hsla(${hue}, ${sat}%, ${lit}%, 0.6)`
       ctx.lineWidth = 1
       this.drawArchetypeOutline(ctx, nexus.archetype, w, h)
-      // 裁剪填充区域 (从底部向上)
       ctx.beginPath()
       ctx.rect(-w / 2, -h * fillRatio, w, h * fillRatio)
       ctx.clip()
@@ -331,7 +357,6 @@ export class GameCanvas {
       this.fillArchetypeShape(ctx, nexus.archetype, w, h)
       ctx.restore()
     } else {
-      // Phase 3: Solidify
       const solidAlpha = 0.4 + (progress - 0.66) / 0.34 * 0.6
       ctx.fillStyle = `hsla(${hue}, ${sat}%, ${lit}%, ${solidAlpha})`
       this.fillArchetypeShape(ctx, nexus.archetype, w, h)
@@ -339,7 +364,6 @@ export class GameCanvas {
       ctx.lineWidth = 1
       this.drawArchetypeOutline(ctx, nexus.archetype, w, h)
 
-      // 完成闪光
       if (progress > 0.95) {
         const flash = (progress - 0.95) / 0.05
         ctx.fillStyle = `rgba(255, 255, 255, ${(1 - flash) * 0.3})`
@@ -350,7 +374,7 @@ export class GameCanvas {
 
   // ---- Archetype 轮廓绘制 ----
 
-  private drawArchetypeOutline(ctx: CanvasRenderingContext2D, archetype: string, w: number, h: number): void {
+  private drawArchetypeOutline(ctx: Ctx2D, archetype: string, w: number, h: number): void {
     switch (archetype) {
       case 'MONOLITH':
         ctx.strokeRect(-w / 2, -h, w, h)
@@ -374,7 +398,7 @@ export class GameCanvas {
     }
   }
 
-  private fillArchetypeShape(ctx: CanvasRenderingContext2D, archetype: string, w: number, h: number): void {
+  private fillArchetypeShape(ctx: Ctx2D, archetype: string, w: number, h: number): void {
     switch (archetype) {
       case 'MONOLITH':
         ctx.fillRect(-w / 2, -h, w, h)
@@ -398,7 +422,7 @@ export class GameCanvas {
     }
   }
 
-  private drawHexOutline(ctx: CanvasRenderingContext2D, w: number, h: number): void {
+  private drawHexOutline(ctx: Ctx2D, w: number, h: number): void {
     const r = w / 2
     ctx.beginPath()
     for (let i = 0; i < 6; i++) {
@@ -412,7 +436,7 @@ export class GameCanvas {
     ctx.stroke()
   }
 
-  private fillHexShape(ctx: CanvasRenderingContext2D, w: number, h: number): void {
+  private fillHexShape(ctx: Ctx2D, w: number, h: number): void {
     const r = w / 2
     ctx.beginPath()
     for (let i = 0; i < 6; i++) {
@@ -426,35 +450,41 @@ export class GameCanvas {
     ctx.fill()
   }
 
-  // ---- OffscreenCanvas 缓存创建 ----
+  // ---- 缓存创建 (兼容 OffscreenCanvas 降级) ----
 
-  private createNexusCache(nexus: NexusEntity, size: number): OffscreenCanvas {
+  private createNexusCache(nexus: NexusEntity, size: number): BufferCanvas | null {
     const padding = 4
     const cw = size + padding * 2
     const ch = size + padding * 2
-    const offscreen = new OffscreenCanvas(cw * this.dpr, ch * this.dpr)
-    const octx = offscreen.getContext('2d')
-    if (!octx) return offscreen
 
-    octx.scale(this.dpr, this.dpr)
-    octx.translate(cw / 2, ch - padding)
+    try {
+      const buffer = createBufferCanvas(cw * this.dpr, ch * this.dpr)
+      const octx = getBufferContext(buffer)
+      if (!octx) return null
 
-    switch (nexus.archetype) {
-      case 'MONOLITH':
-        this.renderMonolith(octx, nexus, size, size)
-        break
-      case 'SPIRE':
-        this.renderSpire(octx, nexus, size, size)
-        break
-      case 'REACTOR':
-        this.renderReactor(octx, nexus, size, size)
-        break
-      case 'VAULT':
-        this.renderVault(octx, nexus, size, size)
-        break
+      octx.scale(this.dpr, this.dpr)
+      octx.translate(cw / 2, ch - padding)
+
+      switch (nexus.archetype) {
+        case 'MONOLITH':
+          this.renderMonolith(octx, nexus, size, size)
+          break
+        case 'SPIRE':
+          this.renderSpire(octx, nexus, size, size)
+          break
+        case 'REACTOR':
+          this.renderReactor(octx, nexus, size, size)
+          break
+        case 'VAULT':
+          this.renderVault(octx, nexus, size, size)
+          break
+      }
+
+      return buffer
+    } catch (e) {
+      console.error('[GameCanvas] Cache creation failed:', e)
+      return null
     }
-
-    return offscreen
   }
 
   // ---- MONOLITH: 堆叠方块 (知识) ----
@@ -469,21 +499,17 @@ export class GameCanvas {
       const y = -i * blockH
       const shade = lit - i * 5
 
-      // 方块正面
       ctx.fillStyle = `hsl(${hue}, ${sat}%, ${shade}%)`
       ctx.fillRect(-blockW / 2, y - blockH, blockW, blockH * 0.9)
 
-      // 方块顶面 (略亮)
       ctx.fillStyle = `hsl(${hue}, ${sat}%, ${shade + 10}%)`
       ctx.fillRect(-blockW / 2, y - blockH, blockW, blockH * 0.15)
 
-      // 边框
       ctx.strokeStyle = `hsl(${accentHue}, ${sat}%, ${lit + 15}%)`
       ctx.lineWidth = 1
       ctx.strokeRect(-blockW / 2, y - blockH, blockW, blockH * 0.9)
     }
 
-    // Lv3+: 辉光
     if (nexus.level >= 3) {
       ctx.shadowColor = `hsl(${hue}, ${sat}%, ${lit + 20}%)`
       ctx.shadowBlur = 8 * nexus.visualDNA.glowIntensity
@@ -500,13 +526,11 @@ export class GameCanvas {
     const { primaryHue: hue, primarySaturation: sat, primaryLightness: lit, accentHue } = nexus.visualDNA
     const segments = nexus.level
 
-    // 从底部到顶部逐渐收窄
     for (let i = 0; i < segments; i++) {
       const segH = h / (segments + 1)
       const baseWidth = w * (1 - i * 0.2) * 0.5
       const topWidth = w * (1 - (i + 1) * 0.2) * 0.5
       const y = -i * segH
-
       const shade = lit + i * 5
 
       ctx.beginPath()
@@ -522,7 +546,6 @@ export class GameCanvas {
       ctx.stroke()
     }
 
-    // 顶部尖端
     const tipY = -segments * (h / (segments + 1))
     const tipW = w * (1 - segments * 0.2) * 0.5
     ctx.beginPath()
@@ -533,7 +556,6 @@ export class GameCanvas {
     ctx.fillStyle = `hsl(${accentHue}, ${sat + 10}%, ${lit + 10}%)`
     ctx.fill()
 
-    // Lv3+: 天线
     if (nexus.level >= 3) {
       const antennaTop = tipY - h / (segments + 1) - 8
       ctx.beginPath()
@@ -543,7 +565,6 @@ export class GameCanvas {
       ctx.lineWidth = 1.5
       ctx.stroke()
 
-      // 天线顶端小圆点
       ctx.beginPath()
       ctx.arc(0, antennaTop, 2, 0, Math.PI * 2)
       ctx.fillStyle = `hsl(${accentHue}, 80%, 80%)`
@@ -558,7 +579,6 @@ export class GameCanvas {
     const r = w * 0.35
     const cy = -h / 2
 
-    // 核心球体
     const gradient = ctx.createRadialGradient(0, cy, 0, 0, cy, r)
     gradient.addColorStop(0, `hsl(${hue}, ${sat}%, ${lit + 20}%)`)
     gradient.addColorStop(0.7, `hsl(${hue}, ${sat}%, ${lit}%)`)
@@ -569,7 +589,6 @@ export class GameCanvas {
     ctx.fillStyle = gradient
     ctx.fill()
 
-    // 环形轨道
     const rings = Math.min(nexus.level, 3)
     for (let i = 0; i < rings; i++) {
       const ringR = r + 6 + i * 6
@@ -580,7 +599,6 @@ export class GameCanvas {
       ctx.stroke()
     }
 
-    // Lv4: 能量核心辉光
     if (nexus.level >= 4) {
       ctx.beginPath()
       ctx.arc(0, cy, r * 0.3, 0, Math.PI * 2)
@@ -596,7 +614,6 @@ export class GameCanvas {
     const r = w * 0.4
     const cy = -h / 2
 
-    // 主六边形
     ctx.beginPath()
     for (let i = 0; i < 6; i++) {
       const angle = (Math.PI / 3) * i - Math.PI / 6
@@ -606,15 +623,12 @@ export class GameCanvas {
       else ctx.lineTo(px, py)
     }
     ctx.closePath()
-
-    // 填充
     ctx.fillStyle = `hsla(${hue}, ${sat}%, ${lit}%, 0.8)`
     ctx.fill()
     ctx.strokeStyle = `hsl(${accentHue}, ${sat}%, ${lit + 15}%)`
     ctx.lineWidth = 1.5
     ctx.stroke()
 
-    // Lv2+: 内部面网
     if (nexus.level >= 2) {
       const innerR = r * 0.6
       ctx.beginPath()
@@ -631,7 +645,6 @@ export class GameCanvas {
       ctx.stroke()
     }
 
-    // Lv3+: 辐射线
     if (nexus.level >= 3) {
       for (let i = 0; i < 6; i++) {
         const angle = (Math.PI / 3) * i - Math.PI / 6
@@ -644,7 +657,6 @@ export class GameCanvas {
       }
     }
 
-    // Lv4: 内部辉光
     if (nexus.level >= 4) {
       const glowGradient = ctx.createRadialGradient(0, cy, 0, 0, cy, r * 0.5)
       glowGradient.addColorStop(0, `hsla(${accentHue}, 90%, 85%, ${0.5 * glowIntensity})`)
@@ -665,7 +677,6 @@ export class GameCanvas {
     camera: CameraState,
     timestamp: number,
   ): void {
-    // 选中建筑的光脉冲
     const selectedId = this.state.selectedNexusId
     if (selectedId) {
       const nexus = nexuses.get(selectedId)
@@ -684,7 +695,6 @@ export class GameCanvas {
       }
     }
 
-    // 建造中的粒子效果
     for (const nexus of nexuses.values()) {
       if (nexus.constructionProgress < 1) {
         const screen = this.worldToScreen(nexus.position.gridX, nexus.position.gridY, camera)
