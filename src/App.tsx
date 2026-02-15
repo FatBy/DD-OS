@@ -6,6 +6,7 @@ import { HouseContainer } from '@/components/HouseContainer'
 import { ConnectionPanel } from '@/components/ConnectionPanel'
 import { ToastContainer } from '@/components/Toast'
 import { AIChatPanel } from '@/components/ai/AIChatPanel'
+import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { useStore } from '@/store'
 import { getHouseById } from '@/houses/registry'
 import { openClawService } from '@/services/OpenClawService'
@@ -75,7 +76,9 @@ function App() {
   return (
     <div className="relative w-screen h-screen overflow-hidden bg-slate-950 text-white select-none">
       {/* Background layer: always present */}
-      <WorldView />
+      <ErrorBoundary>
+        <WorldView />
+      </ErrorBoundary>
 
       {/* Content layer: active house */}
       <AnimatePresence mode="wait">

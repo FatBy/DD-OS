@@ -25,16 +25,20 @@ export function WorldView() {
     const canvas = canvasRef.current
     if (!canvas) return
 
-    const engine = new GameCanvas(canvas)
-    engineRef.current = engine
+    try {
+      const engine = new GameCanvas(canvas)
+      engineRef.current = engine
 
-    const handleResize = () => engine.resize()
-    window.addEventListener('resize', handleResize)
+      const handleResize = () => engine.resize()
+      window.addEventListener('resize', handleResize)
 
-    return () => {
-      engine.destroy()
-      engineRef.current = null
-      window.removeEventListener('resize', handleResize)
+      return () => {
+        engine.destroy()
+        engineRef.current = null
+        window.removeEventListener('resize', handleResize)
+      }
+    } catch (err) {
+      console.error('[WorldView] GameCanvas init failed:', err)
     }
   }, [])
 
