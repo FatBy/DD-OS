@@ -1,5 +1,5 @@
 import type { StateCreator } from 'zustand'
-import type { NexusEntity, CameraState, GridPosition, RenderSettings } from '@/types'
+import type { NexusEntity, CameraState, GridPosition, RenderSettings, NexusArchetype, VisualDNA } from '@/types'
 
 // XP 等级阈值
 const XP_THRESHOLDS = [0, 20, 100, 500] as const
@@ -14,6 +14,49 @@ export function xpToLevel(xp: number): number {
 // ISO 投影常量
 const TILE_WIDTH = 64
 const TILE_HEIGHT = 32
+
+// 简易同步哈希 -> VisualDNA (不依赖 crypto.subtle)
+function simpleVisualDNA(id: string, archetype: NexusArchetype): VisualDNA {
+  let hash = 0
+  for (let i = 0; i < id.length; i++) {
+    hash = ((hash << 5) - hash + id.charCodeAt(i)) | 0
+  }
+  const h = Math.abs(hash)
+  return {
+    primaryHue: h % 360,
+    primarySaturation: 50 + (h >> 8) % 40,
+    primaryLightness: 35 + (h >> 16) % 30,
+    accentHue: (h % 360 + 60) % 360,
+    archetype,
+    textureMode: 'solid',
+    glowIntensity: 0.5 + ((h >> 4) % 50) / 100,
+    geometryVariant: h % 4,
+  }
+}
+
+// 初始演示建筑
+function createDemoNexuses(): Map<string, NexusEntity> {
+  const map = new Map<string, NexusEntity>()
+  const demos: Array<{ id: string; arch: NexusArchetype; gx: number; gy: number; lv: number; xp: number }> = [
+    { id: 'demo-monolith', arch: 'MONOLITH', gx: 0, gy: 0, lv: 3, xp: 120 },
+    { id: 'demo-spire', arch: 'SPIRE', gx: 3, gy: 1, lv: 2, xp: 40 },
+    { id: 'demo-reactor', arch: 'REACTOR', gx: -2, gy: 2, lv: 4, xp: 600 },
+    { id: 'demo-vault', arch: 'VAULT', gx: 1, gy: -2, lv: 1, xp: 5 },
+  ]
+  for (const d of demos) {
+    map.set(d.id, {
+      id: d.id,
+      archetype: d.arch,
+      position: { gridX: d.gx, gridY: d.gy },
+      level: d.lv,
+      xp: d.xp,
+      visualDNA: simpleVisualDNA(d.id, d.arch),
+      constructionProgress: 1,
+      createdAt: Date.now(),
+    })
+  }
+  return map
+}
 
 export interface WorldSlice {
   // State
@@ -42,7 +85,7 @@ export interface WorldSlice {
 
 export const createWorldSlice: StateCreator<WorldSlice> = (set, get) => ({
   // 初始状态
-  nexuses: new Map(),
+  nexuses: createDemoNexuses(),
   camera: { x: 0, y: 0, zoom: 1 },
   selectedNexusId: null,
   renderSettings: {

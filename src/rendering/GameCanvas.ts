@@ -25,6 +25,8 @@ interface RenderState {
   renderSettings: RenderSettings
 }
 
+type Ctx2D = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D
+
 // 建筑基础尺寸 (按等级)
 const NEXUS_BASE_SIZE = [32, 48, 64, 80] as const
 
@@ -39,7 +41,6 @@ export class GameCanvas {
   private animFrameId = 0
   private nexusCache: Map<string, OffscreenCanvas> = new Map()
   private particles: Particle[] = []
-  private lastTimestamp = 0
 
   // 当前渲染状态 (由 React 注入)
   private state: RenderState = {
@@ -147,8 +148,6 @@ export class GameCanvas {
     if (renderSettings.enableGlow) {
       this.renderLayer4_Effects(ctx, w, h, nexuses, camera, timestamp)
     }
-
-    this.lastTimestamp = timestamp
   }
 
   // ---- Layer 1: 背景粒子 ----
@@ -191,7 +190,7 @@ export class GameCanvas {
 
   private renderLayer2_IsoGrid(ctx: CanvasRenderingContext2D, w: number, h: number, camera: CameraState): void {
     ctx.save()
-    ctx.strokeStyle = 'rgba(100, 200, 255, 0.06)'
+    ctx.strokeStyle = 'rgba(100, 200, 255, 0.12)'
     ctx.lineWidth = 1
 
     const gridRange = 12 // 渲染 -12 到 +12 的网格范围
@@ -268,7 +267,11 @@ export class GameCanvas {
         cached = this.createNexusCache(nexus, size)
         this.nexusCache.set(cacheKey, cached)
       }
-      ctx.drawImage(cached, -size / 2, -size, size, size)
+      // 缓存含 padding，需要对齐绘制
+      const pad = 4
+      const cw = size + pad * 2
+      const ch = size + pad * 2
+      ctx.drawImage(cached, -cw / 2, -ch + pad, cw, ch)
     }
 
     // 选中高亮
@@ -456,7 +459,7 @@ export class GameCanvas {
 
   // ---- MONOLITH: 堆叠方块 (知识) ----
 
-  private renderMonolith(ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D, nexus: NexusEntity, w: number, h: number): void {
+  private renderMonolith(ctx: Ctx2D, nexus: NexusEntity, w: number, h: number): void {
     const { primaryHue: hue, primarySaturation: sat, primaryLightness: lit, accentHue } = nexus.visualDNA
     const blocks = nexus.level
     const blockH = h / 4
@@ -493,7 +496,7 @@ export class GameCanvas {
 
   // ---- SPIRE: 塔尖 (推理) ----
 
-  private renderSpire(ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D, nexus: NexusEntity, w: number, h: number): void {
+  private renderSpire(ctx: Ctx2D, nexus: NexusEntity, w: number, h: number): void {
     const { primaryHue: hue, primarySaturation: sat, primaryLightness: lit, accentHue } = nexus.visualDNA
     const segments = nexus.level
 
@@ -550,15 +553,13 @@ export class GameCanvas {
 
   // ---- REACTOR: 旋转球体 (执行) ----
 
-  private renderReactor(ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D, nexus: NexusEntity, w: number, h: number): void {
+  private renderReactor(ctx: Ctx2D, nexus: NexusEntity, w: number, h: number): void {
     const { primaryHue: hue, primarySaturation: sat, primaryLightness: lit, accentHue, glowIntensity } = nexus.visualDNA
     const r = w * 0.35
     const cy = -h / 2
 
     // 核心球体
-    const gradient = ctx instanceof CanvasRenderingContext2D
-      ? ctx.createRadialGradient(0, cy, 0, 0, cy, r)
-      : (ctx as OffscreenCanvasRenderingContext2D).createRadialGradient(0, cy, 0, 0, cy, r)
+    const gradient = ctx.createRadialGradient(0, cy, 0, 0, cy, r)
     gradient.addColorStop(0, `hsl(${hue}, ${sat}%, ${lit + 20}%)`)
     gradient.addColorStop(0.7, `hsl(${hue}, ${sat}%, ${lit}%)`)
     gradient.addColorStop(1, `hsl(${hue}, ${sat}%, ${lit - 10}%)`)
@@ -590,7 +591,7 @@ export class GameCanvas {
 
   // ---- VAULT: 六角水晶 (记忆) ----
 
-  private renderVault(ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D, nexus: NexusEntity, w: number, h: number): void {
+  private renderVault(ctx: Ctx2D, nexus: NexusEntity, w: number, h: number): void {
     const { primaryHue: hue, primarySaturation: sat, primaryLightness: lit, accentHue, glowIntensity } = nexus.visualDNA
     const r = w * 0.4
     const cy = -h / 2
@@ -645,9 +646,7 @@ export class GameCanvas {
 
     // Lv4: 内部辉光
     if (nexus.level >= 4) {
-      const glowGradient = ctx instanceof CanvasRenderingContext2D
-        ? ctx.createRadialGradient(0, cy, 0, 0, cy, r * 0.5)
-        : (ctx as OffscreenCanvasRenderingContext2D).createRadialGradient(0, cy, 0, 0, cy, r * 0.5)
+      const glowGradient = ctx.createRadialGradient(0, cy, 0, 0, cy, r * 0.5)
       glowGradient.addColorStop(0, `hsla(${accentHue}, 90%, 85%, ${0.5 * glowIntensity})`)
       glowGradient.addColorStop(1, `hsla(${accentHue}, 90%, 85%, 0)`)
       ctx.beginPath()

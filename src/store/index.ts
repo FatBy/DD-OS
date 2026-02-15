@@ -71,3 +71,10 @@ export const selectNexuses = (state: AppStore) => state.nexuses
 export const selectCamera = (state: AppStore) => state.camera
 export const selectSelectedNexusId = (state: AppStore) => state.selectedNexusId
 export const selectRenderSettings = (state: AppStore) => state.renderSettings
+
+// ============================================
+// 开发调试：暴露 store 到 window
+// ============================================
+if (typeof window !== 'undefined') {
+  (window as unknown as { __DDOS_STORE__: typeof useStore }).__DDOS_STORE__ = useStore
+}
