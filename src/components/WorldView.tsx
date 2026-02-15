@@ -106,6 +106,7 @@ export function WorldView() {
   return (
     <motion.div
       className="fixed inset-0 z-0 bg-slate-950"
+      style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 0 }}
       animate={{
         filter: isHouseOpen ? 'blur(4px)' : 'blur(0px)',
         opacity: isHouseOpen ? 0.3 : 1,
@@ -115,6 +116,7 @@ export function WorldView() {
       <canvas
         ref={canvasRef}
         className="absolute inset-0 w-full h-full"
+        style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }}
         onWheel={handleWheel}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}

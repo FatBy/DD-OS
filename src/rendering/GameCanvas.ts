@@ -87,6 +87,7 @@ export class GameCanvas {
     this.resize()
     this.render = this.render.bind(this)
     this.animFrameId = requestAnimationFrame(this.render)
+    console.log('[GameCanvas] Created. Canvas size:', canvas.clientWidth, 'x', canvas.clientHeight)
   }
 
   // ---- Lifecycle ----
@@ -104,6 +105,7 @@ export class GameCanvas {
   destroy(): void {
     cancelAnimationFrame(this.animFrameId)
     this.nexusCache.clear()
+    console.log('[GameCanvas] Destroyed')
   }
 
   updateState(state: RenderState): void {
@@ -147,12 +149,20 @@ export class GameCanvas {
 
   // ---- 主渲染循环 ----
 
+  private _lastLogTime = 0
+
   private render(timestamp: number): void {
     this.animFrameId = requestAnimationFrame(this.render)
 
     const w = this.canvas.clientWidth
     const h = this.canvas.clientHeight
-    if (w === 0 || h === 0) return
+    if (w === 0 || h === 0) {
+      if (timestamp - this._lastLogTime > 3000) {
+        console.warn('[GameCanvas] Canvas size is 0:', w, 'x', h)
+        this._lastLogTime = timestamp
+      }
+      return
+    }
 
     const ctx = this.ctx
     ctx.clearRect(0, 0, w, h)
