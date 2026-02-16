@@ -334,7 +334,7 @@ export class GameCanvas {
     ctx.restore()
   }
 
-  // ---- 建造动画 (3 阶段) ----
+  // ---- 建造动画 (3 阶段 - 全息投影风格) ----
 
   private renderConstruction(
     ctx: CanvasRenderingContext2D,
@@ -343,41 +343,98 @@ export class GameCanvas {
     progress: number,
     _timestamp: number,
   ): void {
-    const { primaryHue: hue, primarySaturation: sat, primaryLightness: lit } = nexus.visualDNA
+    const { primaryHue: hue, primarySaturation: sat, primaryLightness: lit, accentHue } = nexus.visualDNA
     const w = size
     const h = size
 
     if (progress < 0.33) {
-      const alpha = 0.3 + progress * 2
-      ctx.strokeStyle = `hsla(${hue}, ${sat}%, ${lit}%, ${alpha})`
+      // Stage 1: 全息蓝图 (虚线轮廓闪烁)
+      const alpha = 0.15 + progress * 1.5
+      ctx.strokeStyle = `hsla(${accentHue}, 70%, 70%, ${alpha})`
       ctx.lineWidth = 1
-      ctx.setLineDash([3, 3])
+      ctx.setLineDash([2, 4])
       this.drawArchetypeOutline(ctx, nexus.archetype, w, h)
       ctx.setLineDash([])
-    } else if (progress < 0.66) {
-      const fillRatio = (progress - 0.33) / 0.33
-      ctx.save()
-      ctx.strokeStyle = `hsla(${hue}, ${sat}%, ${lit}%, 0.6)`
-      ctx.lineWidth = 1
-      this.drawArchetypeOutline(ctx, nexus.archetype, w, h)
+
+      // 扫描线
+      const scanY = -h * (progress / 0.33)
+      const scanGrad = ctx.createLinearGradient(-w / 2, scanY, w / 2, scanY)
+      scanGrad.addColorStop(0, `hsla(${accentHue}, 90%, 80%, 0)`)
+      scanGrad.addColorStop(0.5, `hsla(${accentHue}, 90%, 80%, ${alpha * 0.5})`)
+      scanGrad.addColorStop(1, `hsla(${accentHue}, 90%, 80%, 0)`)
+      ctx.strokeStyle = scanGrad
+      ctx.lineWidth = 1.5
+      ctx.setLineDash([])
       ctx.beginPath()
-      ctx.rect(-w / 2, -h * fillRatio, w, h * fillRatio)
-      ctx.clip()
-      ctx.fillStyle = `hsla(${hue}, ${sat}%, ${lit}%, 0.4)`
-      this.fillArchetypeShape(ctx, nexus.archetype, w, h)
-      ctx.restore()
-    } else {
-      const solidAlpha = 0.4 + (progress - 0.66) / 0.34 * 0.6
-      ctx.fillStyle = `hsla(${hue}, ${sat}%, ${lit}%, ${solidAlpha})`
-      this.fillArchetypeShape(ctx, nexus.archetype, w, h)
-      ctx.strokeStyle = `hsla(${hue}, ${sat}%, ${lit + 20}%, ${solidAlpha})`
+      ctx.moveTo(-w / 2, scanY)
+      ctx.lineTo(w / 2, scanY)
+      ctx.stroke()
+
+    } else if (progress < 0.66) {
+      // Stage 2: 从底部物质化填充
+      const fillRatio = (progress - 0.33) / 0.33
+      
+      // 轮廓保持可见
+      ctx.strokeStyle = `hsla(${accentHue}, 70%, 70%, 0.4)`
       ctx.lineWidth = 1
       this.drawArchetypeOutline(ctx, nexus.archetype, w, h)
 
+      // 裁剪区域从底部填充
+      ctx.save()
+      ctx.beginPath()
+      ctx.rect(-w / 2 - 4, -h * fillRatio, w + 8, h * fillRatio + 4)
+      ctx.clip()
+
+      // 半透明填充 (带能量感渐变)
+      const fillGrad = ctx.createLinearGradient(0, 0, 0, -h)
+      fillGrad.addColorStop(0, `hsla(${hue}, ${sat}%, ${lit}%, 0.5)`)
+      fillGrad.addColorStop(1, `hsla(${hue}, ${sat}%, ${lit + 10}%, 0.2)`)
+      ctx.fillStyle = fillGrad
+      this.fillArchetypeShape(ctx, nexus.archetype, w, h)
+
+      ctx.restore()
+
+      // 填充边缘光线
+      const edgeY = -h * fillRatio
+      const edgeGrad = ctx.createLinearGradient(-w / 2, edgeY, w / 2, edgeY)
+      edgeGrad.addColorStop(0, `hsla(${accentHue}, 90%, 80%, 0)`)
+      edgeGrad.addColorStop(0.5, `hsla(${accentHue}, 90%, 80%, 0.6)`)
+      edgeGrad.addColorStop(1, `hsla(${accentHue}, 90%, 80%, 0)`)
+      ctx.strokeStyle = edgeGrad
+      ctx.lineWidth = 2
+      ctx.beginPath()
+      ctx.moveTo(-w / 2, edgeY)
+      ctx.lineTo(w / 2, edgeY)
+      ctx.stroke()
+
+    } else {
+      // Stage 3: 完全凝固 + 闪光结束
+      const solidAlpha = 0.5 + (progress - 0.66) / 0.34 * 0.5
+
+      const bodyGrad = ctx.createLinearGradient(0, 0, 0, -h)
+      bodyGrad.addColorStop(0, `hsla(${hue}, ${sat}%, ${lit - 5}%, ${solidAlpha})`)
+      bodyGrad.addColorStop(1, `hsla(${hue}, ${sat}%, ${lit + 5}%, ${solidAlpha * 0.8})`)
+      ctx.fillStyle = bodyGrad
+      this.fillArchetypeShape(ctx, nexus.archetype, w, h)
+
+      ctx.strokeStyle = `hsla(${accentHue}, ${sat}%, ${lit + 20}%, ${solidAlpha * 0.7})`
+      ctx.lineWidth = 1
+      this.drawArchetypeOutline(ctx, nexus.archetype, w, h)
+
+      // 完成闪光 (最后 5%)
       if (progress > 0.95) {
         const flash = (progress - 0.95) / 0.05
-        ctx.fillStyle = `rgba(255, 255, 255, ${(1 - flash) * 0.3})`
-        ctx.fillRect(-w / 2, -h, w, h)
+        const flashAlpha = (1 - flash) * 0.5
+        ctx.fillStyle = `rgba(255, 255, 255, ${flashAlpha})`
+        ctx.fillRect(-w / 2 - 2, -h - 2, w + 4, h + 4)
+
+        // 四角能量爆发
+        const burstR = w * 0.3 * flash
+        ctx.strokeStyle = `hsla(${accentHue}, 90%, 85%, ${flashAlpha})`
+        ctx.lineWidth = 1
+        ctx.beginPath()
+        ctx.arc(0, -h / 2, burstR, 0, Math.PI * 2)
+        ctx.stroke()
       }
     }
   }
@@ -497,51 +554,128 @@ export class GameCanvas {
     }
   }
 
-  // ---- MONOLITH: 堆叠方块 (知识) ----
+  // ---- MONOLITH: 全息数据块堆叠 (知识) ----
 
   private renderMonolith(ctx: Ctx2D, nexus: NexusEntity, w: number, h: number): void {
-    const { primaryHue: hue, primarySaturation: sat, primaryLightness: lit, accentHue } = nexus.visualDNA
+    const { primaryHue: hue, primarySaturation: sat, primaryLightness: lit, accentHue, glowIntensity } = nexus.visualDNA
     const blocks = nexus.level
     const blockH = h / 4
     const blockW = w * 0.8
+    const gap = 2 // 块间间距
+
+    // 底部投影光晕
+    const baseGlow = ctx.createRadialGradient(0, 2, 0, 0, 2, blockW * 0.7)
+    baseGlow.addColorStop(0, `hsla(${hue}, ${sat}%, ${lit}%, 0.15)`)
+    baseGlow.addColorStop(1, `hsla(${hue}, ${sat}%, ${lit}%, 0)`)
+    ctx.fillStyle = baseGlow
+    ctx.fillRect(-blockW, -4, blockW * 2, 8)
 
     for (let i = 0; i < blocks; i++) {
-      const y = -i * blockH
-      const shade = lit - i * 5
+      const y = -i * (blockH + gap)
+      const shade = lit - i * 3
+      const bh = blockH * 0.88
 
-      ctx.fillStyle = `hsl(${hue}, ${sat}%, ${shade}%)`
-      ctx.fillRect(-blockW / 2, y - blockH, blockW, blockH * 0.9)
+      // 块体渐变填充 (底深顶亮，模拟光照)
+      const blockGrad = ctx.createLinearGradient(0, y, 0, y - bh)
+      blockGrad.addColorStop(0, `hsla(${hue}, ${sat}%, ${shade - 8}%, 0.9)`)
+      blockGrad.addColorStop(0.5, `hsla(${hue}, ${sat}%, ${shade}%, 0.85)`)
+      blockGrad.addColorStop(1, `hsla(${hue}, ${sat}%, ${shade + 5}%, 0.8)`)
+      ctx.fillStyle = blockGrad
+      ctx.fillRect(-blockW / 2, y - bh, blockW, bh)
 
-      ctx.fillStyle = `hsl(${hue}, ${sat}%, ${shade + 10}%)`
-      ctx.fillRect(-blockW / 2, y - blockH, blockW, blockH * 0.15)
+      // 顶部高亮条 (全息扫描线感)
+      const topGrad = ctx.createLinearGradient(-blockW / 2, 0, blockW / 2, 0)
+      topGrad.addColorStop(0, `hsla(${accentHue}, 90%, 80%, 0)`)
+      topGrad.addColorStop(0.3, `hsla(${accentHue}, 90%, 80%, 0.5)`)
+      topGrad.addColorStop(0.7, `hsla(${accentHue}, 90%, 80%, 0.5)`)
+      topGrad.addColorStop(1, `hsla(${accentHue}, 90%, 80%, 0)`)
+      ctx.fillStyle = topGrad
+      ctx.fillRect(-blockW / 2, y - bh, blockW, bh * 0.12)
 
-      ctx.strokeStyle = `hsl(${accentHue}, ${sat}%, ${lit + 15}%)`
+      // 内部电路纹路 (水平细线)
+      ctx.strokeStyle = `hsla(${accentHue}, 70%, 70%, 0.15)`
+      ctx.lineWidth = 0.5
+      const lineCount = 2 + i
+      for (let j = 1; j <= lineCount; j++) {
+        const ly = y - bh * (j / (lineCount + 1))
+        ctx.beginPath()
+        ctx.moveTo(-blockW / 2 + 3, ly)
+        ctx.lineTo(blockW / 2 - 3, ly)
+        ctx.stroke()
+      }
+
+      // 边框 (上亮下暗)
+      ctx.strokeStyle = `hsla(${accentHue}, ${sat}%, ${lit + 20}%, 0.6)`
       ctx.lineWidth = 1
-      ctx.strokeRect(-blockW / 2, y - blockH, blockW, blockH * 0.9)
+      ctx.strokeRect(-blockW / 2, y - bh, blockW, bh)
+
+      // 左侧面 (等轴伪 3D)
+      ctx.fillStyle = `hsla(${hue}, ${sat}%, ${shade - 12}%, 0.5)`
+      ctx.beginPath()
+      ctx.moveTo(-blockW / 2, y)
+      ctx.lineTo(-blockW / 2, y - bh)
+      ctx.lineTo(-blockW / 2 - 4, y - bh + 3)
+      ctx.lineTo(-blockW / 2 - 4, y + 3)
+      ctx.closePath()
+      ctx.fill()
     }
 
+    // Level 3+: 外围能量场
     if (nexus.level >= 3) {
-      ctx.shadowColor = `hsl(${hue}, ${sat}%, ${lit + 20}%)`
-      ctx.shadowBlur = 8 * nexus.visualDNA.glowIntensity
-      ctx.strokeStyle = `hsla(${accentHue}, 80%, 70%, 0.3)`
+      const totalH = blocks * (blockH + gap)
+      ctx.shadowColor = `hsla(${accentHue}, 90%, 70%, ${0.4 * glowIntensity})`
+      ctx.shadowBlur = 12 * glowIntensity
+      ctx.strokeStyle = `hsla(${accentHue}, 80%, 70%, 0.25)`
       ctx.lineWidth = 1
-      ctx.strokeRect(-blockW / 2 - 2, -blocks * blockH - 2, blockW + 4, blocks * blockH + 2)
+      ctx.setLineDash([4, 4])
+      ctx.strokeRect(-blockW / 2 - 5, -totalH - 3, blockW + 10, totalH + 6)
+      ctx.setLineDash([])
       ctx.shadowBlur = 0
+    }
+
+    // Level 4: 顶部全息指示灯
+    if (nexus.level >= 4) {
+      const topY = -blocks * (blockH + gap) - 6
+      const indicatorGlow = ctx.createRadialGradient(0, topY, 0, 0, topY, 5)
+      indicatorGlow.addColorStop(0, `hsla(${accentHue}, 95%, 85%, 0.8)`)
+      indicatorGlow.addColorStop(1, `hsla(${accentHue}, 95%, 85%, 0)`)
+      ctx.fillStyle = indicatorGlow
+      ctx.beginPath()
+      ctx.arc(0, topY, 5, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.fillStyle = `hsla(${accentHue}, 95%, 90%, 1)`
+      ctx.beginPath()
+      ctx.arc(0, topY, 1.5, 0, Math.PI * 2)
+      ctx.fill()
     }
   }
 
-  // ---- SPIRE: 塔尖 (推理) ----
+  // ---- SPIRE: 水晶尖塔 (推理) ----
 
   private renderSpire(ctx: Ctx2D, nexus: NexusEntity, w: number, h: number): void {
-    const { primaryHue: hue, primarySaturation: sat, primaryLightness: lit, accentHue } = nexus.visualDNA
+    const { primaryHue: hue, primarySaturation: sat, primaryLightness: lit, accentHue, glowIntensity } = nexus.visualDNA
     const segments = nexus.level
+    const totalSegH = h / (segments + 1)
+
+    // 底部投影
+    const baseGlow = ctx.createRadialGradient(0, 2, 0, 0, 2, w * 0.5)
+    baseGlow.addColorStop(0, `hsla(${hue}, ${sat}%, ${lit}%, 0.12)`)
+    baseGlow.addColorStop(1, `hsla(${hue}, ${sat}%, ${lit}%, 0)`)
+    ctx.fillStyle = baseGlow
+    ctx.fillRect(-w * 0.5, -3, w, 6)
 
     for (let i = 0; i < segments; i++) {
-      const segH = h / (segments + 1)
-      const baseWidth = w * (1 - i * 0.2) * 0.5
-      const topWidth = w * (1 - (i + 1) * 0.2) * 0.5
+      const segH = totalSegH
+      const baseWidth = w * (1 - i * 0.18) * 0.5
+      const topWidth = w * (1 - (i + 1) * 0.18) * 0.5
       const y = -i * segH
-      const shade = lit + i * 5
+      const shade = lit + i * 4
+
+      // 主体梯形渐变 (从底部暗到顶部亮)
+      const segGrad = ctx.createLinearGradient(0, y, 0, y - segH)
+      segGrad.addColorStop(0, `hsla(${hue}, ${sat}%, ${shade - 5}%, 0.85)`)
+      segGrad.addColorStop(0.6, `hsla(${hue}, ${sat}%, ${shade + 3}%, 0.75)`)
+      segGrad.addColorStop(1, `hsla(${hue}, ${sat}%, ${shade + 8}%, 0.65)`)
 
       ctx.beginPath()
       ctx.moveTo(-baseWidth, y)
@@ -549,80 +683,228 @@ export class GameCanvas {
       ctx.lineTo(topWidth, y - segH)
       ctx.lineTo(-topWidth, y - segH)
       ctx.closePath()
-      ctx.fillStyle = `hsl(${hue}, ${sat}%, ${shade}%)`
+      ctx.fillStyle = segGrad
       ctx.fill()
-      ctx.strokeStyle = `hsl(${accentHue}, ${sat}%, ${lit + 15}%)`
+
+      // 内部中线 (能量脊柱)
+      ctx.beginPath()
+      ctx.moveTo(0, y)
+      ctx.lineTo(0, y - segH)
+      ctx.strokeStyle = `hsla(${accentHue}, 80%, 75%, 0.2)`
+      ctx.lineWidth = 0.8
+      ctx.stroke()
+
+      // 发光边框
+      ctx.beginPath()
+      ctx.moveTo(-baseWidth, y)
+      ctx.lineTo(baseWidth, y)
+      ctx.lineTo(topWidth, y - segH)
+      ctx.lineTo(-topWidth, y - segH)
+      ctx.closePath()
+      ctx.strokeStyle = `hsla(${accentHue}, ${sat}%, ${lit + 20}%, 0.5)`
       ctx.lineWidth = 1
       ctx.stroke()
+
+      // 段间高亮分隔线
+      if (i > 0) {
+        const lineGrad = ctx.createLinearGradient(-baseWidth, 0, baseWidth, 0)
+        lineGrad.addColorStop(0, `hsla(${accentHue}, 90%, 80%, 0)`)
+        lineGrad.addColorStop(0.5, `hsla(${accentHue}, 90%, 80%, 0.6)`)
+        lineGrad.addColorStop(1, `hsla(${accentHue}, 90%, 80%, 0)`)
+        ctx.beginPath()
+        ctx.moveTo(-baseWidth, y)
+        ctx.lineTo(baseWidth, y)
+        ctx.strokeStyle = lineGrad
+        ctx.lineWidth = 1.5
+        ctx.stroke()
+      }
     }
 
-    const tipY = -segments * (h / (segments + 1))
-    const tipW = w * (1 - segments * 0.2) * 0.5
+    // 顶部尖顶 (强调色发光三角)
+    const tipY = -segments * totalSegH
+    const tipW = w * (1 - segments * 0.18) * 0.5
+    const tipTopY = tipY - totalSegH
+
+    const tipGrad = ctx.createLinearGradient(0, tipY, 0, tipTopY)
+    tipGrad.addColorStop(0, `hsla(${accentHue}, ${sat + 10}%, ${lit + 5}%, 0.8)`)
+    tipGrad.addColorStop(1, `hsla(${accentHue}, 95%, 85%, 0.9)`)
+
     ctx.beginPath()
     ctx.moveTo(-tipW, tipY)
-    ctx.lineTo(0, tipY - h / (segments + 1))
+    ctx.lineTo(0, tipTopY)
     ctx.lineTo(tipW, tipY)
     ctx.closePath()
-    ctx.fillStyle = `hsl(${accentHue}, ${sat + 10}%, ${lit + 10}%)`
+    ctx.fillStyle = tipGrad
     ctx.fill()
+    ctx.strokeStyle = `hsla(${accentHue}, 90%, 80%, 0.6)`
+    ctx.lineWidth = 1
+    ctx.stroke()
 
+    // Level 3+: 天线 + 顶部能量球
     if (nexus.level >= 3) {
-      const antennaTop = tipY - h / (segments + 1) - 8
+      const antennaTop = tipTopY - 10
       ctx.beginPath()
-      ctx.moveTo(0, tipY - h / (segments + 1))
+      ctx.moveTo(0, tipTopY)
       ctx.lineTo(0, antennaTop)
-      ctx.strokeStyle = `hsl(${accentHue}, 80%, 70%)`
+      ctx.strokeStyle = `hsla(${accentHue}, 80%, 70%, 0.7)`
       ctx.lineWidth = 1.5
       ctx.stroke()
 
+      // 能量球 (多层光晕)
+      const orbGlow = ctx.createRadialGradient(0, antennaTop, 0, 0, antennaTop, 6)
+      orbGlow.addColorStop(0, `hsla(${accentHue}, 95%, 90%, 0.9)`)
+      orbGlow.addColorStop(0.5, `hsla(${accentHue}, 90%, 70%, 0.4)`)
+      orbGlow.addColorStop(1, `hsla(${accentHue}, 90%, 70%, 0)`)
+      ctx.fillStyle = orbGlow
+      ctx.beginPath()
+      ctx.arc(0, antennaTop, 6, 0, Math.PI * 2)
+      ctx.fill()
+
+      ctx.fillStyle = `hsla(${accentHue}, 95%, 95%, 1)`
       ctx.beginPath()
       ctx.arc(0, antennaTop, 2, 0, Math.PI * 2)
-      ctx.fillStyle = `hsl(${accentHue}, 80%, 80%)`
       ctx.fill()
+    }
+
+    // Level 4: 侧面能量翼
+    if (nexus.level >= 4) {
+      ctx.shadowColor = `hsla(${accentHue}, 90%, 70%, ${0.5 * glowIntensity})`
+      ctx.shadowBlur = 10 * glowIntensity
+
+      const wingY = -h * 0.45
+      ctx.strokeStyle = `hsla(${accentHue}, 80%, 70%, 0.3)`
+      ctx.lineWidth = 0.8
+      // 左翼
+      ctx.beginPath()
+      ctx.moveTo(-2, wingY)
+      ctx.quadraticCurveTo(-w * 0.5, wingY - 5, -w * 0.45, wingY + 5)
+      ctx.stroke()
+      // 右翼
+      ctx.beginPath()
+      ctx.moveTo(2, wingY)
+      ctx.quadraticCurveTo(w * 0.5, wingY - 5, w * 0.45, wingY + 5)
+      ctx.stroke()
+
+      ctx.shadowBlur = 0
     }
   }
 
-  // ---- REACTOR: 旋转球体 (执行) ----
+  // ---- REACTOR: 等离子核心球 (执行) ----
 
   private renderReactor(ctx: Ctx2D, nexus: NexusEntity, w: number, h: number): void {
     const { primaryHue: hue, primarySaturation: sat, primaryLightness: lit, accentHue, glowIntensity } = nexus.visualDNA
     const r = w * 0.35
     const cy = -h / 2
 
-    const gradient = ctx.createRadialGradient(0, cy, 0, 0, cy, r)
-    gradient.addColorStop(0, `hsl(${hue}, ${sat}%, ${lit + 20}%)`)
-    gradient.addColorStop(0.7, `hsl(${hue}, ${sat}%, ${lit}%)`)
-    gradient.addColorStop(1, `hsl(${hue}, ${sat}%, ${lit - 10}%)`)
+    // 外围能量场 (最底层光晕)
+    const outerGlow = ctx.createRadialGradient(0, cy, r * 0.8, 0, cy, r * 2.2)
+    outerGlow.addColorStop(0, `hsla(${hue}, ${sat}%, ${lit}%, 0.08)`)
+    outerGlow.addColorStop(1, `hsla(${hue}, ${sat}%, ${lit}%, 0)`)
+    ctx.fillStyle = outerGlow
+    ctx.beginPath()
+    ctx.arc(0, cy, r * 2.2, 0, Math.PI * 2)
+    ctx.fill()
+
+    // 球体主体 (多层径向渐变模拟 3D)
+    const sphereGrad = ctx.createRadialGradient(-r * 0.25, cy - r * 0.2, 0, 0, cy, r)
+    sphereGrad.addColorStop(0, `hsla(${hue}, ${sat - 10}%, ${lit + 30}%, 1)`)   // 高光点
+    sphereGrad.addColorStop(0.3, `hsla(${hue}, ${sat}%, ${lit + 10}%, 0.95)`)   // 亮面
+    sphereGrad.addColorStop(0.7, `hsla(${hue}, ${sat}%, ${lit}%, 0.9)`)          // 中间色
+    sphereGrad.addColorStop(1, `hsla(${hue}, ${sat + 5}%, ${lit - 15}%, 0.85)`)  // 暗缘
 
     ctx.beginPath()
     ctx.arc(0, cy, r, 0, Math.PI * 2)
-    ctx.fillStyle = gradient
+    ctx.fillStyle = sphereGrad
     ctx.fill()
 
+    // 球面高光弧 (玻璃反射)
+    ctx.beginPath()
+    ctx.ellipse(-r * 0.15, cy - r * 0.35, r * 0.35, r * 0.12, -0.3, 0, Math.PI * 2)
+    ctx.fillStyle = `hsla(0, 0%, 100%, 0.15)`
+    ctx.fill()
+
+    // 轨道环 (多条椭圆轨道，不同倾角)
     const rings = Math.min(nexus.level, 3)
+    const ringTilts = [0, 0.5, -0.4] // 倾角(弧度)
+
     for (let i = 0; i < rings; i++) {
-      const ringR = r + 6 + i * 6
+      const ringR = r + 5 + i * 7
+      const tilt = ringTilts[i] || 0
+      const alpha = 0.5 - i * 0.12
+
+      ctx.save()
+      ctx.translate(0, cy)
+      ctx.rotate(tilt)
+
+      // 环本体
       ctx.beginPath()
-      ctx.ellipse(0, cy, ringR, ringR * 0.3, 0, 0, Math.PI * 2)
-      ctx.strokeStyle = `hsla(${accentHue}, 80%, 70%, ${0.4 - i * 0.1})`
-      ctx.lineWidth = 1.5
+      ctx.ellipse(0, 0, ringR, ringR * 0.28, 0, 0, Math.PI * 2)
+      ctx.strokeStyle = `hsla(${accentHue}, 85%, 72%, ${alpha})`
+      ctx.lineWidth = 1.2
       ctx.stroke()
+
+      // 环上的刻度标记 (能量节点)
+      const nodeCount = 4 + i * 2
+      for (let j = 0; j < nodeCount; j++) {
+        const angle = (Math.PI * 2 * j) / nodeCount
+        const nx = Math.cos(angle) * ringR
+        const ny = Math.sin(angle) * ringR * 0.28
+        ctx.fillStyle = `hsla(${accentHue}, 90%, 80%, ${alpha * 0.6})`
+        ctx.beginPath()
+        ctx.arc(nx, ny, 1, 0, Math.PI * 2)
+        ctx.fill()
+      }
+
+      ctx.restore()
     }
 
+    // Level 4+: 核心能量点 (内核发光)
     if (nexus.level >= 4) {
+      const coreGlow = ctx.createRadialGradient(0, cy, 0, 0, cy, r * 0.4)
+      coreGlow.addColorStop(0, `hsla(${accentHue}, 95%, 92%, ${0.7 * glowIntensity})`)
+      coreGlow.addColorStop(0.4, `hsla(${accentHue}, 90%, 80%, ${0.3 * glowIntensity})`)
+      coreGlow.addColorStop(1, `hsla(${accentHue}, 90%, 80%, 0)`)
+      ctx.fillStyle = coreGlow
       ctx.beginPath()
-      ctx.arc(0, cy, r * 0.3, 0, Math.PI * 2)
-      ctx.fillStyle = `hsla(${accentHue}, 90%, 85%, ${0.6 * glowIntensity})`
+      ctx.arc(0, cy, r * 0.4, 0, Math.PI * 2)
+      ctx.fill()
+
+      // 核心最亮点
+      ctx.fillStyle = `hsla(${accentHue}, 95%, 95%, 0.9)`
+      ctx.beginPath()
+      ctx.arc(0, cy, 2, 0, Math.PI * 2)
       ctx.fill()
     }
+
+    // 球体边缘描边 (微弱)
+    ctx.beginPath()
+    ctx.arc(0, cy, r, 0, Math.PI * 2)
+    ctx.strokeStyle = `hsla(${accentHue}, 70%, 60%, 0.3)`
+    ctx.lineWidth = 0.8
+    ctx.stroke()
   }
 
-  // ---- VAULT: 六角水晶 (记忆) ----
+  // ---- VAULT: 数据水晶 (记忆) ----
 
   private renderVault(ctx: Ctx2D, nexus: NexusEntity, w: number, h: number): void {
     const { primaryHue: hue, primarySaturation: sat, primaryLightness: lit, accentHue, glowIntensity } = nexus.visualDNA
     const r = w * 0.4
     const cy = -h / 2
+
+    // 底部光影投射
+    const baseGlow = ctx.createRadialGradient(0, cy + r + 4, 0, 0, cy + r + 4, r * 0.8)
+    baseGlow.addColorStop(0, `hsla(${hue}, ${sat}%, ${lit}%, 0.1)`)
+    baseGlow.addColorStop(1, `hsla(${hue}, ${sat}%, ${lit}%, 0)`)
+    ctx.fillStyle = baseGlow
+    ctx.beginPath()
+    ctx.arc(0, cy + r + 4, r * 0.8, 0, Math.PI * 2)
+    ctx.fill()
+
+    // 外层六边形 (渐变填充 - 顶亮底暗模拟水晶切面)
+    const hexGrad = ctx.createLinearGradient(0, cy - r, 0, cy + r)
+    hexGrad.addColorStop(0, `hsla(${hue}, ${sat}%, ${lit + 12}%, 0.85)`)
+    hexGrad.addColorStop(0.5, `hsla(${hue}, ${sat}%, ${lit}%, 0.75)`)
+    hexGrad.addColorStop(1, `hsla(${hue}, ${sat}%, ${lit - 10}%, 0.65)`)
 
     ctx.beginPath()
     for (let i = 0; i < 6; i++) {
@@ -633,14 +915,30 @@ export class GameCanvas {
       else ctx.lineTo(px, py)
     }
     ctx.closePath()
-    ctx.fillStyle = `hsla(${hue}, ${sat}%, ${lit}%, 0.8)`
+    ctx.fillStyle = hexGrad
     ctx.fill()
-    ctx.strokeStyle = `hsl(${accentHue}, ${sat}%, ${lit + 15}%)`
+
+    // 外边框 (双层：内细外粗)
+    ctx.beginPath()
+    for (let i = 0; i < 6; i++) {
+      const angle = (Math.PI / 3) * i - Math.PI / 6
+      const px = Math.cos(angle) * r
+      const py = Math.sin(angle) * r + cy
+      if (i === 0) ctx.moveTo(px, py)
+      else ctx.lineTo(px, py)
+    }
+    ctx.closePath()
+    ctx.strokeStyle = `hsla(${accentHue}, ${sat}%, ${lit + 20}%, 0.6)`
     ctx.lineWidth = 1.5
     ctx.stroke()
 
+    // Level 2+: 内六边形 (水晶内部结构)
     if (nexus.level >= 2) {
-      const innerR = r * 0.6
+      const innerR = r * 0.55
+      const innerGrad = ctx.createLinearGradient(0, cy - innerR, 0, cy + innerR)
+      innerGrad.addColorStop(0, `hsla(${accentHue}, 70%, 65%, 0.25)`)
+      innerGrad.addColorStop(1, `hsla(${accentHue}, 70%, 45%, 0.15)`)
+
       ctx.beginPath()
       for (let i = 0; i < 6; i++) {
         const angle = (Math.PI / 3) * i - Math.PI / 6
@@ -650,35 +948,79 @@ export class GameCanvas {
         else ctx.lineTo(px, py)
       }
       ctx.closePath()
-      ctx.strokeStyle = `hsla(${accentHue}, 60%, 60%, 0.4)`
-      ctx.lineWidth = 1
+      ctx.fillStyle = innerGrad
+      ctx.fill()
+      ctx.strokeStyle = `hsla(${accentHue}, 60%, 60%, 0.35)`
+      ctx.lineWidth = 0.8
       ctx.stroke()
     }
 
+    // Level 3+: 辐射线 (中心到每个顶点的数据流)
     if (nexus.level >= 3) {
       for (let i = 0; i < 6; i++) {
         const angle = (Math.PI / 3) * i - Math.PI / 6
+        const outerX = Math.cos(angle) * r
+        const outerY = Math.sin(angle) * r + cy
+
+        // 辐射线渐变 (中心亮到边缘暗)
+        const lineGrad = ctx.createLinearGradient(0, cy, outerX, outerY)
+        lineGrad.addColorStop(0, `hsla(${accentHue}, 80%, 75%, 0.4)`)
+        lineGrad.addColorStop(1, `hsla(${accentHue}, 80%, 75%, 0.05)`)
+
         ctx.beginPath()
         ctx.moveTo(0, cy)
-        ctx.lineTo(Math.cos(angle) * r, Math.sin(angle) * r + cy)
-        ctx.strokeStyle = `hsla(${accentHue}, 70%, 70%, 0.2)`
-        ctx.lineWidth = 1
+        ctx.lineTo(outerX, outerY)
+        ctx.strokeStyle = lineGrad
+        ctx.lineWidth = 0.8
         ctx.stroke()
+
+        // 顶点能量节点
+        ctx.fillStyle = `hsla(${accentHue}, 85%, 80%, 0.5)`
+        ctx.beginPath()
+        ctx.arc(outerX, outerY, 1.5, 0, Math.PI * 2)
+        ctx.fill()
       }
     }
 
+    // Level 4: 核心光晕 (数据核心发光)
     if (nexus.level >= 4) {
-      const glowGradient = ctx.createRadialGradient(0, cy, 0, 0, cy, r * 0.5)
-      glowGradient.addColorStop(0, `hsla(${accentHue}, 90%, 85%, ${0.5 * glowIntensity})`)
-      glowGradient.addColorStop(1, `hsla(${accentHue}, 90%, 85%, 0)`)
+      const coreR = r * 0.3
+      const coreGrad = ctx.createRadialGradient(0, cy, 0, 0, cy, coreR)
+      coreGrad.addColorStop(0, `hsla(${accentHue}, 95%, 90%, ${0.6 * glowIntensity})`)
+      coreGrad.addColorStop(0.5, `hsla(${accentHue}, 90%, 75%, ${0.3 * glowIntensity})`)
+      coreGrad.addColorStop(1, `hsla(${accentHue}, 90%, 70%, 0)`)
+
+      ctx.fillStyle = coreGrad
       ctx.beginPath()
-      ctx.arc(0, cy, r * 0.5, 0, Math.PI * 2)
-      ctx.fillStyle = glowGradient
+      ctx.arc(0, cy, coreR, 0, Math.PI * 2)
       ctx.fill()
+
+      // 最亮核心点
+      ctx.fillStyle = `hsla(${accentHue}, 95%, 95%, 0.8)`
+      ctx.beginPath()
+      ctx.arc(0, cy, 1.5, 0, Math.PI * 2)
+      ctx.fill()
+
+      // 外围光圈辉光
+      ctx.shadowColor = `hsla(${accentHue}, 90%, 70%, ${0.4 * glowIntensity})`
+      ctx.shadowBlur = 10 * glowIntensity
+      ctx.beginPath()
+      for (let i = 0; i < 6; i++) {
+        const angle = (Math.PI / 3) * i - Math.PI / 6
+        const px = Math.cos(angle) * r
+        const py = Math.sin(angle) * r + cy
+        if (i === 0) ctx.moveTo(px, py)
+        else ctx.lineTo(px, py)
+      }
+      ctx.closePath()
+      ctx.strokeStyle = `hsla(${accentHue}, 80%, 70%, 0.2)`
+      ctx.lineWidth = 1
+      ctx.stroke()
+      ctx.shadowBlur = 0
     }
   }
 
-  // ---- Layer 4: 效果层 ----
+  // ---- Layer 4: 效果层 (选中脉冲 + 建造火花 + 呼吸光晕) ----
 
   private renderLayer4_Effects(
     ctx: CanvasRenderingContext2D,
@@ -688,36 +1030,96 @@ export class GameCanvas {
     timestamp: number,
   ): void {
     const selectedId = this.state.selectedNexusId
+
+    // 选中实例: 多层脉冲光圈
     if (selectedId) {
       const nexus = nexuses.get(selectedId)
       if (nexus) {
         const screen = this.worldToScreen(nexus.position.gridX, nexus.position.gridY, camera)
         const baseSize = NEXUS_BASE_SIZE[nexus.level - 1] * camera.zoom
+        const { primaryHue: hue } = nexus.visualDNA
         const pulse = Math.sin(timestamp / 500) * 0.3 + 0.7
+        const pulse2 = Math.sin(timestamp / 300) * 0.2 + 0.8
 
         ctx.save()
-        ctx.globalAlpha = 0.15 * pulse
-        ctx.fillStyle = `hsl(${nexus.visualDNA.primaryHue}, 80%, 70%)`
+
+        // 外圈呼吸光晕
+        const glowR = baseSize * 0.9 * pulse2
+        const selGlow = ctx.createRadialGradient(
+          screen.x, screen.y - baseSize / 2, glowR * 0.3,
+          screen.x, screen.y - baseSize / 2, glowR
+        )
+        selGlow.addColorStop(0, `hsla(${hue}, 80%, 70%, ${0.12 * pulse})`)
+        selGlow.addColorStop(1, `hsla(${hue}, 80%, 70%, 0)`)
+        ctx.fillStyle = selGlow
         ctx.beginPath()
-        ctx.arc(screen.x, screen.y - baseSize / 2, baseSize * 0.8, 0, Math.PI * 2)
+        ctx.arc(screen.x, screen.y - baseSize / 2, glowR, 0, Math.PI * 2)
         ctx.fill()
+
+        // 旋转选框 (双虚线菱形)
+        const rot = timestamp / 2000
+        ctx.translate(screen.x, screen.y - baseSize / 2)
+        ctx.rotate(rot)
+        ctx.strokeStyle = `hsla(50, 90%, 75%, ${0.6 * pulse})`
+        ctx.lineWidth = 1.5
+        ctx.setLineDash([3, 5])
+        const diamond = baseSize * 0.6
+        ctx.beginPath()
+        ctx.moveTo(0, -diamond)
+        ctx.lineTo(diamond, 0)
+        ctx.lineTo(0, diamond)
+        ctx.lineTo(-diamond, 0)
+        ctx.closePath()
+        ctx.stroke()
+        ctx.setLineDash([])
+
         ctx.restore()
       }
     }
 
+    // 已完成建筑: 微弱呼吸光点
+    for (const nexus of nexuses.values()) {
+      if (nexus.constructionProgress >= 1 && nexus.level >= 3) {
+        const screen = this.worldToScreen(nexus.position.gridX, nexus.position.gridY, camera)
+        const baseSize = NEXUS_BASE_SIZE[nexus.level - 1] * camera.zoom
+        const { accentHue } = nexus.visualDNA
+        const breath = Math.sin(timestamp / 1500 + nexus.position.gridX) * 0.4 + 0.6
+
+        ctx.fillStyle = `hsla(${accentHue}, 85%, 80%, ${0.08 * breath})`
+        ctx.beginPath()
+        ctx.arc(screen.x, screen.y - baseSize / 2, baseSize * 0.6, 0, Math.PI * 2)
+        ctx.fill()
+      }
+    }
+
+    // 建造中: 上升能量火花
     for (const nexus of nexuses.values()) {
       if (nexus.constructionProgress < 1) {
         const screen = this.worldToScreen(nexus.position.gridX, nexus.position.gridY, camera)
         const baseSize = NEXUS_BASE_SIZE[nexus.level - 1] * camera.zoom
-        const sparkCount = 3
+        const { accentHue } = nexus.visualDNA
+        const sparkCount = 4 + nexus.level
+
         for (let i = 0; i < sparkCount; i++) {
-          const sparkPhase = (timestamp / 300 + i * 2) % (Math.PI * 2)
-          const sx = screen.x + Math.cos(sparkPhase) * baseSize * 0.5
-          const sy = screen.y - baseSize * nexus.constructionProgress + Math.sin(sparkPhase) * 4
+          const phase = (timestamp / 250 + i * 1.7) % (Math.PI * 2)
+          const progress = (Math.sin(phase) + 1) / 2 // 0-1 上下循环
+          const sx = screen.x + Math.cos(phase * 2.3 + i) * baseSize * 0.4
+          const sy = screen.y - baseSize * nexus.constructionProgress * progress
+          const sparkAlpha = (1 - progress) * 0.7
+
+          // 火花本体
           ctx.beginPath()
           ctx.arc(sx, sy, 1.5, 0, Math.PI * 2)
-          ctx.fillStyle = `hsla(${nexus.visualDNA.accentHue}, 80%, 80%, 0.6)`
+          ctx.fillStyle = `hsla(${accentHue}, 85%, 80%, ${sparkAlpha})`
           ctx.fill()
+
+          // 火花尾迹
+          ctx.beginPath()
+          ctx.moveTo(sx, sy)
+          ctx.lineTo(sx, sy + 4)
+          ctx.strokeStyle = `hsla(${accentHue}, 85%, 80%, ${sparkAlpha * 0.3})`
+          ctx.lineWidth = 0.5
+          ctx.stroke()
         }
       }
     }

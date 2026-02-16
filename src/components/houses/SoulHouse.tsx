@@ -1,60 +1,40 @@
 import { motion } from 'framer-motion'
-import { Ghost, Sparkles, Shield, Fingerprint, Loader2, AlertCircle, Zap } from 'lucide-react'
+import { Fingerprint, Cpu, Shield, Activity, Loader2 } from 'lucide-react'
 import { useStore } from '@/store'
 import { SoulOrb } from '@/components/visuals/SoulOrb'
 import { AISummaryCard } from '@/components/ai/AISummaryCard'
-import type { SoulTruth, SoulBoundary } from '@/types'
+import type { LucideIcon } from 'lucide-react'
 
-// HUD 悬浮卡片
-function HudCard({ 
+// HUD 面板组件：半透明磨砂玻璃风格 + 边缘发光
+function HudPanel({ 
   children, 
-  className = "", 
+  title, 
+  icon: Icon, 
+  side = 'left',
   delay = 0 
 }: { 
   children: React.ReactNode
-  className?: string
+  title: string
+  icon: LucideIcon
+  side?: 'left' | 'right'
   delay?: number 
 }) {
   return (
     <motion.div
-      initial={{ opacity: 0, x: -20 }}
+      initial={{ opacity: 0, x: side === 'left' ? -30 : 30 }}
       animate={{ opacity: 1, x: 0 }}
-      transition={{ delay, duration: 0.5 }}
-      className={`absolute p-4 bg-slate-900/60 backdrop-blur-xl border border-white/10 rounded-xl shadow-2xl ${className}`}
+      transition={{ delay, duration: 0.6, ease: "easeOut" }}
+      className={`pointer-events-auto backdrop-blur-md bg-slate-900/30 border border-white/10 rounded-xl overflow-hidden shadow-[0_0_30px_rgba(0,0,0,0.3)] hover:bg-slate-900/50 hover:border-white/20 transition-all ${side === 'left' ? 'mr-auto' : 'ml-auto'}`}
     >
-      {children}
-    </motion.div>
-  )
-}
-
-// 核心真理条目
-function TruthItem({ truth, index }: { truth: SoulTruth; index: number }) {
-  return (
-    <motion.div 
-      initial={{ opacity: 0, x: 10 }}
-      animate={{ opacity: 1, x: 0 }}
-      transition={{ delay: 0.5 + index * 0.1 }}
-      className="border-l-2 border-cyan-500/30 pl-3 py-1.5"
-    >
-      <span className="block text-sm text-cyan-100 font-medium">{truth.title}</span>
-      <span className="block text-[10px] text-white/40 mt-0.5 leading-relaxed line-clamp-2">
-        {truth.principle}
-      </span>
-    </motion.div>
-  )
-}
-
-// 边界规则条目
-function BoundaryItem({ boundary, index }: { boundary: SoulBoundary; index: number }) {
-  return (
-    <motion.div
-      initial={{ opacity: 0, x: -10 }}
-      animate={{ opacity: 1, x: 0 }}
-      transition={{ delay: 0.6 + index * 0.05 }}
-      className="flex items-start gap-2 text-xs"
-    >
-      <Shield className="w-3 h-3 text-amber-400 mt-0.5 flex-shrink-0" />
-      <span className="text-white/60 line-clamp-2">{boundary.rule}</span>
+      <div className="px-4 py-2 bg-white/5 border-b border-white/5 flex items-center gap-2">
+        <Icon className="w-3.5 h-3.5 text-cyan-400" />
+        <span className="text-[10px] font-mono uppercase tracking-widest text-cyan-100/70">
+          {title}
+        </span>
+      </div>
+      <div className="p-4">
+        {children}
+      </div>
     </motion.div>
   )
 }
@@ -62,172 +42,173 @@ function BoundaryItem({ boundary, index }: { boundary: SoulBoundary; index: numb
 export function SoulHouse() {
   const soulIdentity = useStore((s) => s.soulIdentity)
   const soulCoreTruths = useStore((s) => s.soulCoreTruths)
-  const soulBoundaries = useStore((s) => s.soulBoundaries)
-  const soulVibeStatement = useStore((s) => s.soulVibeStatement)
   const soulDimensions = useStore((s) => s.soulDimensions)
-  const soulRawContent = useStore((s) => s.soulRawContent)
+  const skills = useStore((s) => s.skills) // 获取技能数据
   const loading = useStore((s) => s.devicesLoading)
-  const connectionStatus = useStore((s) => s.connectionStatus)
-
-  const isConnected = connectionStatus === 'connected'
-  const hasSoulData = soulCoreTruths.length > 0 || soulBoundaries.length > 0 || soulRawContent
   
-  // 计算复杂度 (0-100) - 用于控制视觉效果
-  const complexity = Math.min(100, (soulCoreTruths.length * 12) + (soulDimensions.length * 8) + (soulBoundaries.length * 5))
+  // 1. 计算活跃技能 (驱动 Orb 的高亮粒子)
+  const activeSkills = skills.filter(s => s.unlocked || s.status === 'active')
+  const skillRatio = skills.length > 0 ? (activeSkills.length / skills.length) * 100 : 0
+  
+  // 2. 模拟活跃度 (Activity Level)
+  const activityLevel = Math.max(0.1, Math.min(1, activeSkills.length / (skills.length || 10)))
 
-  // 加载中状态
-  if (loading && isConnected) {
-    return (
-      <div className="flex items-center justify-center h-full bg-slate-950">
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          className="flex flex-col items-center gap-4"
-        >
-          <Loader2 className="w-10 h-10 text-purple-400 animate-spin" />
-          <span className="text-sm font-mono text-purple-300/60">Initializing Soul Matrix...</span>
-        </motion.div>
-      </div>
-    )
-  }
+  // 3. 计算复杂度 (Complexity)
+  const complexity = Math.min(100, (soulCoreTruths.length * 8) + soulDimensions.length * 4)
 
-  // 未连接或无数据状态
-  if (!isConnected || !hasSoulData) {
+  if (loading && !soulIdentity) {
     return (
-      <div className="relative w-full h-full bg-slate-950 overflow-hidden">
-        {/* 即使无数据也显示默认的 Orb */}
-        <div className="absolute inset-0">
-          <SoulOrb complexity={20} activity={0.3} />
-        </div>
-        
-        <div className="absolute inset-0 flex flex-col items-center justify-center text-center p-8 z-10">
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="bg-black/60 backdrop-blur-xl border border-white/10 rounded-2xl p-8 max-w-md"
-          >
-            <Ghost className="w-16 h-16 text-purple-400/40 mx-auto mb-4" />
-            <h3 className="text-xl font-mono text-purple-300 mb-2">Soul Matrix</h3>
-            <p className="text-white/50 text-sm mb-4">
-              {isConnected 
-                ? 'Unable to read SOUL.md configuration. Ensure OpenClaw Gateway supports files.read API.'
-                : 'Connect to OpenClaw Gateway to initialize the Soul Matrix.'}
-            </p>
-            <div className="flex items-center justify-center gap-2 text-[10px] text-white/30 font-mono">
-              <AlertCircle className="w-3 h-3" />
-              <span>{isConnected ? 'Awaiting SOUL.md...' : 'Disconnected'}</span>
-            </div>
-          </motion.div>
-        </div>
+      <div className="flex flex-col items-center justify-center h-full text-cyan-500/50 font-mono text-sm gap-2">
+        <Loader2 className="w-6 h-6 animate-spin" />
+        INITIALIZING SOUL CORE...
       </div>
     )
   }
 
   return (
-    <div className="relative w-full h-full bg-slate-950 overflow-hidden">
-      {/* 顶部 AI 状态栏 */}
-      <div className="absolute top-4 left-4 right-4 z-30">
-        <AISummaryCard view="soul" />
+    <div className="relative w-full h-full bg-slate-950 overflow-hidden flex flex-col">
+      {/* 1. 顶部 AI 状态栏 (置顶层) */}
+      <div className="absolute top-4 left-4 right-4 z-30 pointer-events-none">
+         <div className="pointer-events-auto">
+            <AISummaryCard view="soul" />
+         </div>
       </div>
 
-      {/* 核心视觉层：SoulOrb 占据整个背景 */}
+      {/* 2. 背景视觉核心 (Background Layer) */}
       <div className="absolute inset-0 z-0">
         <SoulOrb 
-          identity={soulIdentity} 
-          complexity={complexity} 
-          activity={0.7}
+            identity={soulIdentity ?? undefined} 
+            skills={skills}          
+            complexity={complexity}  
+            activity={activityLevel} 
+        />
+        
+        {/* 装饰性网格 (增加空间感) */}
+        <div 
+          className="absolute inset-0 pointer-events-none opacity-[0.03]"
+          style={{
+            backgroundImage: `
+              linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px),
+              linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px)
+            `,
+            backgroundSize: '60px 60px',
+            maskImage: 'radial-gradient(ellipse at center, black 30%, transparent 70%)',
+            WebkitMaskImage: 'radial-gradient(ellipse at center, black 30%, transparent 70%)',
+          }}
         />
       </div>
 
-      {/* 前景 UI 层：HUD 布局 */}
-      <div className="relative z-10 w-full h-full pointer-events-none">
+      {/* 3. 前景 HUD 层 */}
+      <div className="relative z-10 w-full h-full pointer-events-none p-6 flex flex-col justify-between">
         
-        {/* 左侧：Vibe & Identity */}
-        {soulVibeStatement && (
-          <HudCard className="top-1/4 left-6 max-w-[240px] pointer-events-auto" delay={0.2}>
-            <div className="flex items-center gap-2 mb-2 text-purple-300">
-              <Fingerprint className="w-4 h-4" />
-              <span className="text-[10px] font-mono uppercase tracking-wider">Identity Signature</span>
-            </div>
-            <p className="text-sm text-white/80 leading-relaxed italic">
-              "{soulVibeStatement}"
-            </p>
-            {soulIdentity?.vibe && (
-              <p className="text-[10px] text-purple-400/60 mt-2 flex items-center gap-1">
-                <Zap className="w-3 h-3" />
-                {soulIdentity.vibe}
-              </p>
+        {/* 顶部留空给 AI Summary */}
+        <div className="h-16" />
+
+        {/* 中间层：左右两侧 HUD 面板 */}
+        <div className="flex-1 flex items-center justify-between gap-4 py-4">
+          
+          {/* 左侧面板组 */}
+          <div className="flex flex-col gap-3 max-w-[220px] w-full">
+            {/* 身份信息 */}
+            <HudPanel title="Identity" icon={Fingerprint} side="left" delay={0.2}>
+              <div className="space-y-2">
+                <div className="text-lg font-bold text-white/90 tracking-wide">
+                  {soulIdentity?.name || 'GENESIS'}
+                </div>
+                <div className="text-[10px] font-mono text-cyan-400/60">
+                  {soulIdentity?.essence || 'Digital Soul Core'}
+                </div>
+              </div>
+            </HudPanel>
+
+            {/* 核心协议 */}
+            {soulCoreTruths.length > 0 && (
+              <HudPanel title="Core Protocols" icon={Shield} side="left" delay={0.4}>
+                <div className="space-y-1.5 max-h-32 overflow-y-auto">
+                  {soulCoreTruths.slice(0, 4).map((truth, i) => (
+                    <div key={truth.id} className="flex items-start gap-2">
+                      <span className="text-[9px] font-mono text-cyan-500/60 mt-0.5">{String(i + 1).padStart(2, '0')}</span>
+                      <span className="text-[11px] text-white/60 leading-tight">{truth.title}</span>
+                    </div>
+                  ))}
+                </div>
+              </HudPanel>
             )}
-          </HudCard>
-        )}
+          </div>
 
-        {/* 右侧：Core Truths */}
-        {soulCoreTruths.length > 0 && (
-          <HudCard className="top-1/4 right-6 max-w-[280px] pointer-events-auto" delay={0.4}>
-            <div className="flex items-center gap-2 mb-3 text-cyan-300">
-              <Sparkles className="w-4 h-4" />
-              <span className="text-[10px] font-mono uppercase tracking-wider">Core Protocols</span>
-              <span className="ml-auto text-[9px] text-white/30">{soulCoreTruths.length}</span>
-            </div>
-            <div className="space-y-2 max-h-[280px] overflow-y-auto pr-2 custom-scrollbar">
-              {soulCoreTruths.map((truth, idx) => (
-                <TruthItem key={truth.id} truth={truth} index={idx} />
-              ))}
-            </div>
-          </HudCard>
-        )}
+          {/* 右侧面板组 */}
+          <div className="flex flex-col gap-3 max-w-[220px] w-full">
+            {/* 技能状态 */}
+            <HudPanel title="Skill Matrix" icon={Cpu} side="right" delay={0.3}>
+              <div className="space-y-2">
+                <div className="flex justify-between text-[11px]">
+                  <span className="text-white/40">Active / Total</span>
+                  <span className="text-cyan-400 font-mono font-bold">
+                    {activeSkills.length} / {skills.length}
+                  </span>
+                </div>
+                {/* 进度条 */}
+                <div className="h-1.5 bg-white/5 rounded-full overflow-hidden">
+                  <motion.div 
+                    className="h-full bg-gradient-to-r from-cyan-500 to-purple-500 rounded-full"
+                    initial={{ width: 0 }}
+                    animate={{ width: `${skillRatio}%` }}
+                    transition={{ duration: 1, delay: 0.5 }}
+                  />
+                </div>
+                <div className="text-[9px] font-mono text-white/30">
+                  ACTIVATION RATIO: {skillRatio.toFixed(1)}%
+                </div>
+              </div>
+            </HudPanel>
 
-        {/* 左下：Boundaries */}
-        {soulBoundaries.length > 0 && (
-          <HudCard className="bottom-32 left-6 max-w-[260px] pointer-events-auto" delay={0.5}>
-            <div className="flex items-center gap-2 mb-2 text-amber-300">
-              <Shield className="w-4 h-4" />
-              <span className="text-[10px] font-mono uppercase tracking-wider">Boundaries</span>
-              <span className="ml-auto text-[9px] text-white/30">{soulBoundaries.length}</span>
-            </div>
-            <div className="space-y-2 max-h-[150px] overflow-y-auto pr-2 custom-scrollbar">
-              {soulBoundaries.slice(0, 5).map((boundary, idx) => (
-                <BoundaryItem key={boundary.id} boundary={boundary} index={idx} />
-              ))}
-              {soulBoundaries.length > 5 && (
-                <p className="text-[9px] text-white/30 font-mono">
-                  +{soulBoundaries.length - 5} more...
-                </p>
-              )}
-            </div>
-          </HudCard>
-        )}
+            {/* 系统状态 */}
+            <HudPanel title="System Status" icon={Activity} side="right" delay={0.5}>
+              <div className="space-y-2">
+                <div className="flex justify-between text-[11px]">
+                  <span className="text-white/40">Activity</span>
+                  <span className="text-emerald-400 font-mono">{(activityLevel * 100).toFixed(0)}%</span>
+                </div>
+                <div className="flex justify-between text-[11px]">
+                  <span className="text-white/40">Complexity</span>
+                  <span className="text-amber-400 font-mono">{complexity}</span>
+                </div>
+                <div className="flex justify-between text-[11px]">
+                  <span className="text-white/40">Dimensions</span>
+                  <span className="text-purple-400 font-mono">{soulDimensions.length}</span>
+                </div>
+              </div>
+            </HudPanel>
+          </div>
+        </div>
 
-        {/* 底部：能力维度条 */}
+        {/* 底部维度条 */}
         {soulDimensions.length > 0 && (
-          <motion.div 
-            initial={{ opacity: 0, y: 50 }}
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.7 }}
-            className="absolute bottom-6 left-1/2 -translate-x-1/2 pointer-events-auto"
+            className="flex justify-center pointer-events-auto"
           >
-            <div className="flex gap-5 px-6 py-4 bg-black/50 backdrop-blur-xl rounded-2xl border border-white/5">
+            <div className="flex gap-4 px-6 py-3 bg-black/40 backdrop-blur-xl rounded-2xl border border-white/5">
               {soulDimensions.slice(0, 6).map((d, i) => (
                 <motion.div 
                   key={d.name} 
-                  className="flex flex-col items-center gap-2 w-14"
-                  initial={{ opacity: 0, y: 20 }}
+                  className="flex flex-col items-center gap-1.5 w-12"
+                  initial={{ opacity: 0, y: 10 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: 0.8 + i * 0.1 }}
                 >
-                  <div className="h-20 w-2 bg-white/10 rounded-full relative overflow-hidden">
+                  <div className="h-14 w-1.5 bg-white/10 rounded-full relative overflow-hidden">
                     <motion.div 
-                      className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-purple-600 via-purple-500 to-pink-400 rounded-full"
+                      className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-cyan-600 via-purple-500 to-pink-400 rounded-full"
                       initial={{ height: 0 }}
                       animate={{ height: `${d.value}%` }}
                       transition={{ duration: 1, delay: 0.9 + i * 0.1 }}
                     />
                   </div>
-                  <span className="text-[9px] text-white/50 font-mono truncate max-w-full text-center">
+                  <span className="text-[8px] text-white/40 font-mono truncate max-w-full text-center">
                     {d.name}
-                  </span>
-                  <span className="text-[10px] text-purple-400/80 font-mono font-bold">
-                    {d.value}
                   </span>
                 </motion.div>
               ))}
@@ -235,18 +216,6 @@ export function SoulHouse() {
           </motion.div>
         )}
       </div>
-      
-      {/* 装饰性网格背景 */}
-      <div 
-        className="absolute inset-0 pointer-events-none opacity-[0.02]"
-        style={{
-          backgroundImage: `
-            linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px),
-            linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px)
-          `,
-          backgroundSize: '50px 50px',
-        }}
-      />
     </div>
   )
 }
