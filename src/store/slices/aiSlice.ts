@@ -319,6 +319,23 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
       // 持久化 assistant 消息
       persistChatState(get().chatMessages, get().executionStatuses)
 
+      // === Observer 集成：记录行为并分析 ===
+      const fullState = get() as any
+      if (fullState.addBehaviorRecord && fullState.analyze && fullState.createProposal) {
+        // 记录用户行为
+        fullState.addBehaviorRecord({
+          type: 'chat',
+          content: message,
+          keywords: [], // 由 observerSlice 自动提取
+        })
+        
+        // 触发分析（会检查冷却时间）
+        const trigger = fullState.analyze()
+        if (trigger) {
+          fullState.createProposal(trigger)
+        }
+      }
+
       // 通过本地服务执行 OpenClaw 任务
       if (commands.length > 0) {
         for (const cmd of commands) {

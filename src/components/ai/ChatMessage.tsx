@@ -1,6 +1,6 @@
 import { useState, useMemo, useRef, useEffect } from 'react'
-import { motion } from 'framer-motion'
-import { User, Bot, AlertCircle, Clock, Loader2, CheckCircle2, XCircle, Zap, Copy, Check, MessageSquare } from 'lucide-react'
+import { motion, AnimatePresence } from 'framer-motion'
+import { User, Bot, AlertCircle, Clock, Loader2, CheckCircle2, XCircle, Zap, Copy, Check, MessageSquare, ChevronDown } from 'lucide-react'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { cn } from '@/utils/cn'
 import type { ChatMessage as ChatMessageType, ExecutionStatus } from '@/types'
@@ -35,6 +35,7 @@ function LogViewer({ lines }: { lines: string[] }) {
 // 执行状态卡片
 function ExecutionCard({ execution, content }: { execution: ExecutionStatus; content?: string }) {
   const [copied, setCopied] = useState(false)
+  const [expanded, setExpanded] = useState(false)
   
   // 按行分割日志输出，使用 outputLines 或从 output 计算
   const logLines = useMemo(() => {
@@ -46,6 +47,12 @@ function ExecutionCard({ execution, content }: { execution: ExecutionStatus; con
     }
     return []
   }, [execution.outputLines, execution.output])
+  
+  // 日志摘要（显示最后一行非空内容）
+  const logSummary = useMemo(() => {
+    const nonEmptyLines = logLines.filter(l => l.trim())
+    return nonEmptyLines.length > 0 ? nonEmptyLines[nonEmptyLines.length - 1] : ''
+  }, [logLines])
   
   // 任务建议模式（本地服务不可用时的降级方案）
   if (execution.status === 'suggestion') {
@@ -151,11 +158,44 @@ function ExecutionCard({ execution, content }: { execution: ExecutionStatus; con
         {content}
       </p>
       
-      {/* 执行输出 - 虚拟化渲染 */}
+      {/* 执行输出 - 可折叠 */}
       {logLines.length > 0 && (
         <div className="mt-2 bg-black/20 rounded border border-white/5">
-          <p className="text-[10px] font-mono text-white/40 px-2 pt-1 pb-0.5">输出:</p>
-          <LogViewer lines={logLines} />
+          {/* 折叠标题栏 */}
+          <button
+            onClick={() => setExpanded(!expanded)}
+            className="w-full flex items-center gap-2 px-2 py-1.5 hover:bg-white/5 transition-colors"
+          >
+            <ChevronDown 
+              className={cn(
+                'w-3 h-3 text-white/40 transition-transform',
+                expanded && 'rotate-180'
+              )} 
+            />
+            <span className="text-[10px] font-mono text-white/40">
+              输出 ({logLines.length} 行)
+            </span>
+            {!expanded && logSummary && (
+              <span className="flex-1 text-[10px] font-mono text-emerald-400/60 truncate text-left">
+                {logSummary.slice(0, 40)}{logSummary.length > 40 ? '...' : ''}
+              </span>
+            )}
+          </button>
+          
+          {/* 可展开的日志内容 */}
+          <AnimatePresence>
+            {expanded && (
+              <motion.div
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: 'auto', opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.2 }}
+                className="overflow-hidden"
+              >
+                <LogViewer lines={logLines} />
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
       )}
       

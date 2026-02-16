@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import { 
   Monitor, Cpu, Info, Database, Upload, Download, Trash2, 
-  Check, Ghost, Brain, ScrollText, RefreshCw, Server, Wifi, Sparkles, Eye, EyeOff
+  Check, Ghost, Brain, ScrollText, RefreshCw, Server, Wifi, Sparkles, Eye, EyeOff, Type
 } from 'lucide-react'
 import { GlassCard } from '@/components/GlassCard'
 import { FileDropZone } from '@/components/FileDropZone'
@@ -117,6 +117,18 @@ export function SettingsHouse() {
   const [llmModel, setLlmModel] = useState('')
   const [llmTestStatus, setLlmTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle')
   const [showApiKey, setShowApiKey] = useState(false)
+  
+  // UI 设置
+  const [fontScale, setFontScale] = useState(() => {
+    const saved = localStorage.getItem('ddos_font_scale')
+    return saved ? parseFloat(saved) : 1
+  })
+  
+  // 应用字体缩放到 CSS 变量
+  useEffect(() => {
+    document.documentElement.style.setProperty('--font-scale', String(fontScale))
+    localStorage.setItem('ddos_font_scale', String(fontScale))
+  }, [fontScale])
   
   // 初始化：从 localStorage 加载
   useEffect(() => {
@@ -751,6 +763,40 @@ browser-automation - 浏览器自动化 (extension)`}
               </GlassCard>
             </motion.div>
           ))}
+          
+          {/* 字体缩放 */}
+          <motion.div variants={staggerItem}>
+            <GlassCard className="p-4">
+              <div className="flex items-center gap-2 mb-3">
+                <Type className="w-4 h-4 text-cyan-400" />
+                <h4 className="text-sm font-mono text-white/80">字体大小</h4>
+                <span className="ml-auto text-xs font-mono text-cyan-400">
+                  {Math.round(fontScale * 100)}%
+                </span>
+              </div>
+              <input
+                type="range"
+                min="0.8"
+                max="1.5"
+                step="0.1"
+                value={fontScale}
+                onChange={(e) => setFontScale(parseFloat(e.target.value))}
+                className="w-full h-2 bg-white/10 rounded-lg appearance-none cursor-pointer
+                           [&::-webkit-slider-thumb]:appearance-none
+                           [&::-webkit-slider-thumb]:w-4
+                           [&::-webkit-slider-thumb]:h-4
+                           [&::-webkit-slider-thumb]:rounded-full
+                           [&::-webkit-slider-thumb]:bg-cyan-400
+                           [&::-webkit-slider-thumb]:shadow-[0_0_6px_rgba(34,211,238,0.5)]
+                           [&::-webkit-slider-thumb]:cursor-pointer"
+              />
+              <div className="flex justify-between text-[10px] font-mono text-white/30 mt-1">
+                <span>80%</span>
+                <span>100%</span>
+                <span>150%</span>
+              </div>
+            </GlassCard>
+          </motion.div>
         </div>
       </motion.div>
 

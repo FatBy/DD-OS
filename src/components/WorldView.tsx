@@ -12,6 +12,7 @@ export function WorldView() {
   const panCamera = useStore((s) => s.panCamera)
   const setZoom = useStore((s) => s.setZoom)
   const selectNexus = useStore((s) => s.selectNexus)
+  const openNexusPanel = useStore((s) => s.openNexusPanel)
 
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const engineRef = useRef<GameCanvas | null>(null)
@@ -101,7 +102,12 @@ export function WorldView() {
     }
 
     selectNexus(nearest)
-  }, [camera, nexuses, selectNexus])
+    
+    // 如果点击了 Nexus，打开详情面板
+    if (nearest) {
+      openNexusPanel(nearest)
+    }
+  }, [camera, nexuses, selectNexus, openNexusPanel])
 
   return (
     <motion.div

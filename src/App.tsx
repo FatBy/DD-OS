@@ -7,6 +7,8 @@ import { ConnectionPanel } from '@/components/ConnectionPanel'
 import { ToastContainer } from '@/components/Toast'
 import { AIChatPanel } from '@/components/ai/AIChatPanel'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
+import { BuildProposalModal } from '@/components/world/BuildProposalModal'
+import { NexusDetailPanel } from '@/components/world/NexusDetailPanel'
 import { useStore } from '@/store'
 import { getHouseById } from '@/houses/registry'
 import { openClawService } from '@/services/OpenClawService'
@@ -97,6 +99,12 @@ function App() {
 
       {/* AI Chat panel */}
       <AIChatPanel />
+
+      {/* Observer: Nexus build proposal modal */}
+      <BuildProposalModal />
+
+      {/* Nexus detail panel */}
+      <NexusDetailPanel />
 
       {/* Toast notifications */}
       <ToastContainer />

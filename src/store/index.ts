@@ -7,6 +7,7 @@ import { createAgentSlice, type AgentSlice } from './slices/agentSlice'
 import { createDevicesSlice, type DevicesSlice } from './slices/devicesSlice'
 import { createAiSlice, type AiSlice } from './slices/aiSlice'
 import { createWorldSlice, type WorldSlice } from './slices/worldSlice'
+import { createObserverSlice, type ObserverSlice } from './slices/observerSlice'
 
 // ============================================
 // 视图状态
@@ -19,7 +20,7 @@ interface ViewSlice {
 // ============================================
 // 合并后的 Store 类型
 // ============================================
-export type AppStore = ViewSlice & ConnectionSlice & SessionsSlice & ChannelsSlice & AgentSlice & DevicesSlice & AiSlice & WorldSlice
+export type AppStore = ViewSlice & ConnectionSlice & SessionsSlice & ChannelsSlice & AgentSlice & DevicesSlice & AiSlice & WorldSlice & ObserverSlice
 
 // ============================================
 // 创建 Store
@@ -37,6 +38,7 @@ export const useStore = create<AppStore>()((...args) => ({
   ...createDevicesSlice(...args),
   ...createAiSlice(...args),
   ...createWorldSlice(...args),
+  ...createObserverSlice(...args),
 }))
 
 // ============================================
@@ -71,6 +73,11 @@ export const selectNexuses = (state: AppStore) => state.nexuses
 export const selectCamera = (state: AppStore) => state.camera
 export const selectSelectedNexusId = (state: AppStore) => state.selectedNexusId
 export const selectRenderSettings = (state: AppStore) => state.renderSettings
+
+// Observer 选择器
+export const selectCurrentProposal = (state: AppStore) => state.currentProposal
+export const selectNexusPanelOpen = (state: AppStore) => state.nexusPanelOpen
+export const selectSelectedNexusForPanel = (state: AppStore) => state.selectedNexusForPanel
 
 // ============================================
 // 开发调试：暴露 store 到 window

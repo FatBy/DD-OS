@@ -380,9 +380,13 @@ export interface NexusEntity {
   level: number             // 1-4
   xp: number
   visualDNA: VisualDNA
-  label?: string            // Phase 2: LLM-generated name
+  label?: string            // LLM-generated name
   constructionProgress: number // 0-1 (1 = fully built)
   createdAt: number
+  // Phase 2: 涌现式 Nexus
+  boundSkillId?: string     // 绑定的 Skill ID
+  flavorText?: string       // LLM 生成的描述
+  lastUsedAt?: number       // 最后使用时间（用于 XP 计算）
 }
 
 export interface CameraState {
@@ -396,4 +400,47 @@ export interface RenderSettings {
   showParticles: boolean
   showLabels: boolean
   enableGlow: boolean
+}
+
+// ============================================
+// Observer / 涌现式 Nexus 类型
+// ============================================
+
+export type TriggerType = 'frequency' | 'complexity' | 'dependency' | 'periodic'
+
+export interface TriggerPattern {
+  type: TriggerType
+  confidence: number           // 0-1 置信度
+  evidence: string[]           // 证据摘要（相关消息片段）
+  suggestedArchetype: NexusArchetype
+  detectedAt: number
+}
+
+export interface BuildProposal {
+  id: string
+  triggerPattern: TriggerPattern
+  suggestedName: string        // 建议的 Nexus 名称
+  suggestedArchetype: NexusArchetype
+  previewVisualDNA: VisualDNA
+  boundSkillId?: string        // 可选绑定的 Skill
+  status: 'pending' | 'accepted' | 'rejected'
+  createdAt: number
+}
+
+export interface BehaviorRecord {
+  id: string
+  type: 'chat' | 'task' | 'skill_use'
+  content: string              // 消息内容或任务描述
+  keywords: string[]           // 提取的关键词
+  timestamp: number
+  metadata?: Record<string, unknown>
+}
+
+// ============================================
+// UI 设置类型
+// ============================================
+
+export interface UISettings {
+  fontScale: number            // 0.8 - 1.5
+  logExpanded: boolean         // 执行日志是否默认展开
 }
