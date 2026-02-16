@@ -1,9 +1,12 @@
 import type { StateCreator } from 'zustand'
 import type { ConnectionStatus, Toast } from '@/types'
 
+export type ConnectionMode = 'native' | 'openclaw'
+
 export interface ConnectionSlice {
   // 状态
   connectionStatus: ConnectionStatus
+  connectionMode: ConnectionMode
   connectionError: string | null
   reconnectAttempt: number
   reconnectCountdown: number | null
@@ -11,6 +14,7 @@ export interface ConnectionSlice {
   
   // Actions
   setConnectionStatus: (status: ConnectionStatus) => void
+  setConnectionMode: (mode: ConnectionMode) => void
   setConnectionError: (error: string | null) => void
   setReconnectAttempt: (attempt: number) => void
   setReconnectCountdown: (countdown: number | null) => void
@@ -21,6 +25,7 @@ export interface ConnectionSlice {
 export const createConnectionSlice: StateCreator<ConnectionSlice> = (set) => ({
   // 初始状态
   connectionStatus: 'disconnected',
+  connectionMode: 'native',
   connectionError: null,
   reconnectAttempt: 0,
   reconnectCountdown: null,
@@ -28,6 +33,8 @@ export const createConnectionSlice: StateCreator<ConnectionSlice> = (set) => ({
 
   // Actions
   setConnectionStatus: (status) => set({ connectionStatus: status }),
+  
+  setConnectionMode: (mode) => set({ connectionMode: mode }),
   
   setConnectionError: (error) => set({ connectionError: error }),
   

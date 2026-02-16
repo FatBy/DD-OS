@@ -12,7 +12,7 @@ const defaultMemories: MemoryEntry[] = [
   {
     id: '1',
     title: '欢迎来到记忆宫殿',
-    content: '这里存储着 Agent 的所有对话记忆。连接到 OpenClaw Gateway 后，会话历史将显示在这里。',
+    content: '这里存储着 Agent 的所有对话记忆。连接后，会话历史将显示在这里。',
     type: 'long-term',
     timestamp: new Date().toISOString(),
     tags: ['系统', '指南'],
@@ -372,7 +372,7 @@ export function MemoryHouse() {
               <p className="text-xs font-mono text-white/25 mt-1">
                 {isConnected
                   ? '对话开始后，记忆将自动出现在时间轴上'
-                  : '请先连接到 OpenClaw Gateway'}
+                  : '请先在左下角连接面板中连接'}
               </p>
             </div>
           )}

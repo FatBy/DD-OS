@@ -2,15 +2,20 @@ import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { 
   Wifi, WifiOff, RefreshCw, AlertCircle, ChevronUp, ChevronDown,
-  Power, PowerOff, Activity, Clock, Key, Eye, EyeOff, Globe
+  Power, PowerOff, Activity, Clock, Key, Eye, EyeOff, Globe,
+  Monitor, Cloud
 } from 'lucide-react'
 import { useStore } from '@/store'
 import { cn } from '@/utils/cn'
 import { openClawService } from '@/services/OpenClawService'
+import { localClawService } from '@/services/LocalClawService'
 
 // 存储 keys
 const TOKEN_STORAGE_KEY = 'openclaw_auth_token'
 const GATEWAY_STORAGE_KEY = 'openclaw_gateway_url'
+const MODE_STORAGE_KEY = 'ddos_connection_mode'
+
+type ConnectionMode = 'native' | 'openclaw'
 
 const statusConfig = {
   disconnected: {
@@ -55,6 +60,7 @@ export function ConnectionPanel() {
   const [token, setToken] = useState('')
   const [gatewayUrl, setGatewayUrl] = useState('')
   const [showToken, setShowToken] = useState(false)
+  const [mode, setMode] = useState<ConnectionMode>('native')
   
   const status = useStore((s) => s.connectionStatus)
   const reconnectAttempt = useStore((s) => s.reconnectAttempt)
@@ -67,38 +73,52 @@ export function ConnectionPanel() {
   useEffect(() => {
     const savedToken = localStorage.getItem(TOKEN_STORAGE_KEY)
     const savedGateway = localStorage.getItem(GATEWAY_STORAGE_KEY)
-    if (savedToken) {
-      setToken(savedToken)
-    }
-    if (savedGateway) {
-      setGatewayUrl(savedGateway)
-    }
+    const savedMode = localStorage.getItem(MODE_STORAGE_KEY) as ConnectionMode
+    if (savedToken) setToken(savedToken)
+    if (savedGateway) setGatewayUrl(savedGateway)
+    if (savedMode) setMode(savedMode)
   }, [])
 
   const config = statusConfig[status]
   const Icon = config.icon
 
-  const handleConnect = () => {
-    // 保存配置到 localStorage
-    if (token) {
-      localStorage.setItem(TOKEN_STORAGE_KEY, token)
+  const handleConnect = async () => {
+    localStorage.setItem(MODE_STORAGE_KEY, mode)
+    useStore.getState().setConnectionMode(mode)
+    
+    if (mode === 'native') {
+      // Native 模式：连接本地 Python 服务器
+      useStore.getState().setConnectionStatus('connecting')
+      const success = await localClawService.connect()
+      if (!success) {
+        useStore.getState().setConnectionStatus('error')
+      }
+    } else {
+      // OpenClaw 模式：连接远程 Gateway
+      if (token) localStorage.setItem(TOKEN_STORAGE_KEY, token)
+      if (gatewayUrl) localStorage.setItem(GATEWAY_STORAGE_KEY, gatewayUrl)
+      openClawService.setGatewayUrl(gatewayUrl)
+      openClawService.setAuthToken(token)
+      openClawService.connect().catch(console.error)
     }
-    if (gatewayUrl) {
-      localStorage.setItem(GATEWAY_STORAGE_KEY, gatewayUrl)
-    }
-    openClawService.setGatewayUrl(gatewayUrl)
-    openClawService.setAuthToken(token)
-    openClawService.connect().catch(console.error)
   }
 
   const handleDisconnect = () => {
-    openClawService.disconnect()
+    if (mode === 'native') {
+      localClawService.disconnect()
+    } else {
+      openClawService.disconnect()
+    }
   }
 
   const handleRetry = () => {
-    openClawService.setGatewayUrl(gatewayUrl)
-    openClawService.setAuthToken(token)
-    openClawService.retry()
+    if (mode === 'native') {
+      localClawService.connect()
+    } else {
+      openClawService.setGatewayUrl(gatewayUrl)
+      openClawService.setAuthToken(token)
+      openClawService.retry()
+    }
   }
 
   const isConnected = status === 'connected'
@@ -173,8 +193,48 @@ export function ConnectionPanel() {
             className="overflow-hidden"
           >
             <div className="w-80 bg-slate-900/80 backdrop-blur-xl rounded-b-xl border border-t-0 border-white/10 p-4 space-y-4">
-              {/* Gateway 地址输入 */}
+              {/* 🌟 模式切换 */}
               {!isConnected && (
+                <div className="space-y-2">
+                  <h4 className="text-xs font-mono text-white/50 uppercase tracking-wider">
+                    运行模式
+                  </h4>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => setMode('native')}
+                      className={cn(
+                        'flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg border text-xs font-mono transition-all',
+                        mode === 'native'
+                          ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-400'
+                          : 'bg-white/5 border-white/10 text-white/50 hover:border-white/20'
+                      )}
+                    >
+                      <Monitor className="w-3.5 h-3.5" />
+                      Native
+                    </button>
+                    <button
+                      onClick={() => setMode('openclaw')}
+                      className={cn(
+                        'flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg border text-xs font-mono transition-all',
+                        mode === 'openclaw'
+                          ? 'bg-purple-500/20 border-purple-500/40 text-purple-400'
+                          : 'bg-white/5 border-white/10 text-white/50 hover:border-white/20'
+                      )}
+                    >
+                      <Cloud className="w-3.5 h-3.5" />
+                      OpenClaw
+                    </button>
+                  </div>
+                  <p className="text-[9px] text-white/30 font-mono">
+                    {mode === 'native' 
+                      ? 'Native: 本地运行，直接控制电脑，无需 Token' 
+                      : 'OpenClaw: 远程 Gateway，需要 Token 认证'}
+                  </p>
+                </div>
+              )}
+
+              {/* Gateway 地址输入 (仅 OpenClaw 模式) */}
+              {!isConnected && mode === 'openclaw' && (
                 <div className="space-y-2">
                   <h4 className="text-xs font-mono text-white/50 uppercase tracking-wider flex items-center gap-1">
                     <Globe className="w-3 h-3" /> Gateway 地址 (可选)
@@ -192,8 +252,8 @@ export function ConnectionPanel() {
                 </div>
               )}
 
-              {/* Token 输入 */}
-              {!isConnected && (
+              {/* Token 输入 (仅 OpenClaw 模式) */}
+              {!isConnected && mode === 'openclaw' && (
                 <div className="space-y-2">
                   <h4 className="text-xs font-mono text-white/50 uppercase tracking-wider flex items-center gap-1">
                     <Key className="w-3 h-3" /> 认证令牌
@@ -306,26 +366,53 @@ export function ConnectionPanel() {
                   连接信息
                 </h4>
                 <div className="space-y-1.5 text-[10px] font-mono">
-                  <div className="flex justify-between text-white/40">
-                    <span className="flex items-center gap-1">
-                      <Globe className="w-3 h-3" /> Gateway
-                    </span>
-                    <span className="text-white/60 truncate max-w-[140px]">
-                      {gatewayUrl || '127.0.0.1:18789'}
-                    </span>
-                  </div>
-                  <div className="flex justify-between text-white/40">
-                    <span className="flex items-center gap-1">
-                      <Clock className="w-3 h-3" /> 心跳
-                    </span>
-                    <span className="text-white/60">15s / 30s 超时</span>
-                  </div>
-                  <div className="flex justify-between text-white/40">
-                    <span className="flex items-center gap-1">
-                      <RefreshCw className="w-3 h-3" /> 重连
-                    </span>
-                    <span className="text-white/60">指数退避 (最多10次)</span>
-                  </div>
+                  {mode === 'native' ? (
+                    <>
+                      <div className="flex justify-between text-white/40">
+                        <span className="flex items-center gap-1">
+                          <Monitor className="w-3 h-3" /> 服务器
+                        </span>
+                        <span className="text-emerald-400/80 truncate max-w-[140px]">
+                          localhost:3001
+                        </span>
+                      </div>
+                      <div className="flex justify-between text-white/40">
+                        <span className="flex items-center gap-1">
+                          <Activity className="w-3 h-3" /> 引擎
+                        </span>
+                        <span className="text-white/60">ReAct Loop</span>
+                      </div>
+                      <div className="flex justify-between text-white/40">
+                        <span className="flex items-center gap-1">
+                          <Key className="w-3 h-3" /> Token
+                        </span>
+                        <span className="text-emerald-400/60">不需要</span>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="flex justify-between text-white/40">
+                        <span className="flex items-center gap-1">
+                          <Globe className="w-3 h-3" /> Gateway
+                        </span>
+                        <span className="text-white/60 truncate max-w-[140px]">
+                          {gatewayUrl || '127.0.0.1:18789'}
+                        </span>
+                      </div>
+                      <div className="flex justify-between text-white/40">
+                        <span className="flex items-center gap-1">
+                          <Clock className="w-3 h-3" /> 心跳
+                        </span>
+                        <span className="text-white/60">15s / 30s 超时</span>
+                      </div>
+                      <div className="flex justify-between text-white/40">
+                        <span className="flex items-center gap-1">
+                          <RefreshCw className="w-3 h-3" /> 重连
+                        </span>
+                        <span className="text-white/60">指数退避 (最多10次)</span>
+                      </div>
+                    </>
+                  )}
                 </div>
               </div>
 

@@ -555,8 +555,8 @@ export function SkillHouse() {
             </p>
             <p className="text-white/30 text-xs font-mono mt-2">
               {isConnected 
-                ? '请检查 OpenClaw 的 skills.list API' 
-                : '请先连接到 OpenClaw Gateway'}
+                ? '技能加载后将显示在这里' 
+                : '请先在左下角连接面板中连接'}
             </p>
           </div>
         )}
@@ -612,7 +612,7 @@ export function SkillHouse() {
           <p className="text-xs font-mono text-white/40 leading-relaxed">
             {hasEnhancements 
               ? 'AI 已按功能分类技能并评估重要度。点击有依赖的技能可高亮关联项。'
-              : '技能来自 OpenClaw 的 SKILL.md 文件系统，显示所有已安装的 Agent 技能。'
+              : '显示所有已安装的 Agent 技能，来自 SKILL.md 文件系统。'
             }
           </p>
         </div>

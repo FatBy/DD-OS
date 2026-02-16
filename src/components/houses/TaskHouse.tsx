@@ -12,8 +12,14 @@ import { isLLMConfigured } from '@/services/llmService'
 import { cn } from '@/utils/cn'
 import type { TaskItem, TaskEnhancement } from '@/types'
 
-// 默认任务（未连接时显示）
-const defaultTasks: TaskItem[] = [
+// 默认任务（根据模式显示不同内容）
+const defaultTasksNative: TaskItem[] = [
+  { id: '1', title: '启动 Native 服务器', description: 'python ddos-local-server.py --port 3001', status: 'done', priority: 'high', timestamp: new Date().toISOString() },
+  { id: '2', title: '连接 DD-OS Native', description: '左下角选择 Native 模式并连接', status: 'pending', priority: 'high', timestamp: new Date().toISOString() },
+  { id: '3', title: '开始对话', description: '通过 AI 聊天面板与 Agent 交流', status: 'pending', priority: 'medium', timestamp: new Date().toISOString() },
+]
+
+const defaultTasksOpenClaw: TaskItem[] = [
   { id: '1', title: '连接到 OpenClaw', description: '点击左下角连接面板开始', status: 'pending', priority: 'high', timestamp: new Date().toISOString() },
   { id: '2', title: '配置消息频道', description: '设置 Telegram/WhatsApp 等平台', status: 'pending', priority: 'medium', timestamp: new Date().toISOString() },
   { id: '3', title: '开始对话', description: '通过消息平台与 Agent 交流', status: 'pending', priority: 'low', timestamp: new Date().toISOString() },
@@ -242,6 +248,7 @@ export function TaskHouse() {
   const storeTasks = useStore((s) => s.tasks)
   const loading = useStore((s) => s.sessionsLoading)
   const connectionStatus = useStore((s) => s.connectionStatus)
+  const connectionMode = useStore((s) => s.connectionMode)
   
   // AI 增强
   const taskEnhancements = useStore((s) => s.taskEnhancements)
@@ -250,6 +257,7 @@ export function TaskHouse() {
   const clearTaskEnhancements = useStore((s) => s.clearTaskEnhancements)
   
   const isConnected = connectionStatus === 'connected'
+  const defaultTasks = connectionMode === 'native' ? defaultTasksNative : defaultTasksOpenClaw
   const tasks = isConnected && storeTasks.length > 0 ? storeTasks : defaultTasks
   const configured = isLLMConfigured()
   const hasEnhancements = Object.keys(taskEnhancements).length > 0

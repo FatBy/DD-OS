@@ -13,8 +13,8 @@ import type {
 
 const BEHAVIOR_WINDOW_SIZE = 50        // 保留最近 N 条行为记录
 const FREQUENCY_THRESHOLD = 3          // 频率触发阈值（7天内出现次数）
-const CONFIDENCE_THRESHOLD = 0.6       // 触发置信度阈值
-const ANALYSIS_COOLDOWN_MS = 30000     // 分析冷却时间（避免频繁触发）
+const CONFIDENCE_THRESHOLD = 0.5       // 触发置信度阈值（降低以便更容易触发）
+const ANALYSIS_COOLDOWN_MS = 10000     // 分析冷却时间（10秒，便于测试）
 
 // 触发类型 → 推荐 Archetype 映射
 const TRIGGER_ARCHETYPE_MAP: Record<TriggerPattern['type'], NexusArchetype> = {

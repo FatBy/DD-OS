@@ -3,7 +3,7 @@ import type { ChatMessage, AISummary, LLMConfig, ViewType, SkillEnhancement, Tas
 import type { SkillNode, TaskItem } from '@/types'
 import { getLLMConfig, saveLLMConfig, isLLMConfigured, streamChat, chat } from '@/services/llmService'
 import { buildSummaryMessages, buildChatMessages, buildSkillEnhancementPrompt, buildTaskNamingPrompt, parseJSONFromLLM, parseExecutionCommands, stripExecutionBlocks } from '@/services/contextBuilder'
-import { localServerService, type IncrementalTaskResponse } from '@/services/localServerService'
+import { localClawService } from '@/services/LocalClawService'
 
 // 摘要缓存时间 (5分钟)
 const SUMMARY_CACHE_MS = 5 * 60 * 1000
@@ -336,16 +336,16 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
         }
       }
 
-      // 通过本地服务执行 OpenClaw 任务
+      // 通过 LocalClawService 执行任务 (Native 模式)
       if (commands.length > 0) {
         for (const cmd of commands) {
           const execId = `exec-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
           
-          // 先检查本地服务是否可用
-          const serverAvailable = await localServerService.checkStatus()
+          // 检查 Native 服务是否可用
+          const serverAvailable = await localClawService.checkStatus()
           
           if (!serverAvailable) {
-            // 本地服务不可用，显示任务建议（降级方案）
+            // 服务不可用，显示任务建议
             const suggestionMsg: ChatMessage = {
               id: execId,
               role: 'assistant',
@@ -371,7 +371,7 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
             timestamp: Date.now(),
             execution: {
               id: execId,
-              status: 'pending',
+              status: 'running',
               timestamp: Date.now(),
             },
           }
@@ -383,50 +383,18 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
             },
           }))
           
-          // 异步执行任务
+          // 使用 LocalClawService ReAct 循环执行任务
           try {
-            const result = await localServerService.executeTask(cmd.prompt)
-            
-            // 更新为 running 状态
-            const runningStatus: ExecutionStatus = {
-              id: execId,
-              status: 'running',
-              sessionKey: result.taskId,
-              timestamp: Date.now(),
-            }
-            set((state) => ({
-              executionStatuses: { ...state.executionStatuses, [execId]: runningStatus },
-              chatMessages: state.chatMessages.map(m =>
-                m.id === execId ? { ...m, execution: runningStatus } : m
-              ),
-            }))
-            
-            // 轮询任务状态 (增量模式)
-            localServerService.pollTaskStatus(
-              result.taskId,
-              (response: IncrementalTaskResponse) => {
-                // 增量追加：从 state 中取当前累积内容，追加新增量
-                const currentState = get()
-                const current = currentState.executionStatuses[execId]
-                const prevOutput = current?.output || ''
-                
-                // 追加新内容，限制总量 200KB 防止内存膨胀
-                const maxAccumulated = 200 * 1024
-                let newOutput = prevOutput + (response.content || '')
-                if (newOutput.length > maxAccumulated) {
-                  newOutput = newOutput.slice(newOutput.length - maxAccumulated)
-                  newOutput = '[...前部分已省略]\n' + newOutput
-                }
-                
-                const newLines = newOutput.split('\n')
-                
+            const result = await localClawService.sendMessage(
+              cmd.prompt,
+              (content) => {
+                // 流式更新输出
+                const outputLines = content.split('\n')
                 const updatedStatus: ExecutionStatus = {
                   id: execId,
-                  status: response.status === 'done' ? 'success' : response.status === 'error' ? 'error' : 'running',
-                  sessionKey: result.taskId,
-                  output: newOutput,
-                  outputLines: newLines,
-                  currentOffset: response.offset,
+                  status: 'running',
+                  output: content,
+                  outputLines,
                   timestamp: Date.now(),
                 }
                 set((state) => ({
@@ -435,12 +403,25 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
                     m.id === execId ? { ...m, execution: updatedStatus } : m
                   ),
                 }))
-                // 仅在状态终结时持久化（running 中不频繁写入）
-                if (response.status === 'done' || response.status === 'error') {
-                  persistChatState(get().chatMessages, get().executionStatuses)
-                }
               }
             )
+            
+            // 执行完成
+            const finalStatus: ExecutionStatus = {
+              id: execId,
+              status: 'success',
+              output: result,
+              outputLines: result.split('\n'),
+              timestamp: Date.now(),
+            }
+            set((state) => ({
+              executionStatuses: { ...state.executionStatuses, [execId]: finalStatus },
+              chatMessages: state.chatMessages.map(m =>
+                m.id === execId ? { ...m, execution: finalStatus } : m
+              ),
+            }))
+            persistChatState(get().chatMessages, get().executionStatuses)
+            
           } catch (err: any) {
             // 执行失败
             const errorStatus: ExecutionStatus = {

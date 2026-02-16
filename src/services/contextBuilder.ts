@@ -11,7 +11,7 @@ import type { ChatMessage, ViewType, TaskItem, SkillNode, MemoryEntry, SoulTruth
 
 const OPENCLAW_CAPABILITY = `
 
-你可以通过 DD-OS 直接控制 OpenClaw AI Agent 执行任务。当用户请求你执行某项操作时（如发消息、执行命令、自动化任务等），在你的回复末尾包含以下特殊标记：
+你可以通过 DD-OS 直接控制 AI Agent 执行任务。当用户请求你执行某项操作时（如发消息、执行命令、自动化任务等），在你的回复末尾包含以下特殊标记：
 \`\`\`execute
 {"action":"sendTask","prompt":"要发送给 Agent 的具体指令"}
 \`\`\`
@@ -30,7 +30,7 @@ const SYSTEM_PROMPTS: Record<string, string> = {
   soul: `你是 DD-OS 灵魂分析助手。你的职责是帮助用户理解 Agent 的个性配置、分析核心特质和边界规则、建议优化方向。
 回答要简洁精炼，使用中文。` + OPENCLAW_CAPABILITY,
 
-  default: `你是 DD-OS 智能助手，帮助用户管理和分析 OpenClaw AI Agent 的各项数据。
+  default: `你是 DD-OS 智能助手，帮助用户管理和分析 AI Agent 的各项数据。
 回答要简洁精炼，使用中文。` + OPENCLAW_CAPABILITY,
 }
 
@@ -192,7 +192,7 @@ export function buildChatMessages(
 ): ChatMessage[] {
   const systemPrompt = SYSTEM_PROMPTS[view] || SYSTEM_PROMPTS.default
   const context = getContextForView(view, data)
-  const connStatus = data.connectionStatus === 'connected' ? 'OpenClaw 已连接，可执行任务' : 'OpenClaw 未连接，无法执行任务'
+  const connStatus = data.connectionStatus === 'connected' ? 'DD-OS 已连接，可执行任务' : 'DD-OS 未连接，无法执行任务'
   
   const messages: ChatMessage[] = [
     {

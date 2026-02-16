@@ -12,15 +12,15 @@ import { NexusDetailPanel } from '@/components/world/NexusDetailPanel'
 import { useStore } from '@/store'
 import { getHouseById } from '@/houses/registry'
 import { openClawService } from '@/services/OpenClawService'
+import { localClawService } from '@/services/LocalClawService'
 
 function App() {
   const currentView = useStore((s) => s.currentView)
   const currentHouse = getHouseById(currentView)
 
-  // Initialize WebSocket service on mount
+  // Initialize services on mount
   useEffect(() => {
-    // Inject store actions into the service
-    openClawService.injectStore({
+    const storeActions = {
       // Connection
       setConnectionStatus: useStore.getState().setConnectionStatus,
       setConnectionError: useStore.getState().setConnectionError,
@@ -64,14 +64,18 @@ function App() {
       
       // AI 执行状态
       updateExecutionStatus: useStore.getState().updateExecutionStatus,
-    })
+    }
 
-    // Note: Don't auto-connect, let user click connect button
-    // openClawService.connect()
+    // 注入到 OpenClaw 服务 (兼容模式)
+    openClawService.injectStore(storeActions)
+    
+    // 注入到 LocalClaw 服务 (Native 模式)
+    localClawService.injectStore(storeActions as any)
 
     // Cleanup on unmount
     return () => {
       openClawService.disconnect()
+      localClawService.disconnect()
     }
   }, [])
 
