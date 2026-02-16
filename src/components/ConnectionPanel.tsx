@@ -336,13 +336,13 @@ export function ConnectionPanel() {
                     最近日志
                   </h4>
                   <div className="space-y-1 max-h-24 overflow-y-auto">
-                    {recentLogs.map((log) => {
+                    {recentLogs.map((log, index) => {
                       const time = log.timestamp 
                         ? new Date(log.timestamp).toLocaleTimeString('zh-CN', { hour12: false })
                         : '--:--:--'
                       return (
                         <div
-                          key={log.id}
+                          key={`${log.id}-${index}`}
                           className={cn(
                             'text-[9px] font-mono p-1.5 rounded bg-white/5 truncate',
                             log.level === 'error' && 'text-red-400',

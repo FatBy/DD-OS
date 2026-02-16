@@ -514,7 +514,8 @@ class OpenClawService {
   private handleResponse(response: ResponseMessage): void {
     const pending = this.pendingRequests.get(response.id)
     if (!pending) {
-      console.warn('[OpenClawService] No pending request for id:', response.id)
+      // 静默处理：可能是超时后到达的响应或服务端主动推送
+      // console.debug('[OpenClawService] No pending request for id:', response.id)
       return
     }
 
