@@ -13,6 +13,48 @@ import { useStore } from '@/store'
 import { getHouseById } from '@/houses/registry'
 import { openClawService } from '@/services/OpenClawService'
 import { localClawService } from '@/services/LocalClawService'
+import { getLocalSoulData, getLocalSkills, getLocalMemories } from '@/utils/localDataProvider'
+
+/**
+ * 从 localStorage 缓存立即恢复数据到 store
+ * 在服务器连接之前先显示上次的数据，避免空白等待
+ */
+function restoreLocalCacheToStore(storeActions: any) {
+  let restored = false
+
+  // Soul
+  const soulData = getLocalSoulData()
+  if (soulData) {
+    storeActions.setSoulFromParsed({
+      title: '',
+      subtitle: soulData.identity.essence,
+      coreTruths: soulData.coreTruths,
+      boundaries: soulData.boundaries,
+      vibeStatement: soulData.vibeStatement,
+      continuityNote: soulData.continuityNote,
+      rawContent: soulData.rawContent,
+    }, null)
+    restored = true
+  }
+
+  // Skills
+  const skills = getLocalSkills()
+  if (skills.length > 0) {
+    storeActions.setOpenClawSkills(skills)
+    restored = true
+  }
+
+  // Memories
+  const memories = getLocalMemories()
+  if (memories.length > 0) {
+    storeActions.setMemories(memories)
+    restored = true
+  }
+
+  if (restored) {
+    console.log('[App] Restored cached data from localStorage (Soul/Skills/Memories)')
+  }
+}
 
 function App() {
   const currentView = useStore((s) => s.currentView)
@@ -62,6 +104,9 @@ function App() {
       // Soul from SOUL.md
       setSoulFromParsed: useStore.getState().setSoulFromParsed,
       
+      // Memories 直接设置
+      setMemories: useStore.getState().setMemories,
+      
       // AI 执行状态
       updateExecutionStatus: useStore.getState().updateExecutionStatus,
     }
@@ -86,6 +131,9 @@ function App() {
       useStore.getState().setConnectionMode(savedMode as 'native' | 'openclaw')
 
       if (savedMode === 'native') {
+        // 立即从 localStorage 恢复缓存数据 (无需等待服务器)
+        restoreLocalCacheToStore(storeActions)
+
         // Native 模式: 静默尝试连接本地服务器
         console.log('[App] Auto-reconnecting to Native server...')
         localClawService.connect().then(success => {

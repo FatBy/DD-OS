@@ -1,49 +1,47 @@
 import { motion, AnimatePresence } from 'framer-motion'
 import { 
-  X, Play, Trash2, Building2, Zap, Star, Clock 
+  X, Play, Trash2, Zap, Star, Clock, Globe2 
 } from 'lucide-react'
 import { useStore } from '@/store'
 import { cn } from '@/utils/cn'
 import type { NexusArchetype } from '@/types'
-import { xpToLevel } from '@/store/slices/worldSlice'
 
-// Archetype 配置
+// Archetype → 星球类型配置
 const ARCHETYPE_CONFIG: Record<NexusArchetype, { 
-  icon: string
   label: string 
-  description: string
+  typeLabel: string
   color: string
+  hueRange: string
 }> = {
   MONOLITH: {
-    icon: '🏛️',
-    label: '知识巨碑',
-    description: '存储与知识积累',
+    label: 'Knowledge Storage',
+    typeLabel: '知识星球',
     color: 'amber',
+    hueRange: 'warm',
   },
   SPIRE: {
-    icon: '🗼',
-    label: '推理尖塔',
-    description: '复杂流程与推理',
+    label: 'Reasoning Engine',
+    typeLabel: '推理星球',
     color: 'purple',
+    hueRange: 'cool',
   },
   REACTOR: {
-    icon: '⚛️',
-    label: '执行反应堆',
-    description: '执行与集成',
+    label: 'Execution Core',
+    typeLabel: '执行星球',
     color: 'cyan',
+    hueRange: 'electric',
   },
   VAULT: {
-    icon: '💎',
-    label: '记忆水晶库',
-    description: '频繁访问与记忆',
+    label: 'Memory Crystal',
+    typeLabel: '记忆星球',
     color: 'emerald',
+    hueRange: 'natural',
   },
 }
 
-// XP 等级阈值（与 worldSlice 保持一致）
+// XP 等级阈值
 const XP_THRESHOLDS = [0, 20, 100, 500] as const
 
-// 计算到下一级的进度百分比
 function xpProgress(xp: number, level: number): number {
   if (level >= XP_THRESHOLDS.length) return 100
   const currentThreshold = XP_THRESHOLDS[level - 1]
@@ -51,45 +49,62 @@ function xpProgress(xp: number, level: number): number {
   return Math.min(100, ((xp - currentThreshold) / (nextThreshold - currentThreshold)) * 100)
 }
 
-// 简单的 SVG 预览
-function NexusPreview({ archetype, color }: { archetype: NexusArchetype; color: string }) {
+// 星球 SVG 预览 (与 Canvas 风格一致)
+function PlanetPreview({ hue, accentHue, level }: { hue: number; accentHue: number; level: number }) {
+  const r = 28
+  const cx = 50, cy = 50
+  const ringR = r * 1.5
   return (
-    <div className="relative w-20 h-20">
+    <div className="relative w-24 h-24">
       <svg viewBox="0 0 100 100" className="w-full h-full">
-        {archetype === 'MONOLITH' && (
-          <>
-            <rect x="25" y="55" width="50" height="35" fill={`hsl(var(--${color}))`} opacity="0.8" rx="2" />
-            <rect x="30" y="30" width="40" height="25" fill={`hsl(var(--${color}))`} opacity="0.6" rx="2" />
-            <rect x="35" y="10" width="30" height="20" fill={`hsl(var(--${color}))`} opacity="0.4" rx="2" />
-          </>
-        )}
-        {archetype === 'SPIRE' && (
-          <polygon 
-            points="50,5 80,90 20,90" 
-            fill={`hsl(var(--${color}))`} 
-            opacity="0.8" 
-          />
-        )}
-        {archetype === 'REACTOR' && (
-          <>
-            <circle cx="50" cy="50" r="22" fill={`hsl(var(--${color}))`} opacity="0.8" />
-            <ellipse cx="50" cy="50" rx="35" ry="12" fill="none" stroke={`hsl(var(--${color}))`} strokeWidth="2" opacity="0.5" />
-            <ellipse cx="50" cy="50" rx="35" ry="12" fill="none" stroke={`hsl(var(--${color}))`} strokeWidth="2" opacity="0.5" transform="rotate(60 50 50)" />
-          </>
-        )}
-        {archetype === 'VAULT' && (
-          <polygon 
-            points="50,10 85,35 85,70 50,95 15,70 15,35" 
-            fill={`hsl(var(--${color}))`} 
-            opacity="0.8" 
+        {/* 大气光晕 */}
+        <defs>
+          <radialGradient id="atmo" cx="50%" cy="50%" r="50%">
+            <stop offset="40%" stopColor={`hsl(${hue}, 80%, 60%)`} stopOpacity="0.15" />
+            <stop offset="100%" stopColor={`hsl(${hue}, 80%, 60%)`} stopOpacity="0" />
+          </radialGradient>
+          <radialGradient id="body" cx="35%" cy="35%" r="65%">
+            <stop offset="0%" stopColor={`hsl(${hue}, 70%, 75%)`} />
+            <stop offset="50%" stopColor={`hsl(${hue}, 65%, 55%)`} />
+            <stop offset="100%" stopColor={`hsl(${hue}, 60%, 25%)`} />
+          </radialGradient>
+        </defs>
+        
+        {/* 大气 */}
+        <circle cx={cx} cy={cy} r={r * 1.6} fill="url(#atmo)" />
+        
+        {/* 后部星环 */}
+        <ellipse cx={cx} cy={cy} rx={ringR} ry={ringR * 0.22} 
+          fill="none" stroke={`hsl(${accentHue}, 70%, 65%)`} strokeWidth="1.5" strokeOpacity="0.25"
+          strokeDasharray="2 4"
+          clipPath="url(#backClip)"
+        />
+        
+        {/* 球体 */}
+        <circle cx={cx} cy={cy} r={r} fill="url(#body)" />
+        
+        {/* 前部星环 */}
+        <ellipse cx={cx} cy={cy} rx={ringR} ry={ringR * 0.22} 
+          fill="none" stroke={`hsl(${accentHue}, 75%, 70%)`} strokeWidth="2" strokeOpacity="0.5"
+        />
+        
+        {/* 高光弧 */}
+        <ellipse cx={cx - 6} cy={cy - 8} rx={10} ry={3.5} 
+          fill="white" opacity="0.12" transform="rotate(-15 44 42)" 
+        />
+        
+        {/* Level 指示 */}
+        {level >= 3 && (
+          <circle cx={cx} cy={cy} r={r * 0.25} 
+            fill={`hsl(${accentHue}, 90%, 85%)`} opacity="0.3" 
           />
         )}
       </svg>
-      {/* 发光效果 */}
-      <div className={cn(
-        'absolute inset-0 rounded-full blur-xl opacity-20',
-        `bg-${color}-500`
-      )} />
+      {/* CSS 光晕 */}
+      <div 
+        className="absolute inset-0 rounded-full blur-xl opacity-15"
+        style={{ backgroundColor: `hsl(${hue}, 70%, 55%)` }}
+      />
     </div>
   )
 }
@@ -115,13 +130,13 @@ export function NexusDetailPanel() {
   
   const handleExecute = () => {
     if (boundSkill) {
-      sendChat(`执行技能: ${boundSkill.name}`, 'world')
+      sendChat(`Execute skill: ${boundSkill.name}`, 'world')
     }
     closeNexusPanel()
   }
   
   const handleDelete = () => {
-    if (confirm('确定要拆除这个 Nexus 吗？此操作不可恢复。')) {
+    if (confirm('Decommission this planet node? This action is irreversible.')) {
       removeNexus(nexus.id)
       closeNexusPanel()
     }
@@ -131,36 +146,36 @@ export function NexusDetailPanel() {
     <AnimatePresence>
       {nexusPanelOpen && (
         <>
-          {/* 背景遮罩 - 点击关闭 */}
+          {/* 背景遮罩 */}
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             onClick={closeNexusPanel}
-            className="fixed inset-0 bg-black/40 backdrop-blur-sm z-40"
+            className="fixed inset-0 bg-black/50 backdrop-blur-sm z-40"
           />
           
           {/* 侧滑面板 */}
           <motion.div
-            initial={{ opacity: 0, x: 320 }}
+            initial={{ opacity: 0, x: 340 }}
             animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: 320 }}
+            exit={{ opacity: 0, x: 340 }}
             transition={{ type: 'spring', damping: 25, stiffness: 300 }}
-            className="fixed right-0 top-0 bottom-0 w-[320px] z-50
+            className="fixed right-0 top-0 bottom-0 w-[340px] z-50
                        bg-slate-950/95 backdrop-blur-xl border-l border-white/10
                        flex flex-col overflow-hidden
-                       shadow-[-20px_0_60px_rgba(0,0,0,0.5)]"
+                       shadow-[-20px_0_60px_rgba(0,0,0,0.6)]"
           >
             {/* Header */}
-            <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
+            <div className="flex items-center justify-between px-5 py-3 border-b border-white/10 bg-white/[0.02]">
               <div className="flex items-center gap-3">
-                <span className="text-2xl">{archConfig.icon}</span>
+                <Globe2 className={cn('w-5 h-5', `text-${archConfig.color}-400`)} />
                 <div>
-                  <h2 className="font-mono text-sm text-white/90">
-                    {nexus.label || `Nexus-${nexus.id.slice(-6)}`}
+                  <h2 className="font-mono text-sm font-semibold text-white/90 tracking-wide uppercase">
+                    {nexus.label || `Node-${nexus.id.slice(-6)}`}
                   </h2>
-                  <p className={cn('text-[10px] font-mono', `text-${archConfig.color}-400`)}>
-                    {archConfig.label}
+                  <p className="text-[10px] font-mono text-white/40 mt-0.5">
+                    LV.{nexus.level} {archConfig.typeLabel}
                   </p>
                 </div>
               </div>
@@ -173,22 +188,22 @@ export function NexusDetailPanel() {
             </div>
             
             {/* 内容区 */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-5">
-              {/* 预览 + 等级 */}
-              <div className="flex items-center gap-4">
-                <div className={cn(
-                  'rounded-lg p-2 flex items-center justify-center',
-                  `bg-${archConfig.color}-500/10 border border-${archConfig.color}-500/20`
-                )}>
-                  <NexusPreview archetype={nexus.archetype} color={archConfig.color} />
-                </div>
+            <div className="flex-1 overflow-y-auto p-5 space-y-5">
+              
+              {/* 星球预览 + 等级 */}
+              <div className="flex items-center gap-5">
+                <PlanetPreview 
+                  hue={nexus.visualDNA.primaryHue}
+                  accentHue={nexus.visualDNA.accentHue}
+                  level={nexus.level}
+                />
                 
                 <div className="flex-1 space-y-3">
                   {/* Level */}
                   <div className="flex items-center gap-2">
                     <Star className={cn('w-4 h-4', `text-${archConfig.color}-400`)} />
-                    <span className="text-xs font-mono text-white/70">等级</span>
-                    <span className={cn('text-lg font-bold font-mono', `text-${archConfig.color}-400`)}>
+                    <span className="text-[10px] font-mono text-white/50 uppercase">Level</span>
+                    <span className={cn('text-2xl font-bold font-mono', `text-${archConfig.color}-400`)}>
                       {nexus.level}
                     </span>
                   </div>
@@ -196,99 +211,123 @@ export function NexusDetailPanel() {
                   {/* XP Bar */}
                   <div>
                     <div className="flex justify-between text-[10px] font-mono text-white/40 mb-1">
-                      <span>经验值</span>
-                      <span>{nexus.xp} XP</span>
+                      <span>XP</span>
+                      <span>{nexus.xp}</span>
                     </div>
-                    <div className="h-2 bg-white/5 rounded-full overflow-hidden">
+                    <div className="h-1.5 bg-white/5 rounded-full overflow-hidden">
                       <motion.div
                         initial={{ width: 0 }}
                         animate={{ width: `${progress}%` }}
-                        transition={{ duration: 0.5 }}
+                        transition={{ duration: 0.8, ease: 'easeOut' }}
                         className={cn('h-full rounded-full', `bg-${archConfig.color}-500`)}
                       />
                     </div>
                   </div>
+                  
+                  {/* Type */}
+                  <div className="text-[10px] font-mono text-white/30">
+                    Type: {archConfig.label}
+                  </div>
                 </div>
               </div>
               
-              {/* 属性描述 */}
-              <div className="p-3 bg-white/5 rounded-lg border border-white/5">
-                <p className="text-[10px] font-mono text-white/40 mb-1">属性</p>
-                <p className="text-xs font-mono text-white/60">
-                  {archConfig.description}
-                </p>
-              </div>
-              
-              {/* 绑定技能 */}
-              <div className="p-3 bg-white/5 rounded-lg border border-white/5">
-                <div className="flex items-center gap-2 mb-2">
+              {/* 活跃模块 (绑定技能) */}
+              <div className="p-4 rounded-xl bg-white/[0.03] border border-white/[0.06]">
+                <div className="flex items-center gap-2 mb-3">
                   <Zap className="w-3.5 h-3.5 text-amber-400" />
-                  <span className="text-[10px] font-mono text-white/40">绑定技能</span>
+                  <span className="text-[10px] font-mono text-white/50 uppercase tracking-wider">Active Module</span>
                 </div>
                 {boundSkill ? (
-                  <div className="flex items-center gap-2">
-                    <Building2 className={cn('w-4 h-4', `text-${archConfig.color}-400`)} />
-                    <span className="text-xs font-mono text-white/80">{boundSkill.name}</span>
-                    <span className={cn(
-                      'ml-auto text-[9px] font-mono px-1.5 py-0.5 rounded',
-                      boundSkill.status === 'active' 
-                        ? 'bg-green-500/20 text-green-400'
-                        : 'bg-white/10 text-white/40'
-                    )}>
-                      {boundSkill.status === 'active' ? '活跃' : '休眠'}
-                    </span>
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-mono text-white/80 font-medium">{boundSkill.name}</span>
+                      <span className={cn(
+                        'text-[9px] font-mono px-2 py-0.5 rounded-full',
+                        boundSkill.status === 'active' 
+                          ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/20'
+                          : 'bg-white/5 text-white/40 border border-white/10'
+                      )}>
+                        {boundSkill.status === 'active' ? 'ONLINE' : 'STANDBY'}
+                      </span>
+                    </div>
+                    {boundSkill.description && (
+                      <p className="text-[11px] font-mono text-white/30 leading-relaxed">
+                        {boundSkill.description}
+                      </p>
+                    )}
                   </div>
                 ) : (
-                  <p className="text-xs font-mono text-white/30 italic">未绑定技能</p>
+                  <p className="text-xs font-mono text-white/20 italic">No module bound</p>
                 )}
               </div>
               
-              {/* 时间信息 */}
-              <div className="flex items-center gap-4 text-[10px] font-mono text-white/30">
-                <div className="flex items-center gap-1">
-                  <Clock className="w-3 h-3" />
-                  <span>创建于 {new Date(nexus.createdAt).toLocaleDateString()}</span>
+              {/* 星球属性 */}
+              <div className="grid grid-cols-2 gap-2">
+                <div className="p-3 rounded-lg bg-white/[0.02] border border-white/[0.05]">
+                  <div className="text-[9px] font-mono text-white/30 mb-1">PRIMARY HUE</div>
+                  <div className="flex items-center gap-2">
+                    <div 
+                      className="w-3 h-3 rounded-full" 
+                      style={{ backgroundColor: `hsl(${nexus.visualDNA.primaryHue}, 70%, 55%)` }} 
+                    />
+                    <span className="text-xs font-mono text-white/60">{nexus.visualDNA.primaryHue}</span>
+                  </div>
                 </div>
+                <div className="p-3 rounded-lg bg-white/[0.02] border border-white/[0.05]">
+                  <div className="text-[9px] font-mono text-white/30 mb-1">GLOW</div>
+                  <span className="text-xs font-mono text-white/60">
+                    {(nexus.visualDNA.glowIntensity * 100).toFixed(0)}%
+                  </span>
+                </div>
+              </div>
+              
+              {/* 时间信息 */}
+              <div className="flex items-center gap-2 text-[10px] font-mono text-white/25">
+                <Clock className="w-3 h-3" />
+                <span>Created {new Date(nexus.createdAt).toLocaleDateString()}</span>
                 {nexus.lastUsedAt && (
-                  <span>最近使用 {new Date(nexus.lastUsedAt).toLocaleDateString()}</span>
+                  <>
+                    <span className="text-white/10">|</span>
+                    <span>Last used {new Date(nexus.lastUsedAt).toLocaleDateString()}</span>
+                  </>
                 )}
               </div>
               
               {/* Flavor Text */}
               {nexus.flavorText && (
-                <div className="p-3 bg-gradient-to-b from-white/5 to-transparent rounded-lg border-l-2 border-white/10">
-                  <p className="text-xs font-mono text-white/50 italic leading-relaxed">
+                <div className="p-3 rounded-lg bg-gradient-to-b from-white/[0.03] to-transparent border-l-2 border-white/10">
+                  <p className="text-[11px] font-mono text-white/40 italic leading-relaxed">
                     "{nexus.flavorText}"
                   </p>
                 </div>
               )}
             </div>
             
-            {/* 底部操作按钮 */}
-            <div className="p-4 border-t border-white/10 space-y-2">
+            {/* 底部操作 */}
+            <div className="p-4 border-t border-white/10 space-y-2 bg-black/20">
               {boundSkill && (
                 <button
                   onClick={handleExecute}
                   className={cn(
-                    'w-full py-2.5 px-4 rounded-lg flex items-center justify-center gap-2',
-                    'text-sm font-mono transition-colors',
+                    'w-full py-3 px-4 rounded-lg flex items-center justify-center gap-2',
+                    'text-sm font-mono font-medium tracking-wider uppercase transition-all',
                     `bg-${archConfig.color}-500/20 border border-${archConfig.color}-500/30`,
-                    `text-${archConfig.color}-400 hover:bg-${archConfig.color}-500/30`
+                    `text-${archConfig.color}-300 hover:bg-${archConfig.color}-500/30 hover:border-${archConfig.color}-500/40`
                   )}
                 >
                   <Play className="w-4 h-4" />
-                  执行
+                  Initialize Sequence
                 </button>
               )}
               
               <button
                 onClick={handleDelete}
                 className="w-full py-2 px-4 rounded-lg flex items-center justify-center gap-2
-                         text-xs font-mono text-red-400/70 hover:text-red-400
-                         border border-red-500/20 hover:bg-red-500/10 transition-colors"
+                         text-[11px] font-mono text-red-400/50 hover:text-red-400
+                         border border-red-500/10 hover:bg-red-500/10 transition-colors"
               >
                 <Trash2 className="w-3.5 h-3.5" />
-                拆除 Nexus
+                Decommission Node
               </button>
             </div>
           </motion.div>

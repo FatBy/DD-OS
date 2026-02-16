@@ -9,7 +9,8 @@
  */
 
 import { chat, streamChat, isLLMConfigured } from './llmService'
-import type { ChatMessage, ExecutionStatus } from '@/types'
+import type { ChatMessage, ExecutionStatus, OpenClawSkill, MemoryEntry } from '@/types'
+import { parseSoulMd, type ParsedSoul } from '@/utils/soulParser'
 
 // ============================================
 // 类型定义
@@ -54,6 +55,10 @@ interface StoreActions {
   setSessionsLoading: (loading: boolean) => void
   setChannelsLoading: (loading: boolean) => void
   setDevicesLoading: (loading: boolean) => void
+  // 数据注入 (Soul/Skills/Memories)
+  setSoulFromParsed: (parsed: ParsedSoul, agentIdentity: any) => void
+  setOpenClawSkills: (skills: OpenClawSkill[]) => void
+  setMemories: (memories: MemoryEntry[]) => void
 }
 
 // ============================================
@@ -249,6 +254,9 @@ class LocalClawService {
       // 加载 SOUL
       await this.loadSoul()
 
+      // 加载所有数据到 store (Soul/Skills/Memories)
+      await this.loadAllDataToStore()
+
       // 初始化今日日志
       await this.initDailyLog()
 
@@ -297,6 +305,66 @@ class LocalClawService {
       }
     } catch (error) {
       console.warn('[LocalClaw] Failed to load SOUL.md:', error)
+    }
+  }
+
+  /**
+   * 连接成功后，自动加载所有数据到 UI Store
+   * Soul → 解析并注入 store (驱动 SoulHouse)
+   * Skills → 注入 store (驱动 SkillTree + SoulOrb 粒子)
+   * Memories → 注入 store (驱动 MemoryHouse)
+   */
+  private async loadAllDataToStore(): Promise<void> {
+    // 1. Soul: 解析已加载的 SOUL.md 并更新 store
+    if (this.soulContent) {
+      try {
+        const parsed = parseSoulMd(this.soulContent)
+        this.storeActions?.setSoulFromParsed(parsed, null)
+        // 缓存到 localStorage
+        localStorage.setItem('ddos_soul_md', this.soulContent)
+        console.log('[LocalClaw] Soul loaded to store')
+      } catch (e) {
+        console.warn('[LocalClaw] Failed to parse SOUL.md:', e)
+      }
+
+      // 尝试加载 IDENTITY.md
+      try {
+        const identityRes = await fetch(`${this.serverUrl}/file/IDENTITY.md`)
+        if (identityRes.ok) {
+          const identityContent = await identityRes.text()
+          localStorage.setItem('ddos_identity_md', identityContent)
+        }
+      } catch { /* optional file */ }
+    }
+
+    // 2. Skills: 从服务器获取技能列表
+    try {
+      const skillsRes = await fetch(`${this.serverUrl}/skills`)
+      if (skillsRes.ok) {
+        const skills: OpenClawSkill[] = await skillsRes.json()
+        if (skills.length > 0) {
+          this.storeActions?.setOpenClawSkills(skills)
+          localStorage.setItem('ddos_skills_json', JSON.stringify(skills))
+          console.log(`[LocalClaw] ${skills.length} skills loaded to store`)
+        }
+      }
+    } catch (e) {
+      console.warn('[LocalClaw] Failed to load skills:', e)
+    }
+
+    // 3. Memories: 从服务器获取记忆
+    try {
+      const memoriesRes = await fetch(`${this.serverUrl}/memories`)
+      if (memoriesRes.ok) {
+        const memories: MemoryEntry[] = await memoriesRes.json()
+        if (memories.length > 0) {
+          this.storeActions?.setMemories(memories)
+          localStorage.setItem('ddos_memories_json', JSON.stringify(memories))
+          console.log(`[LocalClaw] ${memories.length} memories loaded to store`)
+        }
+      }
+    } catch (e) {
+      console.warn('[LocalClaw] Failed to load memories:', e)
     }
   }
 
@@ -629,6 +697,7 @@ class LocalClawService {
 
     let turnCount = 0
     let finalResponse = ''
+    let lastToolResult = ''  // 保存最后一次工具结果，防止循环耗尽时返回空
 
     while (turnCount < CONFIG.MAX_REACT_TURNS) {
       turnCount++
@@ -680,11 +749,13 @@ class LocalClawService {
           
           // 🔧 错误自修正引导：失败时追加反思提示
           if (toolResult.status === 'error') {
+            lastToolResult = toolResult.result
             messages.push({
               role: 'user',
               content: `[工具执行失败] ${toolCall.name} 返回错误:\n${toolResult.result}\n\n请在 thought 中分析失败原因（是路径错误？参数类型错误？工具不支持此操作？），然后修正参数重试，或换用其他方法。`,
             })
           } else {
+            lastToolResult = toolResult.result
             messages.push({
               role: 'user',
               content: `[工具执行结果] ${toolCall.name}:\n${toolResult.result}`,
@@ -710,7 +781,11 @@ class LocalClawService {
     }
 
     this.storeActions?.setAgentStatus('idle')
-    return finalResponse
+    // 如果循环耗尽但有工具结果，将最后的工具结果作为回复
+    if (!finalResponse && lastToolResult) {
+      return `执行完成。工具返回结果:\n${lastToolResult}`
+    }
+    return finalResponse || '任务执行完成，但未生成总结。'
   }
 
   // ============================================
@@ -842,11 +917,22 @@ ${stepsReport}
       if (parsed) return parsed
     }
 
-    // 方法3: 行内 JSON (无代码块)
+    // 方法3: 行内 JSON (无代码块) - tool 是第一个 key
     const inlineMatch = text.match(/\{"tool"\s*:\s*"[^"]+"\s*,\s*"args"\s*:\s*\{[^}]*\}\s*\}/)
     if (inlineMatch) {
       const parsed = this.tryParseToolJson(inlineMatch[0])
       if (parsed) return parsed
+    }
+
+    // 方法3b: 通用 JSON 提取 - tool 不是第一个 key (如 {"thought": "...", "tool": "...", "args": {...}})
+    if (text.includes('"tool"') && text.includes('"args"')) {
+      const firstBrace = text.indexOf('{')
+      const lastBrace = text.lastIndexOf('}')
+      if (firstBrace !== -1 && lastBrace > firstBrace) {
+        const candidate = text.slice(firstBrace, lastBrace + 1)
+        const parsed = this.tryParseToolJson(candidate)
+        if (parsed) return parsed
+      }
     }
 
     // 方法4: 兼容旧版 XML 格式 (向后兼容)
@@ -881,13 +967,17 @@ ${stepsReport}
       cleaned = cleaned.replace(/,\s*}/g, '}')
       cleaned = cleaned.replace(/,\s*]/g, ']')
       
-      // 修正2: 单引号转双引号
-      cleaned = cleaned.replace(/'/g, '"')
-      
-      // 修正3: 处理未转义的换行
-      cleaned = cleaned.replace(/\n/g, '\\n')
-      
-      const parsed = JSON.parse(cleaned)
+      // 先尝试直接解析（多行 JSON 本身就合法）
+      let parsed: any
+      try {
+        parsed = JSON.parse(cleaned)
+      } catch {
+        // 修正2: 单引号转双引号 (仅在 key 处，不动 value)
+        let attempt2 = cleaned.replace(/(\w)'/g, '$1"').replace(/'(\w)/g, '"$1')
+        // 修正3: 处理字符串值中的未转义换行
+        attempt2 = attempt2.replace(/\n/g, '\\n')
+        parsed = JSON.parse(attempt2)
+      }
       
       // 验证结构
       if (parsed.tool && typeof parsed.tool === 'string') {
