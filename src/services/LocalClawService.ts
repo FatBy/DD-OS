@@ -50,6 +50,10 @@ interface StoreActions {
   updateExecutionStatus: (id: string, updates: Partial<ExecutionStatus>) => void
   addLog: (log: any) => void
   addRunEvent: (event: any) => void
+  // Native 模式需要的 loading 状态控制
+  setSessionsLoading: (loading: boolean) => void
+  setChannelsLoading: (loading: boolean) => void
+  setDevicesLoading: (loading: boolean) => void
 }
 
 // ============================================
@@ -61,6 +65,37 @@ const CONFIG = {
   MAX_REACT_TURNS: 10,
   MAX_PLAN_STEPS: 8,
   TOOL_TIMEOUT: 60000,
+}
+
+// ============================================
+// JIT 上下文注入配置
+// ============================================
+
+/**
+ * 技能关键词映射表
+ * 当用户输入匹配这些关键词时，自动加载对应的 SKILL.md
+ */
+const SKILL_TRIGGERS: Record<string, { keywords: string[]; path: string }> = {
+  'web-search': {
+    keywords: ['搜索', '查找', '查询', '查一下', '帮我找', 'search', 'find', 'look up'],
+    path: 'skills/web-search/SKILL.md',
+  },
+  'weather': {
+    keywords: ['天气', '气温', '下雨', '晴天', 'weather', 'temperature'],
+    path: 'skills/weather/SKILL.md',
+  },
+  'file-ops': {
+    keywords: ['文件', '读取', '写入', '保存', '创建', '删除', 'file', 'read', 'write', 'save'],
+    path: 'skills/file-operations/SKILL.md',
+  },
+  'code': {
+    keywords: ['代码', '编程', '运行', '执行', '脚本', 'code', 'run', 'execute', 'script'],
+    path: 'skills/code-runner/SKILL.md',
+  },
+  'dd-os-data': {
+    keywords: ['状态', 'soul', '技能列表', '记忆', 'status', 'skills', 'memory'],
+    path: 'skills/dd-os-data/SKILL.md',
+  },
 }
 
 // ============================================
@@ -82,37 +117,37 @@ const SYSTEM_PROMPT_TEMPLATE = `你是 DD-OS，一个运行在用户本地电脑
 - runCmd: 执行 Shell 命令
 
 ### 网络能力
-- weather: 查询天气 (参数: location 或 city)
-- webSearch: 网页搜索 (参数: query 或 q)
+- weather: 查询天气 (参数: location)
+- webSearch: 网页搜索 (参数: query)
 
 ## 工具调用格式
-当你需要使用工具时，使用以下 XML 格式：
-<tool name="工具名">
-<arg name="参数名">参数值</arg>
-</tool>
+当你需要使用工具时，输出 JSON 代码块：
+
+\`\`\`json
+{"tool": "工具名", "args": {"参数名": "参数值"}}
+\`\`\`
 
 ## 示例
 
 查询天气：
-<tool name="weather">
-<arg name="location">惠州</arg>
-</tool>
+\`\`\`json
+{"tool": "weather", "args": {"location": "惠州"}}
+\`\`\`
 
 网页搜索：
-<tool name="webSearch">
-<arg name="query">今天新闻</arg>
-</tool>
+\`\`\`json
+{"tool": "webSearch", "args": {"query": "今天新闻"}}
+\`\`\`
 
 读取文件：
-<tool name="readFile">
-<arg name="path">SOUL.md</arg>
-</tool>
+\`\`\`json
+{"tool": "readFile", "args": {"path": "SOUL.md"}}
+\`\`\`
 
 写入文件：
-<tool name="writeFile">
-<arg name="path">notes/todo.md</arg>
-<arg name="content"># 待办事项\n- 任务1\n- 任务2</arg>
-</tool>
+\`\`\`json
+{"tool": "writeFile", "args": {"path": "notes/todo.md", "content": "# 待办事项\\n- 任务1\\n- 任务2"}}
+\`\`\`
 
 ## 重要规则
 1. 用户询问天气时，直接使用 weather 工具
@@ -154,6 +189,10 @@ class LocalClawService {
   private soulContent: string = ''
   private isConnected = false
 
+  // JIT 缓存 - 避免重复读取
+  private contextCache: Map<string, { content: string; timestamp: number }> = new Map()
+  private readonly CACHE_TTL = 60000 // 1分钟缓存有效期
+
   /**
    * 注入 Store Actions
    */
@@ -188,6 +227,12 @@ class LocalClawService {
       this.isConnected = true
       this.storeActions?.setConnectionStatus('connected')
       this.storeActions?.setConnectionError(null)
+      
+      // Native 模式下，设置所有 loading 状态为 false
+      this.storeActions?.setSessionsLoading(false)
+      this.storeActions?.setChannelsLoading(false)
+      this.storeActions?.setDevicesLoading(false)
+      
       this.storeActions?.addToast({
         type: 'success',
         title: 'DD-OS Native 已就绪',
@@ -196,6 +241,9 @@ class LocalClawService {
 
       // 加载 SOUL
       await this.loadSoul()
+
+      // 初始化今日日志
+      await this.initDailyLog()
 
       return true
     } catch (error: any) {
@@ -243,6 +291,179 @@ class LocalClawService {
     } catch (error) {
       console.warn('[LocalClaw] Failed to load SOUL.md:', error)
     }
+  }
+
+  // ============================================
+  // 🎯 JIT 动态上下文构建
+  // ============================================
+
+  /**
+   * 构建动态上下文 (Just-In-Time Loading)
+   * 根据用户查询动态注入相关上下文，避免上下文窗口膨胀
+   */
+  private async buildDynamicContext(userQuery: string): Promise<string> {
+    const contextParts: string[] = []
+    const queryLower = userQuery.toLowerCase()
+
+    // 1. 核心人格 (SOUL.md) - 始终加载但精简
+    if (this.soulContent) {
+      // 只提取关键部分，避免全量注入
+      const soulSummary = this.extractSoulSummary(this.soulContent)
+      if (soulSummary) {
+        contextParts.push(`## 核心人格\n${soulSummary}`)
+      }
+    }
+
+    // 2. 今日记忆 - 仅当可能相关时加载
+    const today = new Date().toISOString().split('T')[0]
+    const dailyLog = await this.readFileWithCache(`memory/${today}.md`)
+    if (dailyLog) {
+      // 只取最近10条记录
+      const recentLogs = this.extractRecentLogs(dailyLog, 10)
+      if (recentLogs) {
+        contextParts.push(`## 今日活动\n${recentLogs}`)
+      }
+    }
+
+    // 3. 动态技能注入 - 根据关键词匹配
+    const matchedSkills = this.matchSkills(queryLower)
+    for (const skillPath of matchedSkills) {
+      const skillContent = await this.readFileWithCache(skillPath)
+      if (skillContent) {
+        // 只提取技能的核心用法部分
+        const skillUsage = this.extractSkillUsage(skillContent)
+        if (skillUsage) {
+          contextParts.push(`## 相关技能\n${skillUsage}`)
+        }
+      }
+    }
+
+    // 4. 用户偏好 (如果存在)
+    if (queryLower.includes('偏好') || queryLower.includes('设置') || queryLower.includes('preference')) {
+      const userPrefs = await this.readFileWithCache('USER.md')
+      if (userPrefs) {
+        contextParts.push(`## 用户偏好\n${userPrefs}`)
+      }
+    }
+
+    // 组合上下文，添加时间戳
+    const timestamp = new Date().toLocaleString('zh-CN')
+    const header = `当前时间: ${timestamp}\n用户意图: ${userQuery.slice(0, 100)}${userQuery.length > 100 ? '...' : ''}`
+    
+    return contextParts.length > 0 
+      ? `${header}\n\n${contextParts.join('\n\n')}`
+      : header
+  }
+
+  /**
+   * 带缓存的文件读取
+   */
+  private async readFileWithCache(path: string): Promise<string | null> {
+    const cached = this.contextCache.get(path)
+    const now = Date.now()
+
+    if (cached && (now - cached.timestamp) < this.CACHE_TTL) {
+      return cached.content
+    }
+
+    const content = await this.readFile(path)
+    if (content) {
+      this.contextCache.set(path, { content, timestamp: now })
+    }
+    return content
+  }
+
+  /**
+   * 匹配用户查询与技能关键词
+   */
+  private matchSkills(queryLower: string): string[] {
+    const matched: string[] = []
+    
+    for (const [skillName, config] of Object.entries(SKILL_TRIGGERS)) {
+      const hasMatch = config.keywords.some(keyword => 
+        queryLower.includes(keyword.toLowerCase())
+      )
+      if (hasMatch) {
+        matched.push(config.path)
+        console.log(`[LocalClaw] JIT: 匹配技能 ${skillName}`)
+      }
+    }
+    
+    return matched
+  }
+
+  /**
+   * 提取 SOUL.md 摘要 (精简版)
+   */
+  private extractSoulSummary(soulContent: string): string {
+    const lines = soulContent.split('\n')
+    const summaryLines: string[] = []
+    let inCoreSection = false
+    let lineCount = 0
+    const maxLines = 15 // 最多15行
+
+    for (const line of lines) {
+      if (lineCount >= maxLines) break
+      
+      // 提取标题和核心原则
+      if (line.startsWith('# ') || line.startsWith('## Core') || line.startsWith('## 核心')) {
+        inCoreSection = true
+        summaryLines.push(line)
+        lineCount++
+      } else if (inCoreSection && line.trim()) {
+        if (line.startsWith('## ')) {
+          inCoreSection = false
+        } else {
+          summaryLines.push(line)
+          lineCount++
+        }
+      }
+    }
+
+    return summaryLines.join('\n').trim()
+  }
+
+  /**
+   * 提取最近的日志条目
+   */
+  private extractRecentLogs(logContent: string, count: number): string {
+    const entries = logContent.split(/\n(?=\[|\d{2}:)/).filter(e => e.trim())
+    return entries.slice(-count).join('\n')
+  }
+
+  /**
+   * 提取技能的核心用法部分
+   */
+  private extractSkillUsage(skillContent: string): string {
+    const lines = skillContent.split('\n')
+    const usageLines: string[] = []
+    let inUsageSection = false
+    let lineCount = 0
+    const maxLines = 20
+
+    for (const line of lines) {
+      if (lineCount >= maxLines) break
+
+      if (line.includes('## Usage') || line.includes('## 用法') || line.includes('## What This')) {
+        inUsageSection = true
+        continue
+      }
+      
+      if (inUsageSection) {
+        if (line.startsWith('## ') && !line.includes('Usage')) {
+          break
+        }
+        usageLines.push(line)
+        lineCount++
+      }
+    }
+
+    // 如果没找到 Usage 部分，取前20行
+    if (usageLines.length === 0) {
+      return lines.slice(0, 20).join('\n')
+    }
+
+    return usageLines.join('\n').trim()
   }
 
   // ============================================
@@ -358,9 +579,13 @@ class LocalClawService {
   ): Promise<string> {
     this.storeActions?.setAgentStatus('thinking')
 
+    // 🎯 JIT: 动态构建上下文
+    const dynamicContext = await this.buildDynamicContext(userPrompt)
+    console.log('[LocalClaw] JIT Context built:', dynamicContext.slice(0, 200) + '...')
+
     const systemPrompt = SYSTEM_PROMPT_TEMPLATE.replace(
       '{context}',
-      this.soulContent || '无额外上下文'
+      dynamicContext
     )
 
     const messages: AgentMessage[] = [
@@ -402,6 +627,12 @@ class LocalClawService {
 
           const toolResult = await this.executeTool(toolCall)
 
+          // 📝 记录工具调用到短暂层
+          this.logToEphemeral(
+            `${toolCall.name}(${JSON.stringify(toolCall.args).slice(0, 80)}) -> ${toolResult.status}`,
+            'action'
+          ).catch(() => {}) // 静默失败
+
           // 添加到消息历史
           messages.push({ role: 'assistant', content: response })
           messages.push({
@@ -413,6 +644,11 @@ class LocalClawService {
         } else {
           // 无工具调用，返回最终响应
           finalResponse = response
+          
+          // 📝 记录响应摘要到短暂层
+          const summary = response.slice(0, 100).replace(/\n/g, ' ')
+          this.logToEphemeral(`回复: ${summary}...`, 'result').catch(() => {})
+          
           break
         }
       } catch (error: any) {
@@ -493,20 +729,124 @@ ${stepsReport}
   // 🛠️ 工具执行
   // ============================================
 
+  /**
+   * 解析工具调用 (JSON 格式)
+   * 支持错误自修正：尝试多种格式解析
+   */
   private parseToolCall(text: string): ToolCall | null {
-    const toolMatch = text.match(/<tool\s+name="(\w+)">([\s\S]*?)<\/tool>/)
-    if (!toolMatch) return null
-
-    const toolName = toolMatch[1]
-    const argsContent = toolMatch[2]
-    const args: Record<string, unknown> = {}
-
-    const argMatches = argsContent.matchAll(/<arg\s+name="(\w+)">([\s\S]*?)<\/arg>/g)
-    for (const match of argMatches) {
-      args[match[1]] = match[2].trim()
+    // 方法1: 标准 JSON 代码块
+    const jsonBlockMatch = text.match(/```json\s*\n?([\s\S]*?)\n?```/)
+    if (jsonBlockMatch) {
+      const parsed = this.tryParseToolJson(jsonBlockMatch[1])
+      if (parsed) return parsed
     }
 
-    return { name: toolName, args }
+    // 方法2: 无标记的 JSON 代码块
+    const plainBlockMatch = text.match(/```\s*\n?(\{[\s\S]*?\})\n?```/)
+    if (plainBlockMatch) {
+      const parsed = this.tryParseToolJson(plainBlockMatch[1])
+      if (parsed) return parsed
+    }
+
+    // 方法3: 行内 JSON (无代码块)
+    const inlineMatch = text.match(/\{"tool"\s*:\s*"[^"]+"\s*,\s*"args"\s*:\s*\{[^}]*\}\s*\}/)
+    if (inlineMatch) {
+      const parsed = this.tryParseToolJson(inlineMatch[0])
+      if (parsed) return parsed
+    }
+
+    // 方法4: 兼容旧版 XML 格式 (向后兼容)
+    const xmlMatch = text.match(/<tool\s+name="(\w+)">([\s\S]*?)<\/tool>/)
+    if (xmlMatch) {
+      console.log('[LocalClaw] 检测到旧版 XML 格式，自动转换')
+      const toolName = xmlMatch[1]
+      const argsContent = xmlMatch[2]
+      const args: Record<string, unknown> = {}
+      
+      const argMatches = argsContent.matchAll(/<arg\s+name="(\w+)">([\s\S]*?)<\/arg>/g)
+      for (const match of argMatches) {
+        args[match[1]] = match[2].trim()
+      }
+      
+      return { name: toolName, args }
+    }
+
+    return null
+  }
+
+  /**
+   * 尝试解析 JSON 工具调用
+   * 带错误修正能力
+   */
+  private tryParseToolJson(jsonStr: string): ToolCall | null {
+    try {
+      // 清理常见的格式问题
+      let cleaned = jsonStr.trim()
+      
+      // 修正1: 移除尾部逗号
+      cleaned = cleaned.replace(/,\s*}/g, '}')
+      cleaned = cleaned.replace(/,\s*]/g, ']')
+      
+      // 修正2: 单引号转双引号
+      cleaned = cleaned.replace(/'/g, '"')
+      
+      // 修正3: 处理未转义的换行
+      cleaned = cleaned.replace(/\n/g, '\\n')
+      
+      const parsed = JSON.parse(cleaned)
+      
+      // 验证结构
+      if (parsed.tool && typeof parsed.tool === 'string') {
+        return {
+          name: parsed.tool,
+          args: parsed.args || {},
+        }
+      }
+      
+      // 兼容 name 字段
+      if (parsed.name && typeof parsed.name === 'string') {
+        return {
+          name: parsed.name,
+          args: parsed.args || {},
+        }
+      }
+      
+    } catch (error) {
+      console.warn('[LocalClaw] JSON 解析失败，尝试修正:', error)
+      
+      // 最后尝试: 正则提取关键字段
+      const toolMatch = jsonStr.match(/"tool"\s*:\s*"([^"]+)"/)
+      const nameMatch = jsonStr.match(/"name"\s*:\s*"([^"]+)"/)
+      const toolName = toolMatch?.[1] || nameMatch?.[1]
+      
+      if (toolName) {
+        // 尝试提取 args
+        const argsMatch = jsonStr.match(/"args"\s*:\s*(\{[^}]*\})/)
+        let args: Record<string, unknown> = {}
+        
+        if (argsMatch) {
+          try {
+            args = JSON.parse(argsMatch[1].replace(/'/g, '"'))
+          } catch {
+            // 手动提取常见参数
+            const pathMatch = jsonStr.match(/"path"\s*:\s*"([^"]+)"/)
+            const queryMatch = jsonStr.match(/"query"\s*:\s*"([^"]+)"/)
+            const locationMatch = jsonStr.match(/"location"\s*:\s*"([^"]+)"/)
+            const contentMatch = jsonStr.match(/"content"\s*:\s*"([^"]*)"/)
+            
+            if (pathMatch) args.path = pathMatch[1]
+            if (queryMatch) args.query = queryMatch[1]
+            if (locationMatch) args.location = locationMatch[1]
+            if (contentMatch) args.content = contentMatch[1]
+          }
+        }
+        
+        console.log('[LocalClaw] 通过正则修正成功:', toolName)
+        return { name: toolName, args }
+      }
+    }
+    
+    return null
   }
 
   async executeTool(tool: ToolCall): Promise<ToolResult> {
@@ -533,39 +873,154 @@ ${stepsReport}
   }
 
   // ============================================
-  // 📚 记忆管理
+  // 📚 双层记忆系统 (Dual-Layer Memory)
   // ============================================
 
-  async saveMemory(key: string, content: string): Promise<void> {
-    await this.executeTool({
-      name: 'writeFile',
-      args: {
-        path: `memory/${key}.md`,
-        content: `# ${key}\n\n${content}\n\n---\nUpdated: ${new Date().toISOString()}`,
-      },
-    })
-  }
+  // 消息计数器 - 用于触发记忆整合
+  private messageCount = 0
+  private readonly CONSOLIDATION_THRESHOLD = 20
 
-  async loadMemory(key: string): Promise<string | null> {
-    const result = await this.executeTool({
-      name: 'readFile',
-      args: { path: `memory/${key}.md` },
-    })
-
-    if (result.status === 'success') {
-      return result.result
-    }
-    return null
-  }
-
-  async appendToLog(sessionId: string, content: string): Promise<void> {
+  /**
+   * 记录到短暂层 (Ephemeral Layer)
+   * 每日日志，会话结束后可丢弃
+   */
+  async logToEphemeral(entry: string, category: 'action' | 'thought' | 'result' = 'action'): Promise<void> {
+    const today = new Date().toISOString().split('T')[0]
+    const time = new Date().toLocaleTimeString('zh-CN', { hour12: false })
+    const prefix = category === 'action' ? '[ACT]' : category === 'thought' ? '[THK]' : '[RES]'
+    
+    const logEntry = `${time} ${prefix} ${entry}\n`
+    
     await this.executeTool({
       name: 'appendFile',
       args: {
-        path: `logs/${sessionId}.log`,
-        content: `[${new Date().toISOString()}] ${content}\n`,
+        path: `memory/${today}.md`,
+        content: logEntry,
       },
     })
+
+    // 增加消息计数
+    this.messageCount++
+    
+    // 检查是否需要触发整合
+    if (this.messageCount >= this.CONSOLIDATION_THRESHOLD) {
+      this.triggerConsolidation().catch(err => 
+        console.warn('[LocalClaw] Background consolidation failed:', err)
+      )
+      this.messageCount = 0
+    }
+  }
+
+  /**
+   * 保存到持久层 (Durable Layer)
+   * 关键事实，长期保留
+   */
+  async saveToDurable(fact: string, tags: string[] = []): Promise<void> {
+    const timestamp = new Date().toISOString()
+    const tagStr = tags.length > 0 ? ` [${tags.join(', ')}]` : ''
+    const entry = `- ${fact}${tagStr} (${timestamp})\n`
+    
+    // 追加到 MEMORY.md
+    await this.executeTool({
+      name: 'appendFile',
+      args: {
+        path: 'MEMORY.md',
+        content: entry,
+      },
+    })
+    
+    console.log('[LocalClaw] Saved to durable memory:', fact.slice(0, 50))
+  }
+
+  /**
+   * 从持久层读取记忆
+   */
+  async loadDurableMemory(): Promise<string | null> {
+    return await this.readFile('MEMORY.md')
+  }
+
+  /**
+   * 读取今日短暂记忆
+   */
+  async loadTodayEphemeral(): Promise<string | null> {
+    const today = new Date().toISOString().split('T')[0]
+    return await this.readFile(`memory/${today}.md`)
+  }
+
+  /**
+   * 静默记忆整合 (Background Consolidation)
+   * 将短暂记忆中的重要信息提取到持久层
+   */
+  private async triggerConsolidation(): Promise<void> {
+    console.log('[LocalClaw] Starting memory consolidation...')
+    
+    const today = new Date().toISOString().split('T')[0]
+    const ephemeralContent = await this.readFile(`memory/${today}.md`)
+    
+    if (!ephemeralContent || ephemeralContent.length < 100) {
+      return // 内容太少，跳过整合
+    }
+
+    // 使用 LLM 提取关键信息
+    const consolidationPrompt = `请从以下今日操作日志中提取1-3条最重要的事实或发现。
+只输出需要长期记住的关键信息，每条一行，格式：
+- [事实内容]
+
+日志内容：
+${ephemeralContent.slice(-2000)}
+
+关键事实（如果没有重要信息，输出"无"）：`
+
+    try {
+      const response = await chat([{ role: 'user', content: consolidationPrompt }])
+      
+      // 解析提取的事实
+      const lines = response.split('\n').filter(line => line.trim().startsWith('-'))
+      
+      for (const line of lines) {
+        const fact = line.replace(/^-\s*/, '').trim()
+        if (fact && fact !== '无' && fact.length > 5) {
+          await this.saveToDurable(fact, ['auto-consolidated'])
+        }
+      }
+      
+      console.log('[LocalClaw] Consolidation complete, extracted', lines.length, 'facts')
+    } catch (error) {
+      console.warn('[LocalClaw] Consolidation LLM call failed:', error)
+    }
+  }
+
+  /**
+   * 初始化今日日志文件
+   */
+  async initDailyLog(): Promise<void> {
+    const today = new Date().toISOString().split('T')[0]
+    const header = `# DD-OS Daily Log - ${today}\n\n`
+    
+    // 检查文件是否存在
+    const existing = await this.readFile(`memory/${today}.md`)
+    if (!existing) {
+      await this.writeFile(`memory/${today}.md`, header)
+    }
+  }
+
+  // 兼容旧 API
+  async saveMemory(key: string, content: string): Promise<void> {
+    await this.saveToDurable(`${key}: ${content}`, [key])
+  }
+
+  async loadMemory(key: string): Promise<string | null> {
+    const durableContent = await this.loadDurableMemory()
+    if (!durableContent) return null
+    
+    // 搜索包含 key 的条目
+    const lines = durableContent.split('\n')
+    const matched = lines.filter(line => line.includes(key))
+    return matched.length > 0 ? matched.join('\n') : null
+  }
+
+  async appendToLog(sessionId: string, content: string): Promise<void> {
+    await this.logToEphemeral(`[${sessionId}] ${content}`, 'action')
   }
 
   // ============================================

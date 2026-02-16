@@ -1,11 +1,172 @@
 import { useState, useMemo, useRef, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { User, Bot, AlertCircle, Clock, Loader2, CheckCircle2, XCircle, Zap, Copy, Check, MessageSquare, ChevronDown } from 'lucide-react'
+import { User, Bot, AlertCircle, Clock, Loader2, CheckCircle2, XCircle, Zap, Copy, Check, MessageSquare, ChevronDown, Cloud, Search, FileText, Terminal } from 'lucide-react'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { cn } from '@/utils/cn'
 import type { ChatMessage as ChatMessageType, ExecutionStatus } from '@/types'
 
-// 虚拟化日志查看器
+// 检测输出类型
+function detectOutputType(output: string): 'weather' | 'search' | 'file' | 'command' | 'plain' {
+  if (output.includes('查询时间:') || output.includes('Weather') || output.includes('°C') || output.includes('天气')) {
+    return 'weather'
+  }
+  if (output.includes('搜索结果') || output.includes('DuckDuckGo') || output.includes('Search')) {
+    return 'search'
+  }
+  if (output.includes('文件内容') || output.includes('File content') || output.startsWith('#')) {
+    return 'file'
+  }
+  if (output.includes('执行命令') || output.includes('Command') || output.includes('Exit code')) {
+    return 'command'
+  }
+  return 'plain'
+}
+
+// 格式化天气输出
+function WeatherOutput({ content }: { content: string }) {
+  const lines = content.split('\n').filter(l => l.trim())
+  
+  return (
+    <div className="space-y-2 p-3">
+      {/* 头部信息 */}
+      <div className="flex items-center gap-2 text-cyan-400">
+        <Cloud className="w-4 h-4" />
+        <span className="text-xs font-medium">天气信息</span>
+      </div>
+      
+      {/* 天气内容 - 分组显示 */}
+      <div className="grid gap-2">
+        {lines.map((line, i) => {
+          const trimmed = line.trim()
+          if (!trimmed) return null
+          
+          // 检测标题行
+          if (trimmed.startsWith('查询时间') || trimmed.startsWith('Location')) {
+            return (
+              <div key={i} className="text-[10px] text-white/40 border-b border-white/10 pb-1">
+                {trimmed}
+              </div>
+            )
+          }
+          
+          // 检测温度行
+          if (trimmed.includes('°') || trimmed.includes('temp')) {
+            return (
+              <div key={i} className="flex items-center gap-2 bg-cyan-500/10 rounded px-2 py-1.5">
+                <span className="text-lg font-bold text-cyan-400">
+                  {trimmed.match(/\d+°?C?/)?.[0] || ''}
+                </span>
+                <span className="text-xs text-white/60">{trimmed}</span>
+              </div>
+            )
+          }
+          
+          // 普通行
+          return (
+            <div key={i} className="text-xs text-white/70 leading-relaxed pl-2 border-l-2 border-white/10">
+              {trimmed}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+// 格式化搜索输出
+function SearchOutput({ content }: { content: string }) {
+  const lines = content.split('\n').filter(l => l.trim())
+  
+  return (
+    <div className="space-y-2 p-3">
+      <div className="flex items-center gap-2 text-purple-400">
+        <Search className="w-4 h-4" />
+        <span className="text-xs font-medium">搜索结果</span>
+      </div>
+      
+      <div className="space-y-1.5 max-h-48 overflow-y-auto">
+        {lines.map((line, i) => (
+          <div key={i} className="text-xs text-white/70 leading-relaxed py-1 border-b border-white/5 last:border-0">
+            {line}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// 格式化文件输出
+function FileOutput({ content }: { content: string }) {
+  return (
+    <div className="space-y-2 p-3">
+      <div className="flex items-center gap-2 text-amber-400">
+        <FileText className="w-4 h-4" />
+        <span className="text-xs font-medium">文件内容</span>
+      </div>
+      
+      <pre className="text-xs text-white/70 leading-relaxed bg-black/30 rounded p-2 overflow-x-auto max-h-48 overflow-y-auto">
+        {content}
+      </pre>
+    </div>
+  )
+}
+
+// 格式化命令输出
+function CommandOutput({ content }: { content: string }) {
+  return (
+    <div className="space-y-2 p-3">
+      <div className="flex items-center gap-2 text-emerald-400">
+        <Terminal className="w-4 h-4" />
+        <span className="text-xs font-medium">命令输出</span>
+      </div>
+      
+      <pre className="text-xs font-mono text-emerald-400/80 leading-relaxed bg-black/40 rounded p-2 overflow-x-auto max-h-48 overflow-y-auto whitespace-pre-wrap">
+        {content}
+      </pre>
+    </div>
+  )
+}
+
+// 智能输出渲染器
+function SmartOutputViewer({ content }: { content: string }) {
+  const outputType = detectOutputType(content)
+  
+  switch (outputType) {
+    case 'weather':
+      return <WeatherOutput content={content} />
+    case 'search':
+      return <SearchOutput content={content} />
+    case 'file':
+      return <FileOutput content={content} />
+    case 'command':
+      return <CommandOutput content={content} />
+    default:
+      return <PlainOutput content={content} />
+  }
+}
+
+// 纯文本输出（改进版）
+function PlainOutput({ content }: { content: string }) {
+  const lines = content.split('\n')
+  
+  return (
+    <div className="p-2 max-h-48 overflow-y-auto">
+      {lines.map((line, i) => (
+        <div 
+          key={i} 
+          className={cn(
+            "text-xs font-mono leading-relaxed py-0.5",
+            line.trim() ? "text-emerald-400/80" : "h-2"
+          )}
+        >
+          {line || '\u00A0'}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// 虚拟化日志查看器 (保留用于大量输出)
 function LogViewer({ lines }: { lines: string[] }) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   const [atBottom, setAtBottom] = useState(true)
@@ -158,31 +319,34 @@ function ExecutionCard({ execution, content }: { execution: ExecutionStatus; con
         {content}
       </p>
       
-      {/* 执行输出 - 可折叠 */}
-      {logLines.length > 0 && (
-        <div className="mt-2 bg-black/20 rounded border border-white/5">
+      {/* 执行输出 - 智能渲染 */}
+      {(execution.output || logLines.length > 0) && (
+        <div className="mt-2 bg-black/20 rounded-lg border border-white/5 overflow-hidden">
           {/* 折叠标题栏 */}
           <button
             onClick={() => setExpanded(!expanded)}
-            className="w-full flex items-center gap-2 px-2 py-1.5 hover:bg-white/5 transition-colors"
+            className="w-full flex items-center gap-2 px-3 py-2 hover:bg-white/5 transition-colors"
           >
             <ChevronDown 
               className={cn(
-                'w-3 h-3 text-white/40 transition-transform',
+                'w-3.5 h-3.5 text-white/40 transition-transform',
                 expanded && 'rotate-180'
               )} 
             />
-            <span className="text-[10px] font-mono text-white/40">
-              输出 ({logLines.length} 行)
+            <span className="text-xs font-mono text-white/50">
+              输出详情
+            </span>
+            <span className="text-[10px] font-mono text-white/30 ml-1">
+              ({logLines.length} 行)
             </span>
             {!expanded && logSummary && (
-              <span className="flex-1 text-[10px] font-mono text-emerald-400/60 truncate text-left">
-                {logSummary.slice(0, 40)}{logSummary.length > 40 ? '...' : ''}
+              <span className="flex-1 text-xs font-mono text-emerald-400/60 truncate text-right ml-2">
+                {logSummary.slice(0, 50)}{logSummary.length > 50 ? '...' : ''}
               </span>
             )}
           </button>
           
-          {/* 可展开的日志内容 */}
+          {/* 可展开的输出内容 - 使用智能渲染 */}
           <AnimatePresence>
             {expanded && (
               <motion.div
@@ -190,9 +354,13 @@ function ExecutionCard({ execution, content }: { execution: ExecutionStatus; con
                 animate={{ height: 'auto', opacity: 1 }}
                 exit={{ height: 0, opacity: 0 }}
                 transition={{ duration: 0.2 }}
-                className="overflow-hidden"
+                className="overflow-hidden border-t border-white/5"
               >
-                <LogViewer lines={logLines} />
+                {logLines.length > 100 ? (
+                  <LogViewer lines={logLines} />
+                ) : (
+                  <SmartOutputViewer content={execution.output || logLines.join('\n')} />
+                )}
               </motion.div>
             )}
           </AnimatePresence>
