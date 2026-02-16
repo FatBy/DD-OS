@@ -489,6 +489,9 @@ class LocalClawService {
       timestamp: Date.now(),
     })
 
+    // 📝 记录用户输入到短暂层
+    this.logToEphemeral(`用户: ${prompt.slice(0, 100)}${prompt.length > 100 ? '...' : ''}`, 'action').catch(() => {})
+
     try {
       const result = await this.runReActLoop(prompt, onUpdate)
       

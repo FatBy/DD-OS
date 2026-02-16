@@ -72,6 +72,44 @@ function App() {
     // 注入到 LocalClaw 服务 (Native 模式)
     localClawService.injectStore(storeActions as any)
 
+    // 自动重连: 恢复上次的连接状态
+    const savedMode = localStorage.getItem('ddos_connection_mode')
+    if (savedMode) {
+      useStore.getState().setConnectionMode(savedMode as 'native' | 'openclaw')
+
+      if (savedMode === 'native') {
+        // Native 模式: 静默尝试连接本地服务器
+        console.log('[App] Auto-reconnecting to Native server...')
+        localClawService.connect().then(success => {
+          if (success) {
+            console.log('[App] Auto-reconnect successful')
+          } else {
+            console.log('[App] Auto-reconnect failed, server may not be running')
+            // 静默失败 - 不显示错误状态，保持断开
+            useStore.getState().setConnectionStatus('disconnected')
+            useStore.getState().setSessionsLoading(false)
+            useStore.getState().setChannelsLoading(false)
+            useStore.getState().setDevicesLoading(false)
+          }
+        })
+      } else if (savedMode === 'openclaw') {
+        // OpenClaw 模式: 使用保存的凭据重连
+        const savedToken = localStorage.getItem('openclaw_auth_token')
+        const savedGateway = localStorage.getItem('openclaw_gateway_url')
+        if (savedToken && savedGateway) {
+          console.log('[App] Auto-reconnecting to OpenClaw...')
+          openClawService.setGatewayUrl(savedGateway)
+          openClawService.setAuthToken(savedToken)
+          openClawService.connect()
+        }
+      }
+    } else {
+      // 首次使用: 所有 loading 设为 false 以显示默认内容
+      useStore.getState().setSessionsLoading(false)
+      useStore.getState().setChannelsLoading(false)
+      useStore.getState().setDevicesLoading(false)
+    }
+
     // Cleanup on unmount
     return () => {
       openClawService.disconnect()
