@@ -108,13 +108,13 @@ export function SettingsHouse() {
   const setMemoriesFromLocal = useStore((s) => s.setMemories)
   const connectionStatus = useStore((s) => s.connectionStatus)
   
-  // LLM 配置
+  // LLM 配置 - 直接同步持久化
   const llmConfig = useStore((s) => s.llmConfig)
   const setLlmConfig = useStore((s) => s.setLlmConfig)
   const setLlmConnected = useStore((s) => s.setLlmConnected)
-  const [llmApiKey, setLlmApiKey] = useState('')
-  const [llmBaseUrl, setLlmBaseUrl] = useState('')
-  const [llmModel, setLlmModel] = useState('')
+  const [llmApiKey, setLlmApiKey] = useState(llmConfig.apiKey || '')
+  const [llmBaseUrl, setLlmBaseUrl] = useState(llmConfig.baseUrl || '')
+  const [llmModel, setLlmModel] = useState(llmConfig.model || '')
   const [llmTestStatus, setLlmTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle')
   const [showApiKey, setShowApiKey] = useState(false)
   
@@ -146,10 +146,7 @@ export function SettingsHouse() {
       setMemoriesMd(memories.map(m => `## ${m.title}\n${m.content}`).join('\n\n'))
     }
     
-    // 加载 LLM 配置
-    setLlmApiKey(llmConfig.apiKey)
-    setLlmBaseUrl(llmConfig.baseUrl)
-    setLlmModel(llmConfig.model)
+    // LLM 配置已通过 useState 初始值从 store 加载，无需重复设置
     
     // 自动加载本地数据到 store
     loadLocalDataToStore()
@@ -387,10 +384,17 @@ export function SettingsHouse() {
     }
   }
   
-  // LLM 配置保存
+  // LLM 配置保存 - 每次输入自动持久化
   const saveLlmSettings = () => {
     setLlmConfig({ apiKey: llmApiKey, baseUrl: llmBaseUrl, model: llmModel })
   }
+
+  // 自动保存: 输入变化时即时持久化到 localStorage
+  useEffect(() => {
+    if (llmApiKey || llmBaseUrl || llmModel) {
+      setLlmConfig({ apiKey: llmApiKey, baseUrl: llmBaseUrl, model: llmModel })
+    }
+  }, [llmApiKey, llmBaseUrl, llmModel])
   
   // LLM 连接测试
   const handleTestLlm = async () => {

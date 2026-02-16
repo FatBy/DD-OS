@@ -74,6 +74,14 @@ function App() {
 
     // 自动重连: 恢复上次的连接状态
     const savedMode = localStorage.getItem('ddos_connection_mode')
+    
+    // LLM 配置自动恢复 + 自动验证
+    const llmConfig = useStore.getState().llmConfig
+    if (llmConfig.apiKey && llmConfig.baseUrl && llmConfig.model) {
+      console.log('[App] LLM config restored from localStorage')
+      useStore.getState().setLlmConnected(true) // 标记为已配置
+    }
+
     if (savedMode) {
       useStore.getState().setConnectionMode(savedMode as 'native' | 'openclaw')
 

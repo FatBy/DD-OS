@@ -120,42 +120,31 @@ const SYSTEM_PROMPT_TEMPLATE = `你是 DD-OS，一个运行在用户本地电脑
 - weather: 查询天气 (参数: location)
 - webSearch: 网页搜索 (参数: query)
 
-## 工具调用格式
-当你需要使用工具时，输出 JSON 代码块：
+## 输出格式
+你必须严格按照以下 JSON 格式输出。每次回复只能包含一个 JSON 代码块或纯文本。
 
+当需要使用工具时：
 \`\`\`json
-{"tool": "工具名", "args": {"参数名": "参数值"}}
+{
+  "thought": "分析用户需求，思考当前需要做什么，检查缺少什么信息...",
+  "tool": "工具名",
+  "args": {"参数名": "参数值"}
+}
 \`\`\`
 
-## 示例
-
-查询天气：
-\`\`\`json
-{"tool": "weather", "args": {"location": "惠州"}}
-\`\`\`
-
-网页搜索：
-\`\`\`json
-{"tool": "webSearch", "args": {"query": "今天新闻"}}
-\`\`\`
-
-读取文件：
-\`\`\`json
-{"tool": "readFile", "args": {"path": "SOUL.md"}}
-\`\`\`
-
-写入文件：
-\`\`\`json
-{"tool": "writeFile", "args": {"path": "notes/todo.md", "content": "# 待办事项\\n- 任务1\\n- 任务2"}}
-\`\`\`
+当不需要工具、直接回复用户时：
+直接输出纯文本即可，不要包含 JSON 代码块。
 
 ## 重要规则
-1. 用户询问天气时，直接使用 weather 工具
-2. 用户需要搜索信息时，使用 webSearch 工具
-3. 如果需要多个步骤，一步一步执行
-4. 执行危险操作前先确认
-5. 保持响应简洁明了
-6. 如果工具执行失败，分析原因并尝试其他方法
+1. **必须先思考再行动**：thought 字段不能为空，要写出你的推理过程
+2. 用户询问天气时，直接使用 weather 工具
+3. 用户需要搜索信息时，使用 webSearch 工具
+4. 如果需要多个步骤，一步一步执行，每次只调用一个工具
+5. 执行危险操作前先在 thought 中评估风险
+6. 保持响应简洁明了
+7. 如果工具执行失败，在 thought 中分析原因并尝试其他方法
+
+{dynamic_examples}
 
 ## 当前上下文
 {context}
@@ -167,17 +156,35 @@ const PLANNER_PROMPT = `你是一个任务规划器。请将用户的复杂请�
 - id: 步骤序号
 - description: 步骤描述
 - tool: 可能需要的工具名 (可选)
+- depends_on: 依赖的步骤 id 数组 (可选)
 
 示例输出：
 [
   {"id": 1, "description": "读取项目配置文件", "tool": "readFile"},
-  {"id": 2, "description": "分析依赖关系"},
-  {"id": 3, "description": "生成报告并保存", "tool": "writeFile"}
+  {"id": 2, "description": "分析依赖关系", "depends_on": [1]},
+  {"id": 3, "description": "生成报告并保存", "tool": "writeFile", "depends_on": [2]}
 ]
 
 用户请求: {prompt}
 
 请输出 JSON 数组 (不要包含其他文字)：`
+
+const PLAN_REVIEW_PROMPT = `你是一个计划审查员。请检查以下任务计划，评估是否存在问题：
+
+用户原始请求: {prompt}
+
+当前计划:
+{plan}
+
+请检查：
+1. 步骤是否遗漏？是否有必要步骤被忽略？
+2. 步骤顺序是否正确？依赖关系是否合理？
+3. 是否有可以合并或省略的冗余步骤？
+4. 每个步骤使用的工具是否正确？
+
+如果计划没有问题，原样输出 JSON 数组。
+如果有改进，输出优化后的 JSON 数组。
+只输出 JSON 数组，不要包含其他文字。`
 
 // ============================================
 // LocalClawService 主类
@@ -300,14 +307,15 @@ class LocalClawService {
   /**
    * 构建动态上下文 (Just-In-Time Loading)
    * 根据用户查询动态注入相关上下文，避免上下文窗口膨胀
+   * 返回 { context, dynamicExamples } 分别注入模板的两个占位符
    */
-  private async buildDynamicContext(userQuery: string): Promise<string> {
+  private async buildDynamicContext(userQuery: string): Promise<{ context: string; dynamicExamples: string }> {
     const contextParts: string[] = []
+    const exampleParts: string[] = []
     const queryLower = userQuery.toLowerCase()
 
     // 1. 核心人格 (SOUL.md) - 始终加载但精简
     if (this.soulContent) {
-      // 只提取关键部分，避免全量注入
       const soulSummary = this.extractSoulSummary(this.soulContent)
       if (soulSummary) {
         contextParts.push(`## 核心人格\n${soulSummary}`)
@@ -318,27 +326,31 @@ class LocalClawService {
     const today = new Date().toISOString().split('T')[0]
     const dailyLog = await this.readFileWithCache(`memory/${today}.md`)
     if (dailyLog) {
-      // 只取最近10条记录
       const recentLogs = this.extractRecentLogs(dailyLog, 10)
       if (recentLogs) {
         contextParts.push(`## 今日活动\n${recentLogs}`)
       }
     }
 
-    // 3. 动态技能注入 - 根据关键词匹配
+    // 3. SOP 记忆检索 - 查找相关的成功任务模式
+    const sopMemory = await this.searchSOPMemory(queryLower)
+    if (sopMemory) {
+      contextParts.push(`## 相关经验\n${sopMemory}`)
+    }
+
+    // 4. 动态技能注入 - 根据关键词匹配，同时提取示例
     const matchedSkills = this.matchSkills(queryLower)
     for (const skillPath of matchedSkills) {
       const skillContent = await this.readFileWithCache(skillPath)
       if (skillContent) {
-        // 只提取技能的核心用法部分
         const skillUsage = this.extractSkillUsage(skillContent)
         if (skillUsage) {
-          contextParts.push(`## 相关技能\n${skillUsage}`)
+          exampleParts.push(skillUsage)
         }
       }
     }
 
-    // 4. 用户偏好 (如果存在)
+    // 5. 用户偏好 (如果存在)
     if (queryLower.includes('偏好') || queryLower.includes('设置') || queryLower.includes('preference')) {
       const userPrefs = await this.readFileWithCache('USER.md')
       if (userPrefs) {
@@ -346,13 +358,19 @@ class LocalClawService {
       }
     }
 
-    // 组合上下文，添加时间戳
+    // 组合上下文
     const timestamp = new Date().toLocaleString('zh-CN')
     const header = `当前时间: ${timestamp}\n用户意图: ${userQuery.slice(0, 100)}${userQuery.length > 100 ? '...' : ''}`
     
-    return contextParts.length > 0 
+    const context = contextParts.length > 0 
       ? `${header}\n\n${contextParts.join('\n\n')}`
       : header
+
+    const dynamicExamples = exampleParts.length > 0
+      ? `## 相关技能参考\n以下是与当前任务相关的工具用法和思维示例：\n\n${exampleParts.join('\n\n---\n\n')}`
+      : `## 基础示例\n查询天气：\n\`\`\`json\n{"thought": "用户想查天气，使用 weather 工具", "tool": "weather", "args": {"location": "惠州"}}\n\`\`\`\n\n网页搜索：\n\`\`\`json\n{"thought": "用户需要搜索信息", "tool": "webSearch", "args": {"query": "关键词"}}\n\`\`\``
+
+    return { context, dynamicExamples }
   }
 
   /**
@@ -432,38 +450,46 @@ class LocalClawService {
   }
 
   /**
-   * 提取技能的核心用法部分
+   * 提取技能的核心用法和示例部分
    */
   private extractSkillUsage(skillContent: string): string {
     const lines = skillContent.split('\n')
-    const usageLines: string[] = []
-    let inUsageSection = false
+    const resultLines: string[] = []
+    let inRelevantSection = false
     let lineCount = 0
-    const maxLines = 20
+    const maxLines = 40 // 增大以容纳思维链示例
 
     for (const line of lines) {
       if (lineCount >= maxLines) break
 
-      if (line.includes('## Usage') || line.includes('## 用法') || line.includes('## What This')) {
-        inUsageSection = true
+      // 捕获 Usage 和 Examples 两个关键部分
+      if (line.includes('## Usage') || line.includes('## 用法') || 
+          line.includes('## Examples') || line.includes('## 示例')) {
+        inRelevantSection = true
+        resultLines.push(line)
+        lineCount++
         continue
       }
       
-      if (inUsageSection) {
-        if (line.startsWith('## ') && !line.includes('Usage')) {
-          break
+      if (inRelevantSection) {
+        // 遇到 Notes/Safety/其他无关节时停止
+        if (line.startsWith('## ') && 
+            !line.includes('Usage') && !line.includes('Examples') && 
+            !line.includes('用法') && !line.includes('示例')) {
+          inRelevantSection = false
+          continue
         }
-        usageLines.push(line)
+        resultLines.push(line)
         lineCount++
       }
     }
 
-    // 如果没找到 Usage 部分，取前20行
-    if (usageLines.length === 0) {
-      return lines.slice(0, 20).join('\n')
+    // 如果没找到相关部分，取前30行
+    if (resultLines.length === 0) {
+      return lines.slice(0, 30).join('\n')
     }
 
-    return usageLines.join('\n').trim()
+    return resultLines.join('\n').trim()
   }
 
   // ============================================
@@ -555,6 +581,12 @@ class LocalClawService {
       // 3. 生成总结报告
       const report = await this.synthesizeReport(prompt, plan)
 
+      // 4. 📝 SOP 存储: 成功的复杂任务自动记录执行模式
+      const successSteps = plan.filter(s => s.status === 'completed')
+      if (successSteps.length >= 2) {
+        this.recordSOP(prompt, plan).catch(() => {})
+      }
+
       this.storeActions?.updateExecutionStatus(execId, {
         status: 'success',
         output: report,
@@ -583,13 +615,12 @@ class LocalClawService {
     this.storeActions?.setAgentStatus('thinking')
 
     // 🎯 JIT: 动态构建上下文
-    const dynamicContext = await this.buildDynamicContext(userPrompt)
+    const { context: dynamicContext, dynamicExamples } = await this.buildDynamicContext(userPrompt)
     console.log('[LocalClaw] JIT Context built:', dynamicContext.slice(0, 200) + '...')
 
-    const systemPrompt = SYSTEM_PROMPT_TEMPLATE.replace(
-      '{context}',
-      dynamicContext
-    )
+    const systemPrompt = SYSTEM_PROMPT_TEMPLATE
+      .replace('{context}', dynamicContext)
+      .replace('{dynamic_examples}', dynamicExamples)
 
     const messages: AgentMessage[] = [
       { role: 'system', content: systemPrompt },
@@ -618,6 +649,14 @@ class LocalClawService {
         // 检查是否有工具调用
         const toolCall = this.parseToolCall(response)
 
+        // 提取 thought (如果模型输出了)
+        if (toolCall) {
+          const thoughtMatch = response.match(/"thought"\s*:\s*"([^"]*)"/)
+          if (thoughtMatch) {
+            console.log(`[LocalClaw] Thought: ${thoughtMatch[1].slice(0, 100)}`)
+          }
+        }
+
         if (toolCall) {
           // 执行工具
           this.storeActions?.setAgentStatus('executing')
@@ -638,10 +677,19 @@ class LocalClawService {
 
           // 添加到消息历史
           messages.push({ role: 'assistant', content: response })
-          messages.push({
-            role: 'user',
-            content: `[工具执行结果] ${toolCall.name}:\n${toolResult.result}`,
-          })
+          
+          // 🔧 错误自修正引导：失败时追加反思提示
+          if (toolResult.status === 'error') {
+            messages.push({
+              role: 'user',
+              content: `[工具执行失败] ${toolCall.name} 返回错误:\n${toolResult.result}\n\n请在 thought 中分析失败原因（是路径错误？参数类型错误？工具不支持此操作？），然后修正参数重试，或换用其他方法。`,
+            })
+          } else {
+            messages.push({
+              role: 'user',
+              content: `[工具执行结果] ${toolCall.name}:\n${toolResult.result}`,
+            })
+          }
 
           this.storeActions?.setAgentStatus('thinking')
         } else {
@@ -678,12 +726,17 @@ class LocalClawService {
       // 提取 JSON
       const jsonMatch = response.match(/\[[\s\S]*\]/)
       if (jsonMatch) {
-        const plan = JSON.parse(jsonMatch[0]) as PlanStep[]
-        return plan.slice(0, CONFIG.MAX_PLAN_STEPS).map((step, i) => ({
+        let plan = JSON.parse(jsonMatch[0]) as PlanStep[]
+        plan = plan.slice(0, CONFIG.MAX_PLAN_STEPS).map((step, i) => ({
           ...step,
           id: i + 1,
           status: 'pending' as const,
         }))
+
+        // 🔍 Plan Review: 批评者机制
+        console.log('[LocalClaw] Initial plan generated, running review...')
+        const reviewedPlan = await this.reviewPlan(prompt, plan)
+        return reviewedPlan
       }
     } catch (error) {
       console.error('[LocalClaw] Plan generation failed:', error)
@@ -691,6 +744,44 @@ class LocalClawService {
 
     // 降级：单步计划
     return [{ id: 1, description: prompt, status: 'pending' }]
+  }
+
+  /**
+   * 计划审查 (Critic/Refine)
+   * 通过 LLM 二次检查计划的完整性和逻辑性
+   */
+  private async reviewPlan(prompt: string, plan: PlanStep[]): Promise<PlanStep[]> {
+    try {
+      const planJson = JSON.stringify(plan.map(s => ({
+        id: s.id,
+        description: s.description,
+        tool: s.tool,
+      })), null, 2)
+
+      const reviewPrompt = PLAN_REVIEW_PROMPT
+        .replace('{prompt}', prompt)
+        .replace('{plan}', planJson)
+
+      const response = await chat([{ role: 'user', content: reviewPrompt }])
+
+      const jsonMatch = response.match(/\[[\s\S]*\]/)
+      if (jsonMatch) {
+        const reviewed = JSON.parse(jsonMatch[0]) as PlanStep[]
+        const refinedPlan = reviewed.slice(0, CONFIG.MAX_PLAN_STEPS).map((step, i) => ({
+          ...step,
+          id: i + 1,
+          status: 'pending' as const,
+        }))
+
+        console.log(`[LocalClaw] Plan reviewed: ${plan.length} -> ${refinedPlan.length} steps`)
+        return refinedPlan
+      }
+    } catch (error) {
+      console.warn('[LocalClaw] Plan review failed, using original:', error)
+    }
+
+    // Review 失败则使用原计划
+    return plan
   }
 
   private async executeStep(step: PlanStep, fullPlan: PlanStep[]): Promise<string> {
@@ -1024,6 +1115,83 @@ ${ephemeralContent.slice(-2000)}
 
   async appendToLog(sessionId: string, content: string): Promise<void> {
     await this.logToEphemeral(`[${sessionId}] ${content}`, 'action')
+  }
+
+  // ============================================
+  // 🧩 程序化记忆 (Procedural Memory / SOP)
+  // ============================================
+
+  /**
+   * 记录成功的任务执行模式 (SOP)
+   * 当复杂任务成功完成时，自动提取执行模式并存储
+   */
+  private async recordSOP(taskDescription: string, plan: PlanStep[]): Promise<void> {
+    try {
+      const steps = plan
+        .filter(s => s.status === 'completed')
+        .map(s => `${s.id}. ${s.description}${s.tool ? ` [${s.tool}]` : ''}`)
+        .join('\n')
+
+      const sopEntry = `\n- #SOP 任务: "${taskDescription.slice(0, 80)}"\n  步骤: ${steps.replace(/\n/g, '\n  ')}\n  记录时间: ${new Date().toISOString()}\n`
+      
+      await this.executeTool({
+        name: 'appendFile',
+        args: {
+          path: 'MEMORY.md',
+          content: sopEntry,
+        },
+      })
+
+      console.log('[LocalClaw] SOP recorded for task:', taskDescription.slice(0, 50))
+    } catch (error) {
+      console.warn('[LocalClaw] Failed to record SOP:', error)
+    }
+  }
+
+  /**
+   * 检索相关的 SOP 记忆
+   * 根据用户查询在 MEMORY.md 中查找匹配的 #SOP 条目
+   */
+  private async searchSOPMemory(queryLower: string): Promise<string | null> {
+    const memory = await this.readFileWithCache('MEMORY.md')
+    if (!memory) return null
+
+    // 提取所有 SOP 条目
+    const sopEntries: string[] = []
+    const lines = memory.split('\n')
+    let currentSOP = ''
+    let inSOP = false
+
+    for (const line of lines) {
+      if (line.includes('#SOP')) {
+        if (currentSOP) sopEntries.push(currentSOP.trim())
+        currentSOP = line
+        inSOP = true
+      } else if (inSOP && line.startsWith('  ')) {
+        currentSOP += '\n' + line
+      } else if (inSOP && line.trim() === '') {
+        // 空行结束 SOP
+      } else {
+        if (currentSOP) sopEntries.push(currentSOP.trim())
+        currentSOP = ''
+        inSOP = false
+      }
+    }
+    if (currentSOP) sopEntries.push(currentSOP.trim())
+
+    if (sopEntries.length === 0) return null
+
+    // 简单关键词匹配
+    const queryWords = queryLower.split(/[\s,，。？！]+/).filter(w => w.length > 1)
+    const matched = sopEntries.filter(entry => {
+      const entryLower = entry.toLowerCase()
+      return queryWords.some(word => entryLower.includes(word))
+    })
+
+    if (matched.length === 0) return null
+
+    // 最多返回2条最相关的
+    return matched.slice(0, 2).join('\n\n')
   }
 
   // ============================================
