@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { 
-  MessageSquare, X, Send, Trash2, Square, Sparkles
+  MessageSquare, X, Send, Trash2, Square, Sparkles, Loader2, Zap
 } from 'lucide-react'
 import { useStore } from '@/store'
 import { isLLMConfigured } from '@/services/llmService'
@@ -23,6 +23,7 @@ export function AIChatPanel() {
   const sendChat = useStore((s) => s.sendChat)
   const clearChat = useStore((s) => s.clearChat)
   const abortChat = useStore((s) => s.abortChat)
+  const agentStatus = useStore((s) => s.agentStatus)
 
   const configured = isLLMConfigured()
   const quickCommands = getQuickCommands(currentView)
@@ -106,6 +107,16 @@ export function AIChatPanel() {
                 <span className="text-[10px] font-mono text-white/30 px-1.5 py-0.5 bg-white/5 rounded">
                   {currentView}
                 </span>
+                {agentStatus === 'thinking' && (
+                  <span className="text-[10px] font-mono text-cyan-400 animate-pulse flex items-center gap-1 ml-1">
+                    <Loader2 className="w-3 h-3 animate-spin" /> 思考中
+                  </span>
+                )}
+                {agentStatus === 'executing' && (
+                  <span className="text-[10px] font-mono text-amber-400 animate-pulse flex items-center gap-1 ml-1">
+                    <Zap className="w-3 h-3" /> 执行中
+                  </span>
+                )}
               </div>
               <div className="flex items-center gap-1">
                 <button

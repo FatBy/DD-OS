@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { 
   Inbox, Clock, CheckCircle2, Play,
   Loader2, MessageSquare, ChevronRight, Sparkles,
-  Calendar, Hash
+  Calendar, Hash, Activity
 } from 'lucide-react'
 import { GlassCard } from '@/components/GlassCard'
 import { AISummaryCard } from '@/components/ai/AISummaryCard'
@@ -246,9 +246,12 @@ function SystemInbox({
 
 export function TaskHouse() {
   const storeTasks = useStore((s) => s.tasks)
+  const activeExecutions = useStore((s) => s.activeExecutions)
   const loading = useStore((s) => s.sessionsLoading)
   const connectionStatus = useStore((s) => s.connectionStatus)
   const connectionMode = useStore((s) => s.connectionMode)
+  const agentStatus = useStore((s) => s.agentStatus)
+  const currentTaskDescription = useStore((s) => s.currentTaskDescription)
   
   // AI 增强
   const taskEnhancements = useStore((s) => s.taskEnhancements)
@@ -258,7 +261,10 @@ export function TaskHouse() {
   
   const isConnected = connectionStatus === 'connected'
   const defaultTasks = connectionMode === 'native' ? defaultTasksNative : defaultTasksOpenClaw
-  const tasks = isConnected && storeTasks.length > 0 ? storeTasks : defaultTasks
+  // 合并: 实时执行任务 (activeExecutions) + 会话派生任务 (storeTasks)
+  const tasks = isConnected && (storeTasks.length > 0 || activeExecutions.length > 0)
+    ? [...activeExecutions, ...storeTasks]
+    : defaultTasks
   const configured = isLLMConfigured()
   const hasEnhancements = Object.keys(taskEnhancements).length > 0
 
@@ -360,6 +366,39 @@ export function TaskHouse() {
           </button>
         </div>
       )}
+
+      {/* Agent 活跃任务横幅 (Native 模式 Agent 状态广播) */}
+      <AnimatePresence>
+        {agentStatus !== 'idle' && currentTaskDescription && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            transition={{ duration: 0.25 }}
+            className="mb-4 flex-shrink-0"
+          >
+            <div className={cn(
+              'p-3 rounded-lg border',
+              agentStatus === 'thinking'
+                ? 'bg-cyan-500/10 border-cyan-500/20'
+                : 'bg-amber-500/10 border-amber-500/20'
+            )}>
+              <div className="flex items-center gap-2">
+                <Activity className={cn(
+                  'w-4 h-4',
+                  agentStatus === 'thinking' ? 'text-cyan-400 animate-pulse' : 'text-amber-400 animate-pulse'
+                )} />
+                <span className="text-xs font-mono text-white/70">
+                  Agent {agentStatus === 'thinking' ? '思考中' : '执行中'}
+                </span>
+                <span className="text-xs font-mono text-white/40 truncate flex-1">
+                  {currentTaskDescription}
+                </span>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* System Inbox: 折叠式待处理任务 */}
       <SystemInbox

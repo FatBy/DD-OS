@@ -11,6 +11,9 @@ export interface SessionsSlice {
   // 映射后的 UI 数据
   tasks: TaskItem[]
   
+  // Native 模式: 实时执行任务
+  activeExecutions: TaskItem[]
+  
   // Actions
   setSessions: (sessions: Session[]) => void
   addSession: (session: Session) => void
@@ -18,6 +21,11 @@ export interface SessionsSlice {
   removeSession: (key: string) => void
   setSelectedSession: (key: string | null) => void
   setSessionsLoading: (loading: boolean) => void
+  
+  // Native 模式: 实时执行任务管理
+  addActiveExecution: (task: TaskItem) => void
+  updateActiveExecution: (id: string, updates: Partial<TaskItem>) => void
+  removeActiveExecution: (id: string) => void
 }
 
 export const createSessionsSlice: StateCreator<SessionsSlice> = (set) => ({
@@ -25,6 +33,7 @@ export const createSessionsSlice: StateCreator<SessionsSlice> = (set) => ({
   sessionsLoading: true,
   selectedSessionKey: null,
   tasks: [],
+  activeExecutions: [],
 
   setSessions: (sessions) => set({ 
     sessions, 
@@ -62,4 +71,19 @@ export const createSessionsSlice: StateCreator<SessionsSlice> = (set) => ({
   setSelectedSession: (key) => set({ selectedSessionKey: key }),
   
   setSessionsLoading: (loading) => set({ sessionsLoading: loading }),
+  
+  // Native 模式: 实时执行任务管理
+  addActiveExecution: (task) => set((state) => ({
+    activeExecutions: [...state.activeExecutions, task].slice(-20),
+  })),
+  
+  updateActiveExecution: (id, updates) => set((state) => ({
+    activeExecutions: state.activeExecutions.map(t =>
+      t.id === id ? { ...t, ...updates } : t
+    ),
+  })),
+  
+  removeActiveExecution: (id) => set((state) => ({
+    activeExecutions: state.activeExecutions.filter(t => t.id !== id),
+  })),
 })

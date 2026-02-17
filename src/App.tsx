@@ -109,6 +109,14 @@ function App() {
       
       // AI 执行状态
       updateExecutionStatus: useStore.getState().updateExecutionStatus,
+      
+      // Native 模式: Agent 任务上下文
+      setCurrentTask: useStore.getState().setCurrentTask,
+      
+      // Native 模式: 实时执行任务管理
+      addActiveExecution: useStore.getState().addActiveExecution,
+      updateActiveExecution: useStore.getState().updateActiveExecution,
+      removeActiveExecution: useStore.getState().removeActiveExecution,
     }
 
     // 注入到 OpenClaw 服务 (兼容模式)

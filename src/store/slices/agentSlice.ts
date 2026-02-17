@@ -9,6 +9,10 @@ export interface AgentSlice {
   logs: LogEntry[]
   agentLoading: boolean
   
+  // 当前任务上下文 (Native 模式 Agent 状态广播)
+  currentTaskDescription: string | null
+  currentTaskId: string | null
+  
   // 映射后的 UI 数据 (记忆)
   memories: MemoryEntry[]
   selectedMemoryId: string | null
@@ -16,6 +20,7 @@ export interface AgentSlice {
   // Actions
   setAgentIdentity: (identity: AgentIdentity | null) => void
   setAgentStatus: (status: AgentRunStatus | 'idle') => void
+  setCurrentTask: (id: string | null, description: string | null) => void
   addRunEvent: (event: AgentEvent) => void
   addLog: (log: LogEntry) => void
   clearLogs: () => void
@@ -34,12 +39,16 @@ export const createAgentSlice: StateCreator<AgentSlice> = (set) => ({
   agentStatus: 'idle',
   logs: [],
   agentLoading: true,
+  currentTaskDescription: null,
+  currentTaskId: null,
   memories: [],
   selectedMemoryId: null,
 
   setAgentIdentity: (identity) => set({ agentIdentity: identity, agentLoading: false }),
   
   setAgentStatus: (status) => set({ agentStatus: status }),
+  
+  setCurrentTask: (id, description) => set({ currentTaskId: id, currentTaskDescription: description }),
   
   addRunEvent: (event) => set((state) => ({
     logs: [...state.logs, {

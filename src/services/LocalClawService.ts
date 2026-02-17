@@ -45,6 +45,7 @@ interface StoreActions {
   setConnectionStatus: (status: string) => void
   setConnectionError: (error: string | null) => void
   setAgentStatus: (status: string) => void
+  setCurrentTask: (id: string | null, description: string | null) => void
   addToast: (toast: { type: string; title: string; message?: string }) => void
   addSession: (session: any) => void
   updateSession: (key: string, updates: any) => void
@@ -59,6 +60,10 @@ interface StoreActions {
   setSoulFromParsed: (parsed: ParsedSoul, agentIdentity: any) => void
   setOpenClawSkills: (skills: OpenClawSkill[]) => void
   setMemories: (memories: MemoryEntry[]) => void
+  // Native 模式: 实时执行任务管理
+  addActiveExecution: (task: any) => void
+  updateActiveExecution: (id: string, updates: any) => void
+  removeActiveExecution: (id: string) => void
 }
 
 // ============================================
@@ -611,6 +616,9 @@ class LocalClawService {
       timestamp: Date.now(),
     })
 
+    // 设置当前任务上下文 (驱动 UI 全局状态指示)
+    this.storeActions?.setCurrentTask(execId, prompt.slice(0, 80))
+
     // 📝 记录用户输入到短暂层
     this.logToEphemeral(`用户: ${prompt.slice(0, 100)}${prompt.length > 100 ? '...' : ''}`, 'action').catch(() => {})
 
@@ -629,6 +637,9 @@ class LocalClawService {
         error: error.message,
       })
       throw error
+    } finally {
+      // 清除当前任务上下文
+      this.storeActions?.setCurrentTask(null, null)
     }
   }
 

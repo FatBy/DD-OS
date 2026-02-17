@@ -273,6 +273,109 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
 
     try {
       const state = get() as any
+      const connectionMode = state.connectionMode || 'native'
+      const connectionStatus = state.connectionStatus || 'disconnected'
+      const isNativeConnected = connectionMode === 'native' && connectionStatus === 'connected'
+
+      // ========== Native 模式: 直通 ReAct (跳过前端 LLM) ==========
+      if (isNativeConnected) {
+        const execId = `exec-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+        
+        // 1. 创建执行中消息 (在聊天面板显示)
+        const execMsg: ChatMessage = {
+          id: execId,
+          role: 'assistant',
+          content: message,
+          timestamp: Date.now(),
+          execution: { id: execId, status: 'running', timestamp: Date.now() },
+        }
+        set((s) => ({
+          chatMessages: [...s.chatMessages, execMsg],
+          chatStreaming: true,
+          chatStreamContent: '',
+          executionStatuses: { ...s.executionStatuses, [execId]: execMsg.execution! },
+        }))
+
+        // 2. 创建实时任务 (在 TaskHouse 显示)
+        const fullState = get() as any
+        fullState.addActiveExecution?.({
+          id: execId,
+          title: message.slice(0, 50),
+          description: message,
+          status: 'executing',
+          priority: 'high',
+          timestamp: new Date().toISOString(),
+        })
+
+        // 3. 直接调用 ReAct 循环 (单次 LLM，不经过前端 streamChat)
+        try {
+          const result = await localClawService.sendMessage(
+            message,
+            (content) => {
+              const outputLines = content.split('\n')
+              const updatedStatus: ExecutionStatus = {
+                id: execId, status: 'running', output: content, outputLines, timestamp: Date.now(),
+              }
+              set((s) => ({
+                chatStreamContent: content,
+                executionStatuses: { ...s.executionStatuses, [execId]: updatedStatus },
+                chatMessages: s.chatMessages.map(m =>
+                  m.id === execId ? { ...m, execution: updatedStatus } : m
+                ),
+              }))
+            }
+          )
+
+          // 4. 完成 - 更新所有状态
+          const finalStatus: ExecutionStatus = {
+            id: execId, status: 'success', output: result,
+            outputLines: result.split('\n'), timestamp: Date.now(),
+          }
+          set((s) => ({
+            chatStreaming: false,
+            chatStreamContent: '',
+            _chatAbort: null,
+            executionStatuses: { ...s.executionStatuses, [execId]: finalStatus },
+            chatMessages: s.chatMessages.map(m =>
+              m.id === execId ? { ...m, execution: finalStatus } : m
+            ),
+          }))
+          fullState.updateActiveExecution?.(execId, { status: 'done' })
+          persistChatState(get().chatMessages, get().executionStatuses)
+
+          // 5分钟后自动清理 activeExecution
+          setTimeout(() => {
+            (get() as any).removeActiveExecution?.(execId)
+          }, 300000)
+
+        } catch (err: any) {
+          const errorStatus: ExecutionStatus = {
+            id: execId, status: 'error', error: err.message, timestamp: Date.now(),
+          }
+          set((s) => ({
+            chatStreaming: false,
+            chatStreamContent: '',
+            _chatAbort: null,
+            executionStatuses: { ...s.executionStatuses, [execId]: errorStatus },
+            chatMessages: s.chatMessages.map(m =>
+              m.id === execId ? { ...m, execution: errorStatus } : m
+            ),
+          }))
+          fullState.updateActiveExecution?.(execId, { status: 'done', description: `失败: ${err.message}` })
+          persistChatState(get().chatMessages, get().executionStatuses)
+        }
+
+        // Observer 集成
+        if (fullState.addBehaviorRecord && fullState.analyze && fullState.createProposal) {
+          fullState.addBehaviorRecord({ type: 'chat', content: message, keywords: [] })
+          const trigger = fullState.analyze()
+          if (trigger) fullState.createProposal(trigger)
+        }
+
+        return // Native 分支结束，不进入 OpenClaw/前端 LLM 流程
+      }
+
+      // ========== OpenClaw / 未连接模式: 保持原有前端 LLM 流程 ==========
       const storeData = {
         tasks: state.tasks || [],
         skills: state.skills || [],
