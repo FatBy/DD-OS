@@ -70,6 +70,9 @@ const CONFIG = {
   MAX_REACT_TURNS: 10,
   MAX_PLAN_STEPS: 8,
   TOOL_TIMEOUT: 60000,
+  // Reflexion 机制配置
+  CRITIC_TOOLS: ['writeFile', 'runCmd', 'appendFile'], // 修改类工具需要 Critic 验证
+  HIGH_RISK_TOOLS: ['runCmd'], // 高风险工具需要执行前检查
 }
 
 // ============================================
@@ -101,6 +104,11 @@ const SKILL_TRIGGERS: Record<string, { keywords: string[]; path: string }> = {
     keywords: ['状态', 'soul', '技能列表', '记忆', 'status', 'skills', 'memory'],
     path: 'skills/dd-os-data/SKILL.md',
   },
+  'skill-generator': {
+    keywords: ['创建技能', '新技能', '生成技能', '添加技能', '技能生成', 
+               'create skill', 'new skill', 'generate skill', 'add skill', '自定义技能'],
+    path: 'skills/skill-generator/SKILL.md',
+  },
 }
 
 // ============================================
@@ -125,6 +133,25 @@ const SYSTEM_PROMPT_TEMPLATE = `你是 DD-OS，一个运行在用户本地电脑
 - weather: 查询天气 (参数: location)
 - webSearch: 网页搜索 (参数: query)
 
+### 记忆管理 (显式调用)
+- saveMemory: 保存重要信息到长期记忆 (参数: key, content, type)
+- searchMemory: 检索历史记忆 (参数: query)
+
+## 记忆管理策略
+你拥有长期记忆能力，应主动管理：
+
+**何时保存记忆** (调用 saveMemory):
+- 用户表达偏好："我喜欢..."、"以后都..."、"记住..."
+- 发现有效的解决方案或最佳实践
+- 从错误中学到的教训
+- 用户的重要信息（位置、习惯、项目配置等）
+
+**何时检索记忆** (调用 searchMemory):
+- 遇到似曾相识的任务
+- 用户提到"之前"、"上次"、"还记得..."
+- 需要用户偏好或历史信息
+- 执行复杂任务前，检索相关经验
+
 ## 输出格式
 你必须严格按照以下 JSON 格式输出。每次回复只能包含一个 JSON 代码块或纯文本。
 
@@ -148,6 +175,7 @@ const SYSTEM_PROMPT_TEMPLATE = `你是 DD-OS，一个运行在用户本地电脑
 5. 执行危险操作前先在 thought 中评估风险
 6. 保持响应简洁明了
 7. 如果工具执行失败，在 thought 中分析原因并尝试其他方法
+8. **主动记忆**: 发现用户偏好或有价值的信息时，主动调用 saveMemory 保存
 
 {dynamic_examples}
 
@@ -682,6 +710,12 @@ class LocalClawService {
   ): Promise<string> {
     this.storeActions?.setAgentStatus('thinking')
 
+    // 🎯 复杂度感知：简单任务减少轮次，复杂任务允许更多迭代
+    const isSimpleTask = userPrompt.length < 30 && 
+      !userPrompt.match(/代码|编写|创建|修复|分析|部署|配置|脚本|code|create|fix|analyze/)
+    const maxTurns = isSimpleTask ? 3 : CONFIG.MAX_REACT_TURNS
+    console.log(`[LocalClaw] Task complexity: ${isSimpleTask ? 'simple' : 'complex'}, maxTurns: ${maxTurns}`)
+
     // 🎯 JIT: 动态构建上下文
     const { context: dynamicContext, dynamicExamples } = await this.buildDynamicContext(userPrompt)
     console.log('[LocalClaw] JIT Context built:', dynamicContext.slice(0, 200) + '...')
@@ -699,7 +733,7 @@ class LocalClawService {
     let finalResponse = ''
     let lastToolResult = ''  // 保存最后一次工具结果，防止循环耗尽时返回空
 
-    while (turnCount < CONFIG.MAX_REACT_TURNS) {
+    while (turnCount < maxTurns) {
       turnCount++
       console.log(`[LocalClaw] ReAct turn ${turnCount}`)
 
@@ -727,6 +761,35 @@ class LocalClawService {
         }
 
         if (toolCall) {
+          // 🛡️ Reflexion: 高风险工具执行前检查
+          if (CONFIG.HIGH_RISK_TOOLS.includes(toolCall.name)) {
+            const argsStr = JSON.stringify(toolCall.args)
+            // 简单的危险命令检测
+            const dangerousPatterns = ['rm -rf', 'del /f', 'format', 'mkfs', 'dd if=/dev']
+            const isDangerous = dangerousPatterns.some(p => argsStr.toLowerCase().includes(p))
+            
+            if (isDangerous) {
+              this.storeActions?.addLog({
+                id: `precheck-${Date.now()}`,
+                timestamp: Date.now(),
+                level: 'warn',
+                message: `[PreCheck] 检测到高危命令，已阻止: ${argsStr.slice(0, 100)}`,
+              })
+              
+              messages.push({ role: 'assistant', content: response })
+              messages.push({
+                role: 'user',
+                content: `[安全检查] 检测到潜在危险操作，已阻止执行。
+命令: ${argsStr}
+
+请使用更安全的方法，或明确告知用户风险后让用户自行执行。`,
+              })
+              
+              this.storeActions?.setAgentStatus('thinking')
+              continue // 跳过执行，让 Agent 重新思考
+            }
+          }
+          
           // 执行工具
           this.storeActions?.setAgentStatus('executing')
           this.storeActions?.addLog({
@@ -747,19 +810,66 @@ class LocalClawService {
           // 添加到消息历史
           messages.push({ role: 'assistant', content: response })
           
-          // 🔧 错误自修正引导：失败时追加反思提示
+          // 🔧 Reflexion 机制：错误时生成结构化反思
           if (toolResult.status === 'error') {
             lastToolResult = toolResult.result
+            
+            // 📝 记录失败教训到记忆（Reflexion: Verbal Reinforcement）
+            const failureLesson = `工具 ${toolCall.name} 执行失败: ${toolResult.result.slice(0, 200)}`
+            this.logToEphemeral(failureLesson, 'thought').catch(() => {})
+            
             messages.push({
               role: 'user',
-              content: `[工具执行失败] ${toolCall.name} 返回错误:\n${toolResult.result}\n\n请在 thought 中分析失败原因（是路径错误？参数类型错误？工具不支持此操作？），然后修正参数重试，或换用其他方法。`,
+              content: `[Reflexion 反思] ${toolCall.name} 执行失败。
+错误信息: ${toolResult.result}
+
+请进行结构化反思:
+1. **根本原因**: 是路径错误？参数类型错误？权限问题？工具不支持？
+2. **修正方案**: 如何调整参数或换用其他方法？
+3. **预防措施**: 下次如何避免此类错误？
+
+请在 thought 中完成反思，然后执行修正后的操作。`,
+            })
+            
+            this.storeActions?.addLog({
+              id: `reflexion-${Date.now()}`,
+              timestamp: Date.now(),
+              level: 'warn',
+              message: `[Reflexion] 分析 ${toolCall.name} 失败原因`,
             })
           } else {
             lastToolResult = toolResult.result
-            messages.push({
-              role: 'user',
-              content: `[工具执行结果] ${toolCall.name}:\n${toolResult.result}`,
-            })
+            
+            // 🔍 Critic 自检：修改类工具成功后触发验证
+            const needsCritic = CONFIG.CRITIC_TOOLS.includes(toolCall.name)
+            
+            if (needsCritic) {
+              messages.push({
+                role: 'user',
+                content: `[Critic 自检] ${toolCall.name} 执行成功。
+结果: ${toolResult.result.slice(0, 500)}
+
+请验证:
+1. 结果是否完全满足用户的原始需求？
+2. 是否有潜在问题需要修正？
+3. 是否需要额外操作来完善？
+
+如果满足需求，请给出最终回复。如果发现问题，请自行修正。`,
+              })
+              
+              this.storeActions?.addLog({
+                id: `critic-${Date.now()}`,
+                timestamp: Date.now(),
+                level: 'info',
+                message: `[Critic] 验证 ${toolCall.name} 执行结果`,
+              })
+            } else {
+              // 查询类工具直接返回结果
+              messages.push({
+                role: 'user',
+                content: `[工具执行结果] ${toolCall.name}:\n${toolResult.result}`,
+              })
+            }
           }
 
           this.storeActions?.setAgentStatus('thinking')

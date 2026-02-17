@@ -41,7 +41,7 @@ from datetime import datetime
 VERSION = "3.0.0"
 
 # 🛡️ 安全配置
-ALLOWED_TOOLS = {'readFile', 'writeFile', 'listDir', 'runCmd', 'appendFile', 'weather', 'webSearch'}
+ALLOWED_TOOLS = {'readFile', 'writeFile', 'listDir', 'runCmd', 'appendFile', 'weather', 'webSearch', 'saveMemory', 'searchMemory'}
 DANGEROUS_COMMANDS = {'rm -rf /', 'format', 'mkfs', 'dd if=/dev/zero'}
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB 最大文件大小
 MAX_OUTPUT_SIZE = 512 * 1024      # 512KB 最大输出
@@ -178,6 +178,14 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
             # 7. 网页搜索
             elif tool_name == 'webSearch':
                 result = self._tool_web_search(args)
+            
+            # 8. 保存记忆
+            elif tool_name == 'saveMemory':
+                result = self._tool_save_memory(args)
+            
+            # 9. 检索记忆
+            elif tool_name == 'searchMemory':
+                result = self._tool_search_memory(args)
         
         except Exception as e:
             status = "error"
@@ -407,6 +415,73 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
                 
         except Exception as e:
             return f"搜索失败: {str(e)}"
+    
+    def _tool_save_memory(self, args: dict) -> str:
+        """保存记忆到文件"""
+        key = args.get('key', '')
+        content = args.get('content', '')
+        memory_type = args.get('type', 'general')
+        
+        if not key or not content:
+            raise ValueError("key 和 content 参数必填")
+        
+        # 记忆存储在 memory 目录下
+        memory_dir = self.clawd_path / 'memory'
+        memory_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 按日期组织记忆文件
+        today = datetime.now().strftime('%Y-%m-%d')
+        memory_file = memory_dir / f'{today}.md'
+        
+        # 格式化记忆条目
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        entry = f"\n## [{timestamp}] {key}\n- **类型**: {memory_type}\n- **内容**: {content}\n"
+        
+        # 追加到记忆文件
+        with open(memory_file, 'a', encoding='utf-8') as f:
+            f.write(entry)
+        
+        return f"记忆已保存: {key} (类型: {memory_type})"
+    
+    def _tool_search_memory(self, args: dict) -> str:
+        """检索历史记忆"""
+        query = args.get('query', '')
+        
+        if not query:
+            raise ValueError("query 参数必填")
+        
+        memory_dir = self.clawd_path / 'memory'
+        if not memory_dir.exists():
+            return "记忆库为空，暂无历史记忆。"
+        
+        results = []
+        query_lower = query.lower()
+        
+        # 遍历所有记忆文件
+        for memory_file in sorted(memory_dir.glob('*.md'), reverse=True)[:7]:  # 最近7天
+            try:
+                content = memory_file.read_text(encoding='utf-8')
+                
+                # 按条目分割
+                entries = content.split('\n## ')
+                for entry in entries:
+                    if query_lower in entry.lower():
+                        # 提取日期和内容
+                        date = memory_file.stem
+                        results.append(f"[{date}] {entry.strip()[:200]}")
+                        
+                        if len(results) >= 5:  # 最多返回5条
+                            break
+            except Exception:
+                continue
+            
+            if len(results) >= 5:
+                break
+        
+        if results:
+            return f"找到 {len(results)} 条相关记忆:\n\n" + "\n\n---\n\n".join(results)
+        else:
+            return f"未找到与 '{query}' 相关的记忆。"
     
     # ============================================
     # 原有处理器 (保持兼容)
