@@ -3,14 +3,15 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { 
   Inbox, Clock, CheckCircle2, Play,
   Loader2, MessageSquare, ChevronRight, Sparkles,
-  Calendar, Hash, Activity
+  Calendar, Hash, Activity, Brain, Wrench, Terminal,
+  AlertCircle, ChevronDown, Trash2
 } from 'lucide-react'
 import { GlassCard } from '@/components/GlassCard'
 import { AISummaryCard } from '@/components/ai/AISummaryCard'
 import { useStore } from '@/store'
 import { isLLMConfigured } from '@/services/llmService'
 import { cn } from '@/utils/cn'
-import type { TaskItem, TaskEnhancement } from '@/types'
+import type { TaskItem, TaskEnhancement, ExecutionStep } from '@/types'
 
 // 默认任务（根据模式显示不同内容）
 const defaultTasksNative: TaskItem[] = [
@@ -43,6 +44,137 @@ function EmptyColumn({ status }: { status: TaskItem['status'] }) {
     <div className="flex flex-col items-center justify-center py-8 text-white/20">
       <Inbox className="w-8 h-8 mb-2" />
       <span className="text-xs font-mono">暂无{config.label}任务</span>
+    </div>
+  )
+}
+
+// 执行步骤图标映射
+const stepTypeConfig = {
+  thinking: { icon: Brain, color: 'purple', label: '思考' },
+  tool_call: { icon: Wrench, color: 'cyan', label: '调用工具' },
+  tool_result: { icon: Terminal, color: 'emerald', label: '工具结果' },
+  output: { icon: MessageSquare, color: 'amber', label: '输出' },
+  error: { icon: AlertCircle, color: 'red', label: '错误' },
+}
+
+// 执行步骤详情面板
+function ExecutionStepsViewer({ steps, output, error, duration }: {
+  steps?: ExecutionStep[]
+  output?: string
+  error?: string
+  duration?: number
+}) {
+  const [stepsExpanded, setStepsExpanded] = useState(false)
+  
+  if (!steps?.length && !output && !error) {
+    return (
+      <div className="mt-2 p-3 bg-white/5 rounded-lg border border-white/10">
+        <p className="text-xs text-white/40 font-mono">暂无执行记录</p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="mt-2 space-y-2">
+      {/* 最终输出 / 错误 */}
+      {output && (
+        <div className="p-3 bg-emerald-500/5 rounded-lg border border-emerald-500/15">
+          <div className="flex items-center gap-1.5 mb-1.5">
+            <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+            <span className="text-[10px] font-mono text-emerald-400 font-medium">执行结果</span>
+            {duration !== undefined && (
+              <span className="text-[9px] font-mono text-white/30 ml-auto">{(duration / 1000).toFixed(1)}s</span>
+            )}
+          </div>
+          <pre className="text-xs text-white/70 whitespace-pre-wrap leading-relaxed max-h-60 overflow-y-auto font-mono">
+            {output}
+          </pre>
+        </div>
+      )}
+      
+      {error && (
+        <div className="p-3 bg-red-500/5 rounded-lg border border-red-500/15">
+          <div className="flex items-center gap-1.5 mb-1.5">
+            <AlertCircle className="w-3 h-3 text-red-400" />
+            <span className="text-[10px] font-mono text-red-400 font-medium">执行失败</span>
+          </div>
+          <p className="text-xs text-red-300/80 font-mono">{error}</p>
+        </div>
+      )}
+
+      {/* 执行步骤折叠面板 */}
+      {steps && steps.length > 0 && (
+        <div className="rounded-lg border border-white/10 overflow-hidden">
+          <button
+            onClick={(e) => { e.stopPropagation(); setStepsExpanded(!stepsExpanded) }}
+            className="w-full flex items-center gap-2 px-3 py-2 bg-white/5 hover:bg-white/8 transition-colors"
+          >
+            <Activity className="w-3 h-3 text-white/40" />
+            <span className="text-[10px] font-mono text-white/50">
+              执行过程 ({steps.length} 步)
+            </span>
+            <motion.div 
+              animate={{ rotate: stepsExpanded ? 180 : 0 }}
+              transition={{ duration: 0.2 }}
+              className="ml-auto"
+            >
+              <ChevronDown className="w-3 h-3 text-white/30" />
+            </motion.div>
+          </button>
+          
+          <AnimatePresence>
+            {stepsExpanded && (
+              <motion.div
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: 'auto', opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.2 }}
+                className="overflow-hidden"
+              >
+                <div className="max-h-80 overflow-y-auto">
+                  {steps.map((step, i) => {
+                    const stepConfig = stepTypeConfig[step.type] || stepTypeConfig.output
+                    const StepIcon = stepConfig.icon
+                    return (
+                      <div 
+                        key={step.id || i}
+                        className="flex gap-2 px-3 py-2 border-t border-white/5 hover:bg-white/3"
+                      >
+                        <div className={cn(
+                          'w-5 h-5 rounded flex items-center justify-center flex-shrink-0 mt-0.5',
+                          `bg-${stepConfig.color}-500/15`
+                        )}>
+                          <StepIcon className={cn('w-3 h-3', `text-${stepConfig.color}-400`)} />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className={cn('text-[9px] font-mono font-medium', `text-${stepConfig.color}-400`)}>
+                              {stepConfig.label}
+                            </span>
+                            {step.toolName && (
+                              <span className="text-[9px] font-mono text-white/30 bg-white/5 px-1 rounded">
+                                {step.toolName}
+                              </span>
+                            )}
+                            {step.duration !== undefined && (
+                              <span className="text-[8px] font-mono text-white/20 ml-auto">
+                                {step.duration}ms
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-[11px] text-white/50 font-mono mt-0.5 whitespace-pre-wrap break-all leading-relaxed line-clamp-4">
+                            {step.content}
+                          </p>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+      )}
     </div>
   )
 }
@@ -127,6 +259,16 @@ function TaskCard({ task, index, enhancement, isEnhancing, isExpanded, onToggle 
                     </p>
                   </div>
 
+                  {/* 执行步骤详情 */}
+                  {(task.executionSteps || task.executionOutput || task.executionError) && (
+                    <ExecutionStepsViewer
+                      steps={task.executionSteps}
+                      output={task.executionOutput}
+                      error={task.executionError}
+                      duration={task.executionDuration}
+                    />
+                  )}
+
                   {/* 元数据 */}
                   <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[9px] font-mono text-white/40">
                     <span className="flex items-center gap-1">
@@ -137,6 +279,12 @@ function TaskCard({ task, index, enhancement, isEnhancing, isExpanded, onToggle 
                       <span className="flex items-center gap-1">
                         <MessageSquare className="w-3 h-3" />
                         {task.messageCount} 条消息
+                      </span>
+                    )}
+                    {task.executionSteps && task.executionSteps.length > 0 && (
+                      <span className="flex items-center gap-1">
+                        <Activity className="w-3 h-3" />
+                        {task.executionSteps.length} 步
                       </span>
                     )}
                     {task.sessionKey && (
@@ -153,6 +301,12 @@ function TaskCard({ task, index, enhancement, isEnhancing, isExpanded, onToggle 
             {/* 折叠时的简要元数据 */}
             {!isExpanded && (
               <div className="flex items-center gap-3 mt-2 text-[9px] font-mono text-white/30">
+                {task.executionSteps && task.executionSteps.length > 0 && (
+                  <span className="flex items-center gap-1 text-cyan-400/50">
+                    <Activity className="w-3 h-3" />
+                    {task.executionSteps.length} 步
+                  </span>
+                )}
                 {task.messageCount !== undefined && (
                   <span className="flex items-center gap-1">
                     <MessageSquare className="w-3 h-3" />
@@ -252,6 +406,7 @@ export function TaskHouse() {
   const connectionMode = useStore((s) => s.connectionMode)
   const agentStatus = useStore((s) => s.agentStatus)
   const currentTaskDescription = useStore((s) => s.currentTaskDescription)
+  const clearTaskHistory = useStore((s) => s.clearTaskHistory)
   
   // AI 增强
   const taskEnhancements = useStore((s) => s.taskEnhancements)
@@ -261,8 +416,10 @@ export function TaskHouse() {
   
   const isConnected = connectionStatus === 'connected'
   const defaultTasks = connectionMode === 'native' ? defaultTasksNative : defaultTasksOpenClaw
-  // 合并: 实时执行任务 (activeExecutions) + 会话派生任务 (storeTasks)
-  const tasks = isConnected && (storeTasks.length > 0 || activeExecutions.length > 0)
+  // 合并: 实时执行任务 (activeExecutions，含历史) + 会话派生任务 (storeTasks)
+  // 即使未连接，只要有历史任务就显示
+  const hasHistory = activeExecutions.length > 0
+  const tasks = (isConnected && storeTasks.length > 0) || hasHistory
     ? [...activeExecutions, ...storeTasks]
     : defaultTasks
   const configured = isLLMConfigured()
@@ -415,6 +572,15 @@ export function TaskHouse() {
       <div className="flex items-center gap-2 mb-4">
         <Hash className="w-4 h-4 text-cyan-400" />
         <h3 className="font-mono text-sm text-cyan-200 tracking-wider">OS Workspace</h3>
+        {hasHistory && (
+          <button
+            onClick={() => { if (window.confirm('确定清除所有任务历史？')) clearTaskHistory() }}
+            className="ml-auto flex items-center gap-1 px-2 py-0.5 rounded text-[9px] font-mono text-white/30 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+          >
+            <Trash2 className="w-3 h-3" />
+            清除历史
+          </button>
+        )}
       </div>
 
       {/* 主工作区: 进行中 & 已完成 */}

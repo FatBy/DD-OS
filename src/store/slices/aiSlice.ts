@@ -1,5 +1,5 @@
 import type { StateCreator } from 'zustand'
-import type { ChatMessage, AISummary, LLMConfig, ViewType, SkillEnhancement, TaskEnhancement, ExecutionStatus } from '@/types'
+import type { ChatMessage, AISummary, LLMConfig, ViewType, SkillEnhancement, TaskEnhancement, ExecutionStatus, ApprovalRequest } from '@/types'
 import type { SkillNode, TaskItem } from '@/types'
 import { getLLMConfig, saveLLMConfig, isLLMConfigured, streamChat, chat } from '@/services/llmService'
 import { buildSummaryMessages, buildChatMessages, buildSkillEnhancementPrompt, buildTaskNamingPrompt, parseJSONFromLLM, parseExecutionCommands, stripExecutionBlocks } from '@/services/contextBuilder'
@@ -151,6 +151,11 @@ export interface AiSlice {
   // AI 执行
   executionStatuses: Record<string, ExecutionStatus>
   updateExecutionStatus: (id: string, updates: Partial<ExecutionStatus>) => void
+
+  // P3: 危险操作审批
+  pendingApproval: (ApprovalRequest & { resolve: (approved: boolean) => void }) | null
+  requestApproval: (req: Omit<ApprovalRequest, 'id' | 'timestamp'>) => Promise<boolean>
+  respondToApproval: (approved: boolean) => void
 }
 
 export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) => ({
@@ -280,23 +285,24 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
       // ========== Native 模式: 直通 ReAct (跳过前端 LLM) ==========
       if (isNativeConnected) {
         const execId = `exec-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+        const execStartTime = Date.now()
         
-        // 1. 创建执行中消息 (在聊天面板显示)
-        const execMsg: ChatMessage = {
+        // 1. 创建占位消息 (聊天面板只显示简要状态)
+        const placeholderMsg: ChatMessage = {
           id: execId,
           role: 'assistant',
-          content: message,
+          content: '',
           timestamp: Date.now(),
           execution: { id: execId, status: 'running', timestamp: Date.now() },
         }
         set((s) => ({
-          chatMessages: [...s.chatMessages, execMsg],
+          chatMessages: [...s.chatMessages, placeholderMsg],
           chatStreaming: true,
           chatStreamContent: '',
-          executionStatuses: { ...s.executionStatuses, [execId]: execMsg.execution! },
+          executionStatuses: { ...s.executionStatuses, [execId]: placeholderMsg.execution! },
         }))
 
-        // 2. 创建实时任务 (在 TaskHouse 显示)
+        // 2. 创建实时任务 (在 TaskHouse 显示，含执行步骤)
         const fullState = get() as any
         fullState.addActiveExecution?.({
           id: execId,
@@ -305,63 +311,66 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
           status: 'executing',
           priority: 'high',
           timestamp: new Date().toISOString(),
+          executionSteps: [],
         })
 
-        // 3. 直接调用 ReAct 循环 (单次 LLM，不经过前端 streamChat)
+        // 3. 直接调用 ReAct 循环
         try {
           const result = await localClawService.sendMessage(
             message,
+            // onUpdate: 仅更新流式内容指示
             (content) => {
-              const outputLines = content.split('\n')
-              const updatedStatus: ExecutionStatus = {
-                id: execId, status: 'running', output: content, outputLines, timestamp: Date.now(),
-              }
-              set((s) => ({
-                chatStreamContent: content,
-                executionStatuses: { ...s.executionStatuses, [execId]: updatedStatus },
-                chatMessages: s.chatMessages.map(m =>
-                  m.id === execId ? { ...m, execution: updatedStatus } : m
-                ),
-              }))
+              set({ chatStreamContent: '...' })
+            },
+            // onStep: 将执行步骤追加到任务屋
+            (step) => {
+              (get() as any).appendExecutionStep?.(execId, step)
             }
           )
 
-          // 4. 完成 - 更新所有状态
-          const finalStatus: ExecutionStatus = {
-            id: execId, status: 'success', output: result,
-            outputLines: result.split('\n'), timestamp: Date.now(),
-          }
+          // 4. 完成 - 聊天面板显示最终结果（普通文本消息）
+          const execDuration = Date.now() - execStartTime
           set((s) => ({
             chatStreaming: false,
             chatStreamContent: '',
             _chatAbort: null,
-            executionStatuses: { ...s.executionStatuses, [execId]: finalStatus },
+            executionStatuses: {
+              ...s.executionStatuses,
+              [execId]: { id: execId, status: 'success', output: result, timestamp: Date.now() },
+            },
+            // 替换占位消息为最终结果（无 execution 卡片）
             chatMessages: s.chatMessages.map(m =>
-              m.id === execId ? { ...m, execution: finalStatus } : m
+              m.id === execId ? { ...m, content: result, execution: undefined } : m
             ),
           }))
-          fullState.updateActiveExecution?.(execId, { status: 'done' })
+          // 更新任务状态 + 存储执行结果
+          fullState.updateActiveExecution?.(execId, {
+            status: 'done',
+            executionOutput: result,
+            executionDuration: execDuration,
+          })
           persistChatState(get().chatMessages, get().executionStatuses)
 
-          // 5分钟后自动清理 activeExecution
-          setTimeout(() => {
-            (get() as any).removeActiveExecution?.(execId)
-          }, 300000)
-
         } catch (err: any) {
-          const errorStatus: ExecutionStatus = {
-            id: execId, status: 'error', error: err.message, timestamp: Date.now(),
-          }
+          const execDuration = Date.now() - execStartTime
           set((s) => ({
             chatStreaming: false,
             chatStreamContent: '',
             _chatAbort: null,
-            executionStatuses: { ...s.executionStatuses, [execId]: errorStatus },
+            executionStatuses: {
+              ...s.executionStatuses,
+              [execId]: { id: execId, status: 'error', error: err.message, timestamp: Date.now() },
+            },
+            // 显示错误消息（普通文本，无执行卡片）
             chatMessages: s.chatMessages.map(m =>
-              m.id === execId ? { ...m, execution: errorStatus } : m
+              m.id === execId ? { ...m, content: `执行失败: ${err.message}`, error: true, execution: undefined } : m
             ),
           }))
-          fullState.updateActiveExecution?.(execId, { status: 'done', description: `失败: ${err.message}` })
+          fullState.updateActiveExecution?.(execId, {
+            status: 'done',
+            executionError: err.message,
+            executionDuration: execDuration,
+          })
           persistChatState(get().chatMessages, get().executionStatuses)
         }
 
@@ -704,5 +713,39 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
         chatMessages: newMessages,
       }
     })
+  },
+
+  // P3: 危险操作审批
+  pendingApproval: null,
+
+  requestApproval: (req) => {
+    return new Promise((resolve) => {
+      const approvalRequest = {
+        ...req,
+        id: `approval-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        timestamp: Date.now(),
+        resolve, // 存储 Promise 的 resolver
+      }
+      set({ pendingApproval: approvalRequest })
+
+      // 60秒超时自动拒绝
+      setTimeout(() => {
+        const current = get().pendingApproval
+        if (current && current.id === approvalRequest.id) {
+          console.log('[Approval] Auto-reject due to timeout')
+          set({ pendingApproval: null })
+          resolve(false)
+        }
+      }, 60000)
+    })
+  },
+
+  respondToApproval: (approved) => {
+    const pending = get().pendingApproval
+    if (pending) {
+      pending.resolve(approved)
+      set({ pendingApproval: null })
+      console.log(`[Approval] User ${approved ? 'approved' : 'rejected'} operation: ${pending.toolName}`)
+    }
   },
 })

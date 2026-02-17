@@ -8,6 +8,7 @@ import { ToastContainer } from '@/components/Toast'
 import { AIChatPanel } from '@/components/ai/AIChatPanel'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { BuildProposalModal } from '@/components/world/BuildProposalModal'
+import { ApprovalModal } from '@/components/ApprovalModal'
 import { NexusDetailPanel } from '@/components/world/NexusDetailPanel'
 import { useStore } from '@/store'
 import { getHouseById } from '@/houses/registry'
@@ -117,6 +118,9 @@ function App() {
       addActiveExecution: useStore.getState().addActiveExecution,
       updateActiveExecution: useStore.getState().updateActiveExecution,
       removeActiveExecution: useStore.getState().removeActiveExecution,
+      
+      // P3: 危险操作审批
+      requestApproval: useStore.getState().requestApproval,
     }
 
     // 注入到 OpenClaw 服务 (兼容模式)
@@ -208,6 +212,7 @@ function App() {
 
       {/* Observer: Nexus build proposal modal */}
       <BuildProposalModal />
+      <ApprovalModal />
 
       {/* Nexus detail panel */}
       <NexusDetailPanel />

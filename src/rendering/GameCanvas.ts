@@ -76,6 +76,7 @@ export class GameCanvas {
   private animFrameId = 0
   private nexusCache: Map<string, BufferCanvas> = new Map()
   private particles: Particle[] = []
+  private _time = 0  // 全局时间（驱动呼吸光晕等动态效果）
 
   private state: RenderState = {
     nexuses: new Map(),
@@ -143,14 +144,14 @@ export class GameCanvas {
   // ---- 背景粒子 (星空) ----
 
   private initBgParticles(): void {
-    for (let i = 0; i < 50; i++) {
+    for (let i = 0; i < 80; i++) {
       this.particles.push({
         x: Math.random() * 2000,
         y: Math.random() * 1200,
-        size: Math.random() * 1.5 + 0.3,
-        speedX: (Math.random() - 0.5) * 0.15,
-        speedY: (Math.random() - 0.5) * 0.15,
-        opacity: Math.random() * 0.5 + 0.1,
+        size: Math.random() * 1.8 + 0.2,
+        speedX: (Math.random() - 0.5) * 0.12,
+        speedY: (Math.random() - 0.5) * 0.12,
+        opacity: Math.random() * 0.6 + 0.1,
       })
     }
   }
@@ -205,22 +206,63 @@ export class GameCanvas {
     }
   }
 
-  // ---- Layer 1: 星空背景 ----
+  // ---- Layer 1: 深空背景 (星空 + 氛围光晕 + 宇宙尘埃) ----
 
   private renderStarfield(ctx: CanvasRenderingContext2D, w: number, h: number): void {
+    this._time += 0.002
+
+    const cx = w / 2
+    const cy = h / 2
+    const time = this._time
+
+    // A. 深空基底渐变 (深蓝→近黑，比纯黑更有层次)
+    const bgGrad = ctx.createLinearGradient(0, 0, 0, h)
+    bgGrad.addColorStop(0, '#020617')  // Slate-950
+    bgGrad.addColorStop(0.5, '#0a0f1e') // 深靛蓝
+    bgGrad.addColorStop(1, '#060b18')
+    ctx.fillStyle = bgGrad
+    ctx.fillRect(0, 0, w, h)
+
+    // B. 中心呼吸光晕 (模拟星系核心辐射，与 SoulOrb 同款效果)
+    const pulse = Math.sin(time) * 0.08 + 1
+    const maxDim = Math.max(w, h)
+    const glowGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, maxDim * 0.7 * pulse)
+    glowGrad.addColorStop(0, `hsla(220, 60%, 12%, ${0.25 * pulse})`)
+    glowGrad.addColorStop(0.4, `hsla(250, 50%, 8%, ${0.12 * pulse})`)
+    glowGrad.addColorStop(1, 'transparent')
+    ctx.fillStyle = glowGrad
+    ctx.fillRect(0, 0, w, h)
+
+    // C. 星空粒子 (原有逻辑增强：闪烁)
     for (const p of this.particles) {
       p.x += p.speedX
       p.y += p.speedY
       if (p.x < 0) p.x = w; if (p.x > w) p.x = 0
       if (p.y < 0) p.y = h; if (p.y > h) p.y = 0
 
-      ctx.globalAlpha = p.opacity
+      // 微弱闪烁效果
+      const twinkle = Math.sin(time * 3 + p.x * 0.1 + p.y * 0.1) * 0.15 + 0.85
+      ctx.globalAlpha = p.opacity * twinkle
       ctx.fillStyle = '#fff'
       ctx.beginPath()
       ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2)
       ctx.fill()
     }
     ctx.globalAlpha = 1
+
+    // D. 漂浮星云尘埃 (大型半透明光斑，增加空间深度)
+    for (let i = 0; i < 6; i++) {
+      const nx = (Math.sin(i * 73.7 + time * 0.15) * 0.4 + 0.5) * w
+      const ny = (Math.cos(i * 127.3 + time * 0.1) * 0.4 + 0.5) * h
+      const nr = maxDim * (0.08 + Math.sin(time + i * 2) * 0.02)
+      const alpha = (Math.sin(time * 0.8 + i * 1.5) + 1) * 0.02 + 0.01
+
+      const nebulaGrad = ctx.createRadialGradient(nx, ny, 0, nx, ny, nr)
+      nebulaGrad.addColorStop(0, `hsla(${220 + i * 25}, 50%, 45%, ${alpha})`)
+      nebulaGrad.addColorStop(1, 'transparent')
+      ctx.fillStyle = nebulaGrad
+      ctx.fillRect(nx - nr, ny - nr, nr * 2, nr * 2)
+    }
   }
 
   // ---- Layer 2: 等轴网格 ----

@@ -1,0 +1,23 @@
+{
+  "toolName": "weather",
+  "version": "1.0.0",
+  "description": "Query weather information for any location",
+  "executable": "execute.py",
+  "runtime": "python",
+  "inputs": {
+    "location": {
+      "type": "string",
+      "required": true,
+      "description": "City name (e.g., Beijing, Tokyo, London)"
+    }
+  },
+  "outputs": {
+    "type": "string",
+    "description": "Formatted weather report"
+  },
+  "dangerLevel": "safe",
+  "keywords": [
+    "weather", "temperature", "forecast", "rain", "sunny", "cloudy",
+    "天气", "气温", "预报", "下雨", "晴天", "多云", "温度"
+  ]
+}

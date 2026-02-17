@@ -243,7 +243,7 @@ export function channelsToSkills(channels: Record<string, Channel>, order: Chann
  * 将 OpenClaw Skill 映射为 SkillNode
  * 通用映射 - 不做硬编码分类，保留 API 返回的原始数据
  */
-export function openClawSkillToNode(skill: OpenClawSkill, index: number): SkillNode {
+export function openClawSkillToNode(skill: OpenClawSkill, _index: number): SkillNode {
   // 格式化名称: some-skill-name -> Some Skill Name
   const formattedName = skill.name
     .split('-')

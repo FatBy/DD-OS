@@ -1,5 +1,5 @@
 import { motion, AnimatePresence } from 'framer-motion'
-import { X, Sparkles, Building2, Zap } from 'lucide-react'
+import { X, Sparkles, Building2 } from 'lucide-react'
 import { useStore } from '@/store'
 import { cn } from '@/utils/cn'
 import type { NexusArchetype } from '@/types'
@@ -35,50 +35,6 @@ const ARCHETYPE_INFO: Record<NexusArchetype, {
     description: '频繁访问与记忆',
     color: 'emerald',
   },
-}
-
-// 简单的 Archetype 预览 SVG
-function ArchetypePreview({ archetype, color }: { archetype: NexusArchetype; color: string }) {
-  const baseClass = `w-full h-full`
-  
-  return (
-    <div className="w-24 h-24 relative">
-      <svg viewBox="0 0 100 100" className={baseClass}>
-        {archetype === 'MONOLITH' && (
-          <>
-            <rect x="25" y="60" width="50" height="30" fill={`var(--tw-color-${color}-500)`} opacity="0.8" />
-            <rect x="30" y="35" width="40" height="25" fill={`var(--tw-color-${color}-400)`} opacity="0.7" />
-            <rect x="35" y="15" width="30" height="20" fill={`var(--tw-color-${color}-300)`} opacity="0.6" />
-          </>
-        )}
-        {archetype === 'SPIRE' && (
-          <polygon 
-            points="50,10 75,90 25,90" 
-            fill={`var(--tw-color-${color}-500)`} 
-            opacity="0.8" 
-          />
-        )}
-        {archetype === 'REACTOR' && (
-          <>
-            <circle cx="50" cy="50" r="25" fill={`var(--tw-color-${color}-500)`} opacity="0.8" />
-            <ellipse cx="50" cy="50" rx="35" ry="10" fill="none" stroke={`var(--tw-color-${color}-400)`} strokeWidth="2" opacity="0.6" />
-          </>
-        )}
-        {archetype === 'VAULT' && (
-          <polygon 
-            points="50,15 85,40 85,70 50,95 15,70 15,40" 
-            fill={`var(--tw-color-${color}-500)`} 
-            opacity="0.8" 
-          />
-        )}
-      </svg>
-      {/* 发光效果 */}
-      <div className={cn(
-        'absolute inset-0 rounded-full blur-xl opacity-30',
-        `bg-${color}-500`
-      )} />
-    </div>
-  )
 }
 
 export function BuildProposalModal() {

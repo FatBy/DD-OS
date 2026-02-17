@@ -2,6 +2,7 @@ import { useEffect, useRef, useCallback } from 'react'
 import { motion } from 'framer-motion'
 import { useStore } from '@/store'
 import { GameCanvas } from '@/rendering/GameCanvas'
+import { Loader2 } from 'lucide-react'
 
 export function WorldView() {
   const currentView = useStore((s) => s.currentView)
@@ -110,28 +111,54 @@ export function WorldView() {
   }, [camera, nexuses, selectNexus, openNexusPanel])
 
   return (
-    <motion.div
-      className="fixed inset-0 z-0 bg-slate-950"
-      style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 0 }}
-      animate={{
-        filter: isHouseOpen ? 'blur(4px)' : 'blur(0px)',
-        opacity: isHouseOpen ? 0.3 : 1,
-      }}
-      transition={{ duration: 0.5 }}
-    >
-      <canvas
-        ref={canvasRef}
-        className="absolute inset-0 w-full h-full"
-        style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }}
-        onWheel={handleWheel}
-        onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
-        onMouseLeave={handleMouseUp}
-        onClick={handleClick}
+    <div className="fixed inset-0 overflow-hidden bg-black">
+      {/* Layer 0: 装饰性网格 (增加空间感，与 SoulOrb 风格统一) */}
+      <div 
+        className="absolute inset-0 z-0 pointer-events-none opacity-[0.06]"
+        style={{
+          backgroundImage: `
+            linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px)
+          `,
+          backgroundSize: '80px 80px',
+          maskImage: 'radial-gradient(ellipse at center, black 30%, transparent 80%)',
+          WebkitMaskImage: 'radial-gradient(ellipse at center, black 30%, transparent 80%)',
+        }}
       />
-      {/* Subtle radial gradient overlay */}
-      <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(ellipse_at_center,_transparent_0%,_rgba(2,6,23,0.8)_100%)]" />
-    </motion.div>
+
+      {/* Layer 1: 游戏引擎 (GameCanvas 已包含深空背景+星球) */}
+      <motion.div
+        className="absolute inset-0 z-10"
+        animate={{
+          scale: isHouseOpen ? 1.08 : 1,
+          filter: isHouseOpen ? 'blur(6px) brightness(0.35)' : 'blur(0px) brightness(1)',
+          opacity: 1,
+        }}
+        transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
+      >
+        <canvas
+          ref={canvasRef}
+          className="absolute inset-0 w-full h-full"
+          style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }}
+          onWheel={handleWheel}
+          onMouseDown={handleMouseDown}
+          onMouseMove={handleMouseMove}
+          onMouseUp={handleMouseUp}
+          onMouseLeave={handleMouseUp}
+          onClick={handleClick}
+        />
+      </motion.div>
+
+      {/* Layer 2: 边缘暗角 (画框效果) */}
+      <div className="absolute inset-0 z-20 pointer-events-none bg-[radial-gradient(ellipse_at_center,_transparent_30%,_rgba(2,6,23,0.6)_100%)]" />
+
+      {/* Layer 3: 加载占位 */}
+      {nexuses.size === 0 && (
+        <div className="absolute inset-0 z-30 flex flex-col items-center justify-center pointer-events-none text-white/20">
+          <Loader2 className="w-8 h-8 animate-spin mb-2" />
+          <p className="font-mono text-xs tracking-widest uppercase">Scanning World Data...</p>
+        </div>
+      )}
+    </div>
   )
 }

@@ -20,6 +20,17 @@ export interface HouseConfig {
 // UI 展示类型 (游戏化概念)
 // ============================================
 
+// 执行步骤 (用于任务屋详情展示)
+export interface ExecutionStep {
+  id: string
+  type: 'thinking' | 'tool_call' | 'tool_result' | 'output' | 'error'
+  content: string
+  timestamp: number
+  toolName?: string
+  toolArgs?: Record<string, unknown>
+  duration?: number
+}
+
 // 任务项 (映射自 Session)
 export interface TaskItem {
   id: string
@@ -31,6 +42,11 @@ export interface TaskItem {
   // 原始数据引用
   sessionKey?: string
   messageCount?: number
+  // 执行详情 (用于任务屋展示)
+  executionSteps?: ExecutionStep[]
+  executionOutput?: string
+  executionError?: string
+  executionDuration?: number
 }
 
 // 技能节点 (映射自 OpenClaw Skill)
@@ -165,6 +181,12 @@ export interface OpenClawSkill {
   description?: string
   location?: 'global' | 'local' | 'extension'
   path?: string
+  // P1: 可执行技能扩展
+  toolName?: string            // 注册的工具名 (如 "weather")
+  executable?: boolean         // 是否有 execute.py/.js
+  inputs?: Record<string, any> // 输入参数 schema
+  dangerLevel?: string         // safe | high | critical
+  keywords?: string[]          // 语义触发关键词
 }
 
 export interface SkillsSnapshot {
@@ -172,7 +194,7 @@ export interface SkillsSnapshot {
 }
 
 // Agent
-export type AgentRunStatus = 'pending' | 'accepted' | 'running' | 'ok' | 'error' | 'denied'
+export type AgentRunStatus = 'pending' | 'accepted' | 'running' | 'ok' | 'error' | 'denied' | 'thinking' | 'executing' | 'idle'
 
 export interface AgentIdentity {
   agentId: string
@@ -349,6 +371,46 @@ export interface ExecutionStatus {
   currentOffset?: number    // 当前读取位置
   error?: string
   timestamp: number
+}
+
+// P3: 危险操作审批请求
+export interface ApprovalRequest {
+  id: string
+  toolName: string
+  args: Record<string, unknown>
+  dangerLevel: 'high' | 'critical'
+  reason: string
+  timestamp: number
+}
+
+// P2: 执行追踪
+export interface ExecTrace {
+  id: string
+  task: string
+  tools: ExecTraceToolCall[]
+  success: boolean
+  failureReason?: string
+  duration: number
+  timestamp: number
+  tags: string[]
+}
+
+export interface ExecTraceToolCall {
+  name: string
+  args: Record<string, unknown>
+  status: 'success' | 'error'
+  latency: number
+  order: number
+}
+
+// P0: 动态工具信息
+export interface ToolInfo {
+  name: string
+  type: 'builtin' | 'plugin'
+  description?: string
+  inputs?: Record<string, any>
+  dangerLevel?: string
+  version?: string
 }
 
 // ============================================

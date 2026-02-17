@@ -23,3 +23,8 @@ npm-debug.log*
 
 # Temp
 nul
+
+# Python
+__pycache__/
+*.pyc
+*.pyo

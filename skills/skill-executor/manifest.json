@@ -1,0 +1,81 @@
+{
+  "name": "skill-executor",
+  "version": "1.0.0",
+  "description": "SKILL.md parser and execution engine for autonomous agent capabilities",
+  "tools": [
+    {
+      "toolName": "run_skill",
+      "description": "Execute a skill from SKILL.md definition",
+      "executable": "execute.py",
+      "runtime": "python",
+      "inputs": {
+        "skill_name": {
+          "type": "string",
+          "required": true,
+          "description": "Name of the skill to execute"
+        },
+        "args": {
+          "type": "object",
+          "required": false,
+          "description": "Arguments to pass to the skill"
+        },
+        "project_root": {
+          "type": "string",
+          "required": false,
+          "description": "Project root directory"
+        }
+      },
+      "outputs": {
+        "type": "object",
+        "description": "Skill execution result"
+      },
+      "dangerLevel": "medium",
+      "keywords": ["技能", "skill", "执行", "运行", "run", "agent"]
+    },
+    {
+      "toolName": "list_skills",
+      "description": "List all available skills from preset and custom locations",
+      "executable": "execute.py",
+      "runtime": "python",
+      "inputs": {
+        "include_builtin": {
+          "type": "boolean",
+          "required": false,
+          "default": true,
+          "description": "Include builtin preset skills"
+        },
+        "include_custom": {
+          "type": "boolean",
+          "required": false,
+          "default": true,
+          "description": "Include custom user skills"
+        }
+      },
+      "outputs": {
+        "type": "array",
+        "description": "List of available skills with metadata"
+      },
+      "dangerLevel": "safe",
+      "keywords": ["技能列表", "list", "skills", "查看", "可用"]
+    },
+    {
+      "toolName": "get_skill_info",
+      "description": "Get detailed information about a specific skill",
+      "executable": "execute.py",
+      "runtime": "python",
+      "inputs": {
+        "skill_name": {
+          "type": "string",
+          "required": true,
+          "description": "Name of the skill"
+        }
+      },
+      "outputs": {
+        "type": "object",
+        "description": "Skill definition and metadata"
+      },
+      "dangerLevel": "safe",
+      "keywords": ["技能信息", "skill", "info", "详情"]
+    }
+  ]
+}

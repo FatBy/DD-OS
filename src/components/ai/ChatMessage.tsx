@@ -1,6 +1,6 @@
 import { useState, useMemo, useRef, useEffect } from 'react'
-import { motion, AnimatePresence } from 'framer-motion'
-import { User, Bot, AlertCircle, Clock, Loader2, CheckCircle2, XCircle, Zap, Copy, Check, MessageSquare, ChevronDown, Cloud, Search, FileText, Terminal } from 'lucide-react'
+import { motion } from 'framer-motion'
+import { User, Bot, AlertCircle, Clock, Loader2, CheckCircle2, XCircle, Copy, Check, MessageSquare, Cloud, Search, FileText, Terminal } from 'lucide-react'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { cn } from '@/utils/cn'
 import type { ChatMessage as ChatMessageType, ExecutionStatus } from '@/types'

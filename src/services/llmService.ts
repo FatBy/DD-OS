@@ -3,7 +3,13 @@
  * 支持流式 (SSE) 和非流式请求
  */
 
-import type { ChatMessage, LLMConfig } from '@/types'
+import type { LLMConfig } from '@/types'
+
+// 简化的消息类型，仅需 role + content
+type SimpleChatMessage = {
+  role: 'system' | 'user' | 'assistant' | string
+  content: string
+}
 
 // localStorage keys
 const STORAGE_KEYS = {
@@ -70,7 +76,7 @@ function buildHeaders(apiKey: string): Record<string, string> {
  * 非流式调用
  */
 export async function chat(
-  messages: ChatMessage[],
+  messages: SimpleChatMessage[],
   config?: Partial<LLMConfig>,
 ): Promise<string> {
   const cfg = { ...getLLMConfig(), ...config }
@@ -103,7 +109,7 @@ export async function chat(
  * 流式调用 (SSE)
  */
 export async function streamChat(
-  messages: ChatMessage[],
+  messages: SimpleChatMessage[],
   onChunk: (chunk: string) => void,
   signal?: AbortSignal,
   config?: Partial<LLMConfig>,
@@ -173,8 +179,8 @@ export async function streamChat(
  */
 export async function testConnection(config?: Partial<LLMConfig>): Promise<boolean> {
   const cfg = { ...getLLMConfig(), ...config }
-  const testMessages: ChatMessage[] = [
-    { id: 'test', role: 'user', content: '请回复 OK', timestamp: Date.now() },
+  const testMessages: SimpleChatMessage[] = [
+    { role: 'user', content: '请回复 OK' },
   ]
   
   try {
@@ -184,3 +190,86 @@ export async function testConnection(config?: Partial<LLMConfig>): Promise<boole
     return false
   }
 }
+
+// ============================================
+// P4: Embedding API
+// ============================================
+
+/**
+ * 构建 embedding 端点 URL
+ * OpenAI 兼容格式: /v1/embeddings
+ */
+function buildEmbeddingUrl(baseUrl: string): string {
+  let url = baseUrl.replace(/\/+$/, '')
+  // 移除可能存在的 /chat/completions 后缀
+  url = url.replace(/\/chat\/completions$/, '').replace(/\/v1$/, '')
+  return url + '/v1/embeddings'
+}
+
+/**
+ * 生成文本嵌入向量
+ * 调用 OpenAI 兼容的 /v1/embeddings 端点
+ * 
+ * @param text 要嵌入的文本
+ * @param config 可选的配置覆盖
+ * @returns 嵌入向量 (float[])，失败返回空数组
+ */
+export async function embed(
+  text: string,
+  config?: Partial<LLMConfig>
+): Promise<number[]> {
+  const cfg = { ...getLLMConfig(), ...config }
+  if (!cfg.apiKey || !cfg.baseUrl) {
+    console.warn('[Embed] LLM not configured, skipping embedding')
+    return []
+  }
+
+  try {
+    const res = await fetch(buildEmbeddingUrl(cfg.baseUrl), {
+      method: 'POST',
+      headers: buildHeaders(cfg.apiKey),
+      body: JSON.stringify({
+        model: cfg.model, // 部分服务需要指定模型，部分会忽略
+        input: text,
+      }),
+    })
+
+    if (!res.ok) {
+      console.warn(`[Embed] API error (${res.status}), falling back to empty vector`)
+      return []
+    }
+
+    const data = await res.json()
+    // OpenAI 格式: { data: [{ embedding: [...] }] }
+    return data.data?.[0]?.embedding || []
+  } catch (err) {
+    console.warn('[Embed] Request failed:', err)
+    return []
+  }
+}
+
+/**
+ * 计算两个向量的余弦相似度
+ * @returns -1 到 1 之间的值，1 表示完全相似
+ */
+export function cosineSimilarity(a: number[], b: number[]): number {
+  if (a.length === 0 || b.length === 0 || a.length !== b.length) {
+    return 0
+  }
+
+  let dotProduct = 0
+  let normA = 0
+  let normB = 0
+
+  for (let i = 0; i < a.length; i++) {
+    dotProduct += a[i] * b[i]
+    normA += a[i] * a[i]
+    normB += b[i] * b[i]
+  }
+
+  const denominator = Math.sqrt(normA) * Math.sqrt(normB)
+  if (denominator === 0) return 0
+
+  return dotProduct / denominator
+}
+

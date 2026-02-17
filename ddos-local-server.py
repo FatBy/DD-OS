@@ -38,17 +38,120 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import unquote, urlparse, parse_qs
 from datetime import datetime
 
-VERSION = "3.0.0"
+VERSION = "4.0.0"
 
 # 🛡️ 安全配置
-ALLOWED_TOOLS = {'readFile', 'writeFile', 'listDir', 'runCmd', 'appendFile', 'weather', 'webSearch', 'saveMemory', 'searchMemory'}
 DANGEROUS_COMMANDS = {'rm -rf /', 'format', 'mkfs', 'dd if=/dev/zero'}
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB 最大文件大小
 MAX_OUTPUT_SIZE = 512 * 1024      # 512KB 最大输出
+PLUGIN_TIMEOUT = 60               # 插件执行超时(秒)
+
+
+# ============================================
+# 🔌 动态工具注册表
+# ============================================
+
+class ToolRegistry:
+    """动态工具发现与注册 - 支持内置工具 + 插件工具"""
+
+    def __init__(self, clawd_path: Path):
+        self.clawd_path = clawd_path
+        self.builtin_tools: dict = {}      # name -> callable
+        self.plugin_tools: dict = {}       # name -> ToolSpec dict
+
+    def register_builtin(self, name: str, handler):
+        """注册内置工具"""
+        self.builtin_tools[name] = handler
+
+    def scan_plugins(self):
+        """扫描 skills/ 目录，自动注册有 manifest.json 的插件工具"""
+        skills_dir = self.clawd_path / 'skills'
+        if not skills_dir.exists():
+            return
+
+        found = 0
+        for item in skills_dir.iterdir():
+            if not item.is_dir():
+                continue
+            manifest_path = item / 'manifest.json'
+            if not manifest_path.exists():
+                continue
+            try:
+                spec = json.loads(manifest_path.read_text(encoding='utf-8'))
+                
+                # 支持两种 manifest 格式:
+                # 1. 新格式: { "tools": [{ "toolName": "...", ... }, ...] }
+                # 2. 旧格式: { "toolName": "...", ... }
+                
+                tools_list = spec.get('tools', [])
+                if not tools_list:
+                    # 旧格式: 单个工具定义
+                    tools_list = [spec]
+                
+                for tool_spec in tools_list:
+                    tool_name = tool_spec.get('toolName', '')
+                    executable = tool_spec.get('executable', spec.get('executable', 'execute.py'))
+                    
+                    if not tool_name:
+                        continue
+
+                    exe_path = item / executable
+                    if not exe_path.exists():
+                        print(f"[ToolRegistry] Warning: {exe_path} not found, skipping {tool_name}")
+                        continue
+
+                    # 内置工具不可被覆盖
+                    if tool_name in self.builtin_tools:
+                        print(f"[ToolRegistry] Warning: plugin '{tool_name}' conflicts with builtin, skipping")
+                        continue
+
+                    self.plugin_tools[tool_name] = {
+                        'name': tool_name,
+                        'exe_path': str(exe_path),
+                        'runtime': tool_spec.get('runtime', spec.get('runtime', 'python')),
+                        'inputs': tool_spec.get('inputs', {}),
+                        'outputs': tool_spec.get('outputs', {}),
+                        'description': tool_spec.get('description', ''),
+                        'dangerLevel': tool_spec.get('dangerLevel', 'safe'),
+                        'version': tool_spec.get('version', spec.get('version', '1.0.0')),
+                        'skill_dir': str(item),
+                        'keywords': tool_spec.get('keywords', []),
+                    }
+                    found += 1
+                    print(f"[ToolRegistry] Registered plugin: {tool_name} ({exe_path.name})")
+                    
+            except Exception as e:
+                print(f"[ToolRegistry] Error loading {manifest_path}: {e}")
+
+        if found > 0:
+            print(f"[ToolRegistry] {found} plugin tool(s) registered")
+
+    def is_registered(self, name: str) -> bool:
+        return name in self.builtin_tools or name in self.plugin_tools
+
+    def get_plugin(self, name: str) -> dict | None:
+        return self.plugin_tools.get(name)
+
+    def list_all(self) -> list:
+        """返回所有已注册工具（内置+插件）"""
+        tools = []
+        for name in self.builtin_tools:
+            tools.append({'name': name, 'type': 'builtin'})
+        for name, spec in self.plugin_tools.items():
+            tools.append({
+                'name': name,
+                'type': 'plugin',
+                'description': spec.get('description', ''),
+                'inputs': spec.get('inputs', {}),
+                'dangerLevel': spec.get('dangerLevel', 'safe'),
+                'version': spec.get('version', '1.0.0'),
+            })
+        return tools
 
 
 class ClawdDataHandler(BaseHTTPRequestHandler):
     clawd_path = None
+    registry = None  # type: ToolRegistry
     tasks = {}
     tasks_lock = threading.Lock()
     
@@ -93,6 +196,7 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
             '/files': self.handle_files,
             '/skills': self.handle_skills,
             '/memories': self.handle_memories,
+            '/tools': self.handle_tools_list,
             '/all': self.handle_all,
             '/': self.handle_index,
             '': self.handle_index,
@@ -106,6 +210,8 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
             task_id = path[13:]
             offset = int(query.get('offset', ['0'])[0])
             self.handle_task_status(task_id, offset)
+        elif path == '/api/traces/search':
+            self.handle_trace_search(query)
         else:
             self.send_error_json(f'Unknown endpoint: {path}', 404)
     
@@ -125,6 +231,10 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
         # 🌟 新增：工具执行接口
         if path == '/api/tools/execute':
             self.handle_tool_execution(data)
+        elif path == '/tools/reload':
+            self.handle_tools_reload(data)
+        elif path == '/api/traces/save':
+            self.handle_trace_save(data)
         elif path == '/task/execute':
             self.handle_task_execute(data)
         else:
@@ -135,68 +245,94 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
     # ============================================
     
     def handle_tool_execution(self, data):
-        """处理工具调用请求"""
+        """处理工具调用请求 - 支持内置工具和插件工具"""
         tool_name = data.get('name', '')
         args = data.get('args', {})
-        
-        if tool_name not in ALLOWED_TOOLS:
+
+        if not self.registry.is_registered(tool_name):
+            all_tools = [t['name'] for t in self.registry.list_all()]
             self.send_json({
                 'tool': tool_name,
                 'status': 'error',
-                'result': f'Tool not allowed: {tool_name}. Allowed: {", ".join(ALLOWED_TOOLS)}'
+                'result': f'Tool not registered: {tool_name}. Available: {", ".join(all_tools)}'
             }, 403)
             return
-        
+
         result = ""
         status = "success"
-        
+
         try:
-            # 1. 读取文件
-            if tool_name == 'readFile':
-                result = self._tool_read_file(args)
-            
-            # 2. 写入文件
-            elif tool_name == 'writeFile':
-                result = self._tool_write_file(args)
-            
-            # 3. 追加文件
-            elif tool_name == 'appendFile':
-                result = self._tool_append_file(args)
-            
-            # 4. 列出目录
-            elif tool_name == 'listDir':
-                result = self._tool_list_dir(args)
-            
-            # 5. 执行命令 (⚠️ 高危)
-            elif tool_name == 'runCmd':
-                result = self._tool_run_cmd(args)
-            
-            # 6. 天气查询 (OpenClaw weather skill)
-            elif tool_name == 'weather':
-                result = self._tool_weather(args)
-            
-            # 7. 网页搜索
-            elif tool_name == 'webSearch':
-                result = self._tool_web_search(args)
-            
-            # 8. 保存记忆
-            elif tool_name == 'saveMemory':
-                result = self._tool_save_memory(args)
-            
-            # 9. 检索记忆
-            elif tool_name == 'searchMemory':
-                result = self._tool_search_memory(args)
-        
+            # 优先检查插件工具
+            plugin_spec = self.registry.get_plugin(tool_name)
+            if plugin_spec:
+                result = self._execute_plugin_tool(plugin_spec, tool_name, args)
+            else:
+                # 内置工具调度
+                builtin_handlers = {
+                    'readFile': self._tool_read_file,
+                    'writeFile': self._tool_write_file,
+                    'appendFile': self._tool_append_file,
+                    'listDir': self._tool_list_dir,
+                    'runCmd': self._tool_run_cmd,
+                    'weather': self._tool_weather,
+                    'webSearch': self._tool_web_search,
+                    'saveMemory': self._tool_save_memory,
+                    'searchMemory': self._tool_search_memory,
+                }
+                handler = builtin_handlers.get(tool_name)
+                if handler:
+                    result = handler(args)
+                else:
+                    raise ValueError(f"No handler for builtin tool: {tool_name}")
+
         except Exception as e:
             status = "error"
             result = f"Tool execution failed: {str(e)}"
-        
+
         self.send_json({
             'tool': tool_name,
             'status': status,
             'result': result,
             'timestamp': datetime.now().isoformat()
         })
+
+    def _execute_plugin_tool(self, spec: dict, tool_name: str, args: dict) -> str:
+        """执行插件工具 - subprocess 隔离执行"""
+        exe_path = spec['exe_path']
+        runtime = spec.get('runtime', 'python')
+
+        # 确定运行时命令
+        if runtime == 'python':
+            cmd = [sys.executable, exe_path]
+        elif runtime == 'node':
+            cmd = ['node', exe_path]
+        else:
+            raise ValueError(f"Unsupported runtime: {runtime}")
+
+        # 构建输入：包含工具名和参数（支持多工具 manifest）
+        input_data = json.dumps({
+            'tool': tool_name,
+            'args': args
+        }, ensure_ascii=False)
+
+        try:
+            process = subprocess.run(
+                cmd,
+                input=input_data,
+                capture_output=True,
+                text=True,
+                timeout=PLUGIN_TIMEOUT,
+                cwd=spec.get('skill_dir', str(self.clawd_path)),
+            )
+
+            if process.returncode != 0:
+                stderr = process.stderr[:MAX_OUTPUT_SIZE] if process.stderr else ''
+                raise RuntimeError(f"Plugin exited with code {process.returncode}: {stderr}")
+
+            return process.stdout[:MAX_OUTPUT_SIZE] if process.stdout else ''
+
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f"Plugin timed out after {PLUGIN_TIMEOUT}s")
     
     def _resolve_path(self, relative_path: str, allow_outside: bool = False) -> Path:
         """解析并验证路径安全性"""
@@ -541,7 +677,8 @@ curl -X POST http://localhost:3001/api/tools/execute \\
             'clawdPath': str(self.clawd_path),
             'fileCount': len(files),
             'skillCount': skill_count,
-            'tools': list(ALLOWED_TOOLS),
+            'tools': [t['name'] for t in self.registry.list_all()],
+            'toolCount': len(self.registry.list_all()),
             'timestamp': datetime.now().isoformat()
         })
     
@@ -579,28 +716,140 @@ curl -X POST http://localhost:3001/api/tools/execute \\
             for item in skills_dir.iterdir():
                 if item.is_dir():
                     skill_md = item / 'SKILL.md'
+                    manifest_path = item / 'manifest.json'
                     description = ''
-                    if skill_md.exists():
-                        try:
-                            content = skill_md.read_text(encoding='utf-8')
-                            for line in content.split('\n'):
-                                line = line.strip()
-                                if line and not line.startswith('#'):
-                                    description = line[:100]
-                                    break
-                        except:
-                            pass
-                    
-                    skills.append({
+                    skill_data = {
                         'name': item.name,
                         'description': description,
                         'location': 'local',
                         'path': str(item),
                         'status': 'active',
                         'enabled': True,
-                    })
+                    }
+
+                    # 读取 SKILL.md 描述
+                    if skill_md.exists():
+                        try:
+                            content = skill_md.read_text(encoding='utf-8')
+                            for line in content.split('\n'):
+                                line = line.strip()
+                                if line and not line.startswith('#'):
+                                    skill_data['description'] = line[:100]
+                                    break
+                        except:
+                            pass
+
+                    # 读取 manifest.json (P1: 可执行技能元数据)
+                    if manifest_path.exists():
+                        try:
+                            manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+                            skill_data['toolName'] = manifest.get('toolName', '')
+                            skill_data['executable'] = bool(manifest.get('executable', ''))
+                            skill_data['inputs'] = manifest.get('inputs', {})
+                            skill_data['dangerLevel'] = manifest.get('dangerLevel', 'safe')
+                            skill_data['keywords'] = manifest.get('keywords', [])
+                            skill_data['version'] = manifest.get('version', '1.0.0')
+                            if manifest.get('description'):
+                                skill_data['description'] = manifest['description']
+                        except:
+                            pass
+
+                    skills.append(skill_data)
         
         self.send_json(skills)
+
+    def handle_tools_list(self):
+        """GET /tools - 列出所有已注册的工具"""
+        self.send_json(self.registry.list_all())
+
+    def handle_tools_reload(self, data=None):
+        """POST /tools/reload - 热重载插件工具"""
+        self.registry.plugin_tools.clear()
+        self.registry.scan_plugins()
+        tools = self.registry.list_all()
+        self.send_json({
+            'status': 'ok',
+            'message': f'Reloaded. {len(tools)} tools registered.',
+            'tools': tools,
+        })
+
+    def handle_trace_save(self, data):
+        """POST /api/traces/save - 保存执行追踪 (P2: 执行流记忆)"""
+        if not data:
+            self.send_error_json('Missing trace data', 400)
+            return
+
+        traces_dir = self.clawd_path / 'memory' / 'exec_traces'
+        traces_dir.mkdir(parents=True, exist_ok=True)
+
+        # 按月分片存储
+        month = datetime.now().strftime('%Y-%m')
+        trace_file = traces_dir / f'{month}.jsonl'
+
+        # 敏感数据脱敏
+        trace_json = json.dumps(data, ensure_ascii=False)
+        import re
+        trace_json = re.sub(
+            r'(password|token|secret|api_key|apikey|auth)["\s:]*["\']([^"\']{3,})["\']',
+            r'\1": "***"',
+            trace_json,
+            flags=re.IGNORECASE
+        )
+
+        try:
+            with open(trace_file, 'a', encoding='utf-8') as f:
+                f.write(trace_json + '\n')
+
+            self.send_json({
+                'status': 'ok',
+                'message': f'Trace saved to {month}.jsonl',
+            })
+        except Exception as e:
+            self.send_error_json(f'Failed to save trace: {e}', 500)
+
+    def handle_trace_search(self, query_params):
+        """GET /api/traces/search?query=xxx&limit=5 - 检索执行追踪 (P2)"""
+        query = query_params.get('query', [''])[0]
+        limit = min(int(query_params.get('limit', ['5'])[0]), 20)
+
+        if not query:
+            self.send_json([])
+            return
+
+        traces_dir = self.clawd_path / 'memory' / 'exec_traces'
+        if not traces_dir.exists():
+            self.send_json([])
+            return
+
+        query_lower = query.lower()
+        query_words = [w for w in query_lower.split() if len(w) > 1]
+        results = []
+
+        # 从最近的月份文件开始搜索
+        for trace_file in sorted(traces_dir.glob('*.jsonl'), reverse=True)[:6]:
+            try:
+                for line in reversed(trace_file.read_text(encoding='utf-8').strip().split('\n')):
+                    if not line.strip():
+                        continue
+                    try:
+                        trace = json.loads(line)
+                        task = trace.get('task', '').lower()
+                        tags = [t.lower() for t in trace.get('tags', [])]
+                        # 关键词匹配: task 描述或 tags
+                        matched = any(w in task for w in query_words) or \
+                                  any(w in ' '.join(tags) for w in query_words)
+                        if matched:
+                            results.append(trace)
+                            if len(results) >= limit:
+                                break
+                    except json.JSONDecodeError:
+                        continue
+            except Exception:
+                continue
+            if len(results) >= limit:
+                break
+
+        self.send_json(results)
     
     def handle_memories(self):
         memories = []
@@ -889,6 +1138,25 @@ def cleanup_old_logs(clawd_path, max_age_hours=24):
         print(f"[Cleanup] Removed {count} old log files")
 
 
+def cleanup_old_traces(clawd_path, max_months=6):
+    """清理过期的执行追踪文件 (P2: 保留最近N个月)"""
+    traces_dir = clawd_path / 'memory' / 'exec_traces'
+    if not traces_dir.exists():
+        return
+
+    files = sorted(traces_dir.glob('*.jsonl'))
+    if len(files) <= max_months:
+        return
+
+    old_files = files[:-max_months]
+    for f in old_files:
+        try:
+            f.unlink()
+            print(f"[Cleanup] Removed old trace: {f.name}")
+        except:
+            pass
+
+
 def main():
     parser = argparse.ArgumentParser(description='DD-OS Native Server')
     parser.add_argument('--port', type=int, default=3001, help='Server port (default: 3001)')
@@ -935,10 +1203,28 @@ You are DD-OS, a local AI operating system running directly on the user's comput
     
     cleanup_old_logs(clawd_path)
     
+    # 🔌 初始化工具注册表
+    registry = ToolRegistry(clawd_path)
+    # 注册 9 个内置工具
+    builtin_names = [
+        'readFile', 'writeFile', 'appendFile', 'listDir', 'runCmd',
+        'weather', 'webSearch', 'saveMemory', 'searchMemory',
+    ]
+    for name in builtin_names:
+        registry.register_builtin(name, name)  # handler resolved at dispatch time
+    # 扫描插件工具
+    registry.scan_plugins()
+
+    # 清理过期执行追踪 (P2: 保留最近6个月)
+    cleanup_old_traces(clawd_path)
+
     ClawdDataHandler.clawd_path = clawd_path
+    ClawdDataHandler.registry = registry
     
     server = HTTPServer((args.host, args.port), ClawdDataHandler)
     
+    tool_names = [t['name'] for t in registry.list_all()]
+    plugin_count = len(registry.plugin_tools)
     print(f"""
 +==================================================================+
 |              DD-OS Native Server v{VERSION}                         |
@@ -947,8 +1233,8 @@ You are DD-OS, a local AI operating system running directly on the user's comput
 |  Server:  http://{args.host}:{args.port}                                    |
 |  Data:    {str(clawd_path)[:50]:<50} |
 +------------------------------------------------------------------+
-|  Tools: readFile, writeFile, listDir, runCmd, appendFile         |
-|  API:   /api/tools/execute (POST)                                |
+|  Tools:   {len(tool_names)} registered ({len(builtin_names)} builtin + {plugin_count} plugins)             |
+|  API:     /api/tools/execute (POST)  |  /tools (GET)            |
 +==================================================================+
     """)
     

@@ -1,6 +1,40 @@
 import type { StateCreator } from 'zustand'
-import type { Session, TaskItem } from '@/types'
+import type { Session, TaskItem, ExecutionStep } from '@/types'
 import { sessionsToTasks } from '@/utils/dataMapper'
+
+// LocalStorage 键名
+const STORAGE_KEYS = {
+  TASK_HISTORY: 'ddos_task_history',
+}
+
+// 任务历史持久化
+function loadTaskHistory(): TaskItem[] {
+  try {
+    const data = localStorage.getItem(STORAGE_KEYS.TASK_HISTORY)
+    if (data) {
+      return JSON.parse(data)
+    }
+  } catch (e) {
+    console.warn('[Sessions] Failed to load task history from localStorage:', e)
+  }
+  return []
+}
+
+function persistTaskHistory(tasks: TaskItem[]) {
+  try {
+    // 只保留最近 50 条任务，清理 executionSteps 中的大数据
+    const trimmed = tasks.slice(-50).map(t => ({
+      ...t,
+      executionSteps: t.executionSteps?.slice(-20), // 每个任务最多保留 20 个步骤
+    }))
+    localStorage.setItem(STORAGE_KEYS.TASK_HISTORY, JSON.stringify(trimmed))
+  } catch (e) {
+    console.warn('[Sessions] Failed to persist task history:', e)
+  }
+}
+
+// 初始化时加载
+const initialTaskHistory = loadTaskHistory()
 
 export interface SessionsSlice {
   // 原始 OpenClaw 数据
@@ -11,7 +45,7 @@ export interface SessionsSlice {
   // 映射后的 UI 数据
   tasks: TaskItem[]
   
-  // Native 模式: 实时执行任务
+  // Native 模式: 实时执行任务 (持久化)
   activeExecutions: TaskItem[]
   
   // Actions
@@ -26,14 +60,17 @@ export interface SessionsSlice {
   addActiveExecution: (task: TaskItem) => void
   updateActiveExecution: (id: string, updates: Partial<TaskItem>) => void
   removeActiveExecution: (id: string) => void
+  appendExecutionStep: (taskId: string, step: ExecutionStep) => void
+  clearTaskHistory: () => void
 }
 
-export const createSessionsSlice: StateCreator<SessionsSlice> = (set) => ({
+export const createSessionsSlice: StateCreator<SessionsSlice> = (set, get) => ({
   sessions: [],
   sessionsLoading: true,
   selectedSessionKey: null,
   tasks: [],
-  activeExecutions: [],
+  // 从 localStorage 恢复任务历史
+  activeExecutions: initialTaskHistory,
 
   setSessions: (sessions) => set({ 
     sessions, 
@@ -72,18 +109,43 @@ export const createSessionsSlice: StateCreator<SessionsSlice> = (set) => ({
   
   setSessionsLoading: (loading) => set({ sessionsLoading: loading }),
   
-  // Native 模式: 实时执行任务管理
-  addActiveExecution: (task) => set((state) => ({
-    activeExecutions: [...state.activeExecutions, task].slice(-20),
-  })),
+  // Native 模式: 实时执行任务管理 (带持久化)
+  addActiveExecution: (task) => set((state) => {
+    const newExecutions = [...state.activeExecutions, task].slice(-50)
+    persistTaskHistory(newExecutions)
+    return { activeExecutions: newExecutions }
+  }),
   
-  updateActiveExecution: (id, updates) => set((state) => ({
-    activeExecutions: state.activeExecutions.map(t =>
+  updateActiveExecution: (id, updates) => set((state) => {
+    const newExecutions = state.activeExecutions.map(t =>
       t.id === id ? { ...t, ...updates } : t
-    ),
-  })),
+    )
+    persistTaskHistory(newExecutions)
+    return { activeExecutions: newExecutions }
+  }),
   
-  removeActiveExecution: (id) => set((state) => ({
-    activeExecutions: state.activeExecutions.filter(t => t.id !== id),
-  })),
+  removeActiveExecution: (id) => set((state) => {
+    const newExecutions = state.activeExecutions.filter(t => t.id !== id)
+    persistTaskHistory(newExecutions)
+    return { activeExecutions: newExecutions }
+  }),
+  
+  // 追加执行步骤到指定任务
+  appendExecutionStep: (taskId, step) => set((state) => {
+    const newExecutions = state.activeExecutions.map(t => {
+      if (t.id !== taskId) return t
+      const existingSteps = t.executionSteps || []
+      return {
+        ...t,
+        executionSteps: [...existingSteps, step].slice(-50), // 最多保留 50 步
+      }
+    })
+    // 不在每一步都持久化，避免频繁写入
+    return { activeExecutions: newExecutions }
+  }),
+  
+  clearTaskHistory: () => {
+    localStorage.removeItem(STORAGE_KEYS.TASK_HISTORY)
+    set({ activeExecutions: [] })
+  },
 })

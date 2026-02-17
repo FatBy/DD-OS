@@ -1,0 +1,187 @@
+import { motion, AnimatePresence } from 'framer-motion'
+import { AlertTriangle, X, ShieldAlert, ShieldCheck, Terminal } from 'lucide-react'
+import { useStore } from '@/store'
+import { cn } from '@/utils/cn'
+
+/**
+ * P3: 危险操作审批弹窗
+ * 当 Agent 尝试执行危险命令时，暂停执行并让用户确认
+ */
+export function ApprovalModal() {
+  const pendingApproval = useStore((s) => s.pendingApproval)
+  const respondToApproval = useStore((s) => s.respondToApproval)
+
+  const isOpen = pendingApproval !== null
+
+  if (!pendingApproval) return null
+
+  const isCritical = pendingApproval.dangerLevel === 'critical'
+
+  // 格式化命令显示
+  const formatArgs = () => {
+    const args = pendingApproval.args
+    if (pendingApproval.toolName === 'runCmd' && args.command) {
+      return String(args.command)
+    }
+    return JSON.stringify(args, null, 2)
+  }
+
+  return (
+    <AnimatePresence>
+      {isOpen && (
+        <>
+          {/* 背景遮罩 */}
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => respondToApproval(false)}
+            className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50"
+          />
+
+          {/* 弹窗 */}
+          <motion.div
+            initial={{ opacity: 0, scale: 0.9, y: 20 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.9, y: 20 }}
+            transition={{ type: 'spring', damping: 25, stiffness: 300 }}
+            className={cn(
+              'fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-50',
+              'w-[90%] max-w-lg bg-slate-900/95 rounded-xl shadow-2xl overflow-hidden',
+              isCritical 
+                ? 'border-2 border-red-500/50' 
+                : 'border border-amber-500/30'
+            )}
+          >
+            {/* 头部 - 脉冲边框效果 */}
+            <div className={cn(
+              'relative flex items-center justify-between p-4 border-b',
+              isCritical ? 'border-red-500/30 bg-red-500/10' : 'border-amber-500/20 bg-amber-500/5'
+            )}>
+              {/* 脉冲动画 */}
+              <motion.div
+                animate={{ opacity: [0.3, 0.6, 0.3] }}
+                transition={{ duration: 2, repeat: Infinity }}
+                className={cn(
+                  'absolute inset-0',
+                  isCritical ? 'bg-red-500/10' : 'bg-amber-500/5'
+                )}
+              />
+
+              <div className="relative flex items-center gap-2">
+                {isCritical ? (
+                  <ShieldAlert className="w-5 h-5 text-red-400" />
+                ) : (
+                  <AlertTriangle className="w-5 h-5 text-amber-400" />
+                )}
+                <span className={cn(
+                  'font-mono text-sm font-semibold',
+                  isCritical ? 'text-red-400' : 'text-amber-400'
+                )}>
+                  {isCritical ? '危险操作警告' : '操作确认'}
+                </span>
+              </div>
+
+              <button
+                onClick={() => respondToApproval(false)}
+                className="relative p-1 hover:bg-white/10 rounded transition-colors"
+              >
+                <X className="w-4 h-4 text-white/50" />
+              </button>
+            </div>
+
+            {/* 内容 */}
+            <div className="p-6 space-y-4">
+              {/* 风险说明 */}
+              <div className="flex items-start gap-3">
+                <div className={cn(
+                  'p-2 rounded-lg',
+                  isCritical ? 'bg-red-500/20' : 'bg-amber-500/20'
+                )}>
+                  <Terminal className={cn(
+                    'w-5 h-5',
+                    isCritical ? 'text-red-400' : 'text-amber-400'
+                  )} />
+                </div>
+                <div className="flex-1">
+                  <p className="text-sm text-white/90 font-medium">
+                    Agent 请求执行以下操作：
+                  </p>
+                  <p className={cn(
+                    'text-xs mt-1',
+                    isCritical ? 'text-red-400' : 'text-amber-400'
+                  )}>
+                    {pendingApproval.reason}
+                  </p>
+                </div>
+              </div>
+
+              {/* 命令详情 */}
+              <div className={cn(
+                'p-4 rounded-lg font-mono text-xs overflow-auto max-h-40',
+                isCritical 
+                  ? 'bg-red-950/50 border border-red-500/30' 
+                  : 'bg-amber-950/30 border border-amber-500/20'
+              )}>
+                <div className="flex items-center gap-2 mb-2 text-white/50">
+                  <span className="text-[10px] uppercase tracking-wider">工具</span>
+                  <span className={cn(
+                    'px-1.5 py-0.5 rounded text-[10px]',
+                    isCritical ? 'bg-red-500/20 text-red-400' : 'bg-amber-500/20 text-amber-400'
+                  )}>
+                    {pendingApproval.toolName}
+                  </span>
+                </div>
+                <pre className="text-white/80 whitespace-pre-wrap break-all">
+                  {formatArgs()}
+                </pre>
+              </div>
+
+              {/* 风险等级标签 */}
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-white/40">风险等级：</span>
+                <span className={cn(
+                  'px-2 py-1 rounded text-xs font-mono',
+                  isCritical 
+                    ? 'bg-red-500/20 text-red-400 border border-red-500/30' 
+                    : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                )}>
+                  {isCritical ? 'CRITICAL' : 'HIGH'}
+                </span>
+                <span className="text-[10px] text-white/30 ml-auto">
+                  60秒后自动拒绝
+                </span>
+              </div>
+            </div>
+
+            {/* 按钮 */}
+            <div className="flex gap-3 p-4 border-t border-white/5 bg-white/[0.02]">
+              <button
+                onClick={() => respondToApproval(false)}
+                className="flex-1 py-3 px-4 rounded-lg border border-white/10 
+                         text-sm font-mono text-white/60 hover:bg-white/5 
+                         transition-colors flex items-center justify-center gap-2"
+              >
+                <X className="w-4 h-4" />
+                拒绝
+              </button>
+              <button
+                onClick={() => respondToApproval(true)}
+                className={cn(
+                  'flex-1 py-3 px-4 rounded-lg flex items-center justify-center gap-2',
+                  'text-sm font-mono font-semibold transition-all',
+                  isCritical
+                    ? 'bg-red-500/20 border-2 border-red-500/50 text-red-400 hover:bg-red-500/30'
+                    : 'bg-amber-500/20 border border-amber-500/30 text-amber-400 hover:bg-amber-500/30'
+                )}
+              >
+                <ShieldCheck className="w-4 h-4" />
+                批准执行
+              </button>
+            </div>
+          </motion.div>
+        </>
+      )}
+    </AnimatePresence>
+  )
+}

@@ -1,7 +1,7 @@
 import type { 
   RequestMessage, ResponseMessage, EventMessage, ServerMessage,
   Session, ChannelsSnapshot, AgentEvent, Device, HealthSnapshot, HelloOkPayload, LogEntry,
-  OpenClawSkill
+  OpenClawSkill, ConnectionStatus, Toast, ChannelType, AgentRunStatus, ExecutionStatus
 } from '@/types'
 import { parseSoulMd, type ParsedSoul } from '@/utils/soulParser'
 
@@ -29,11 +29,11 @@ interface PendingRequest {
 
 type StoreActions = {
   // Connection
-  setConnectionStatus: (status: string) => void
+  setConnectionStatus: (status: ConnectionStatus) => void
   setConnectionError: (error: string | null) => void
   setReconnectAttempt: (attempt: number) => void
   setReconnectCountdown: (countdown: number | null) => void
-  addToast: (toast: { type: string; title: string; message?: string }) => void
+  addToast: (toast: Omit<Toast, 'id'>) => void
   
   // Sessions → Tasks
   setSessions: (sessions: Session[]) => void
@@ -44,7 +44,7 @@ type StoreActions = {
   
   // Channels → Skills (兼容旧 API)
   setChannelsSnapshot: (snapshot: ChannelsSnapshot) => void
-  setChannelConnected: (id: string, accountId: string, connected: boolean) => void
+  setChannelConnected: (id: ChannelType, accountId: string, connected: boolean) => void
   setChannelsLoading: (loading: boolean) => void
   
   // OpenClaw Skills → Skills (新 API)
@@ -52,7 +52,7 @@ type StoreActions = {
   
   // Agent → Memories
   setAgentIdentity: (identity: { agentId: string; name?: string; emoji?: string } | null) => void
-  setAgentStatus: (status: string) => void
+  setAgentStatus: (status: AgentRunStatus) => void
   addRunEvent: (event: AgentEvent) => void
   addLog: (log: LogEntry) => void
   setAgentLoading: (loading: boolean) => void
@@ -70,7 +70,7 @@ type StoreActions = {
   setSoulFromParsed: (parsed: ParsedSoul, agentIdentity: { agentId: string; name?: string; emoji?: string } | null) => void
   
   // AI 执行状态
-  updateExecutionStatus: (id: string, updates: { status: string; output?: string; error?: string }) => void
+  updateExecutionStatus: (id: string, updates: Partial<ExecutionStatus>) => void
 }
 
 // ============================================
@@ -416,64 +416,11 @@ class OpenClawService {
     return deviceId
   }
 
-  // ============================================
-  // 设备密钥对管理 (Web Crypto API)
-  // ============================================
-
-  private async getOrCreateDeviceKeys(): Promise<{ publicKey: string; privateKey: CryptoKey }> {
-    const storedPub = localStorage.getItem('openclaw_device_pubkey')
-    const storedPriv = localStorage.getItem('openclaw_device_privkey')
-
-    if (storedPub && storedPriv) {
-      try {
-        const privKeyData = Uint8Array.from(atob(storedPriv), c => c.charCodeAt(0))
-        const privateKey = await crypto.subtle.importKey(
-          'pkcs8', privKeyData,
-          { name: 'ECDSA', namedCurve: 'P-256' },
-          false, ['sign']
-        )
-        return { publicKey: storedPub, privateKey }
-      } catch {
-        // 密钥损坏，重新生成
-        this.resetDeviceIdentity()
-      }
-    }
-
-    // 生成新密钥对
-    const keyPair = await crypto.subtle.generateKey(
-      { name: 'ECDSA', namedCurve: 'P-256' },
-      true, ['sign', 'verify']
-    )
-
-    // 导出公钥 (Base64)
-    const pubRaw = await crypto.subtle.exportKey('raw', keyPair.publicKey)
-    const publicKey = btoa(String.fromCharCode(...new Uint8Array(pubRaw)))
-
-    // 导出私钥 (Base64) 用于持久化
-    const privRaw = await crypto.subtle.exportKey('pkcs8', keyPair.privateKey)
-    const privBase64 = btoa(String.fromCharCode(...new Uint8Array(privRaw)))
-
-    localStorage.setItem('openclaw_device_pubkey', publicKey)
-    localStorage.setItem('openclaw_device_privkey', privBase64)
-
-    return { publicKey, privateKey: keyPair.privateKey }
-  }
-
   // 重置设备身份（清除旧密钥和设备 ID）
   resetDeviceIdentity(): void {
     localStorage.removeItem('openclaw_device_id')
     localStorage.removeItem('openclaw_device_pubkey')
     localStorage.removeItem('openclaw_device_privkey')
-  }
-
-  private async signNonce(privateKey: CryptoKey, nonce: string): Promise<string> {
-    const encoder = new TextEncoder()
-    const data = encoder.encode(nonce)
-    const signature = await crypto.subtle.sign(
-      { name: 'ECDSA', hash: 'SHA-256' },
-      privateKey, data
-    )
-    return btoa(String.fromCharCode(...new Uint8Array(signature)))
   }
 
   private handleClose(event: CloseEvent): void {

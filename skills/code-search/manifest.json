@@ -1,0 +1,104 @@
+{
+  "name": "code-search",
+  "version": "1.0.0",
+  "description": "Advanced code search with text, AST, and semantic capabilities",
+  "tools": [
+    {
+      "toolName": "search_codebase",
+      "description": "Search code using text patterns, AST analysis, or semantic similarity",
+      "executable": "execute.py",
+      "runtime": "python",
+      "inputs": {
+        "query": {
+          "type": "string",
+          "required": true,
+          "description": "Search query (natural language or keywords)"
+        },
+        "scope": {
+          "type": "string",
+          "required": false,
+          "description": "Directory to search in (default: project root)"
+        },
+        "language": {
+          "type": "string",
+          "required": false,
+          "description": "Filter by language (e.g., typescript, python)"
+        },
+        "limit": {
+          "type": "integer",
+          "required": false,
+          "default": 10,
+          "description": "Maximum number of results"
+        },
+        "mode": {
+          "type": "string",
+          "required": false,
+          "enum": ["text", "semantic", "auto"],
+          "default": "auto",
+          "description": "Search mode: text (ripgrep), semantic (embedding), or auto"
+        }
+      },
+      "outputs": {
+        "type": "object",
+        "description": "Search results with file paths, line numbers, and context"
+      },
+      "dangerLevel": "safe",
+      "keywords": ["搜索", "查找", "代码", "search", "find", "code", "grep", "函数", "类", "定义"]
+    },
+    {
+      "toolName": "search_symbol",
+      "description": "Find function/class/variable definitions and their references",
+      "executable": "execute.py",
+      "runtime": "python",
+      "inputs": {
+        "symbol": {
+          "type": "string",
+          "required": true,
+          "description": "Symbol name to search for"
+        },
+        "relation": {
+          "type": "string",
+          "required": false,
+          "enum": ["definition", "calls", "called_by", "references", "implements"],
+          "default": "definition",
+          "description": "Type of relationship to find"
+        },
+        "scope": {
+          "type": "string",
+          "required": false,
+          "description": "Directory to search in"
+        }
+      },
+      "outputs": {
+        "type": "object",
+        "description": "Symbol locations and relationships"
+      },
+      "dangerLevel": "safe",
+      "keywords": ["符号", "定义", "引用", "调用", "symbol", "definition", "reference", "call"]
+    },
+    {
+      "toolName": "search_files",
+      "description": "Search for files by name pattern",
+      "executable": "execute.py",
+      "runtime": "python",
+      "inputs": {
+        "pattern": {
+          "type": "string",
+          "required": true,
+          "description": "File name pattern (glob syntax, e.g., *.ts, **/*.py)"
+        },
+        "path": {
+          "type": "string",
+          "required": false,
+          "description": "Directory to search in"
+        }
+      },
+      "outputs": {
+        "type": "array",
+        "description": "List of matching file paths"
+      },
+      "dangerLevel": "safe",
+      "keywords": ["文件", "目录", "file", "directory", "glob", "find"]
+    }
+  ]
+}

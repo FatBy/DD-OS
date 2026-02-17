@@ -42,7 +42,7 @@ export interface DevicesSlice {
   setSoulDirty: (dirty: boolean) => void
 }
 
-export const createDevicesSlice: StateCreator<DevicesSlice> = (set, get) => ({
+export const createDevicesSlice: StateCreator<DevicesSlice> = (set, _get) => ({
   devices: {},
   operators: [],
   nodes: [],

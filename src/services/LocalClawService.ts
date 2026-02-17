@@ -8,8 +8,8 @@
  * - 本地记忆持久化
  */
 
-import { chat, streamChat, isLLMConfigured } from './llmService'
-import type { ChatMessage, ExecutionStatus, OpenClawSkill, MemoryEntry } from '@/types'
+import { chat, streamChat, isLLMConfigured, embed, cosineSimilarity } from './llmService'
+import type { ExecutionStatus, OpenClawSkill, MemoryEntry, ToolInfo, ExecTrace, ExecTraceToolCall, ApprovalRequest, ExecutionStep } from '@/types'
 import { parseSoulMd, type ParsedSoul } from '@/utils/soulParser'
 
 // ============================================
@@ -64,6 +64,8 @@ interface StoreActions {
   addActiveExecution: (task: any) => void
   updateActiveExecution: (id: string, updates: any) => void
   removeActiveExecution: (id: string) => void
+  // P3: 危险操作审批
+  requestApproval: (req: Omit<ApprovalRequest, 'id' | 'timestamp'>) => Promise<boolean>
 }
 
 // ============================================
@@ -78,6 +80,20 @@ const CONFIG = {
   // Reflexion 机制配置
   CRITIC_TOOLS: ['writeFile', 'runCmd', 'appendFile'], // 修改类工具需要 Critic 验证
   HIGH_RISK_TOOLS: ['runCmd'], // 高风险工具需要执行前检查
+  // P3: 危险命令模式 (触发用户审批)
+  DANGER_PATTERNS: [
+    { pattern: 'rm -rf', level: 'critical' as const, reason: '递归强制删除' },
+    { pattern: 'del /f', level: 'critical' as const, reason: '强制删除文件' },
+    { pattern: 'format', level: 'critical' as const, reason: '格式化磁盘' },
+    { pattern: 'mkfs', level: 'critical' as const, reason: '创建文件系统' },
+    { pattern: 'dd if=/dev', level: 'critical' as const, reason: '低级磁盘写入' },
+    { pattern: 'shutdown', level: 'high' as const, reason: '关机操作' },
+    { pattern: 'reboot', level: 'high' as const, reason: '重启操作' },
+    { pattern: 'reg delete', level: 'high' as const, reason: '删除注册表' },
+    { pattern: 'taskkill /f', level: 'high' as const, reason: '强制终止进程' },
+    { pattern: 'net stop', level: 'high' as const, reason: '停止系统服务' },
+    { pattern: 'chmod 777', level: 'high' as const, reason: '开放所有权限' },
+  ],
 }
 
 // ============================================
@@ -85,10 +101,11 @@ const CONFIG = {
 // ============================================
 
 /**
- * 技能关键词映射表
- * 当用户输入匹配这些关键词时，自动加载对应的 SKILL.md
+ * 技能关键词映射表 (P1: 动态填充，不再硬编码)
+ * 启动时从 /skills 返回的 manifest.keywords 自动构建
+ * 保留少量默认映射作为 fallback
  */
-const SKILL_TRIGGERS: Record<string, { keywords: string[]; path: string }> = {
+const DEFAULT_SKILL_TRIGGERS: Record<string, { keywords: string[]; path: string }> = {
   'web-search': {
     keywords: ['搜索', '查找', '查询', '查一下', '帮我找', 'search', 'find', 'look up'],
     path: 'skills/web-search/SKILL.md',
@@ -125,18 +142,7 @@ const SYSTEM_PROMPT_TEMPLATE = `你是 DD-OS，一个运行在用户本地电脑
 ## 核心能力
 你可以通过工具直接操作用户的电脑和获取信息：
 
-### 文件操作
-- readFile: 读取文件内容
-- writeFile: 写入文件
-- appendFile: 追加内容到文件
-- listDir: 列出目录
-
-### 系统操作
-- runCmd: 执行 Shell 命令
-
-### 网络能力
-- weather: 查询天气 (参数: location)
-- webSearch: 网页搜索 (参数: query)
+{available_tools}
 
 ### 记忆管理 (显式调用)
 - saveMemory: 保存重要信息到长期记忆 (参数: key, content, type)
@@ -228,11 +234,176 @@ const PLAN_REVIEW_PROMPT = `你是一个计划审查员。请检查以下任务�
 // LocalClawService 主类
 // ============================================
 
+// ============================================
+// P4: 技能嵌入索引
+// ============================================
+
+interface SkillVectorEntry {
+  skillName: string
+  skillPath: string
+  description: string
+  keywords: string[]
+  vector: number[]
+}
+
+/**
+ * 技能嵌入索引 - 支持语义检索
+ * 在启动时为所有技能生成向量，查询时进行语义相似度匹配
+ */
+class SkillEmbeddingIndex {
+  private index: Map<string, SkillVectorEntry> = new Map()
+  private indexBuilt = false
+  private buildingPromise: Promise<void> | null = null
+
+  /**
+   * 构建技能索引 (异步，仅执行一次)
+   */
+  async buildIndex(skills: OpenClawSkill[]): Promise<void> {
+    if (this.buildingPromise) {
+      return this.buildingPromise
+    }
+
+    if (this.indexBuilt && this.index.size > 0) {
+      return
+    }
+
+    this.buildingPromise = this._doBuildIndex(skills)
+    await this.buildingPromise
+    this.buildingPromise = null
+  }
+
+  private async _doBuildIndex(skills: OpenClawSkill[]): Promise<void> {
+    // 尝试从缓存加载
+    const cached = this.loadFromCache()
+    const skillChecksum = this.computeChecksum(skills)
+
+    if (cached && cached.checksum === skillChecksum) {
+      this.index = new Map(Object.entries(cached.entries))
+      this.indexBuilt = true
+      console.log(`[SkillIndex] Loaded ${this.index.size} skill vectors from cache`)
+      return
+    }
+
+    // 重新构建索引
+    console.log(`[SkillIndex] Building embedding index for ${skills.length} skills...`)
+    const startTime = Date.now()
+
+    for (const skill of skills) {
+      const skillPath = `skills/${skill.name}/SKILL.md`
+      // 构建嵌入文本：描述 + 关键词
+      const text = [
+        skill.description || skill.name,
+        ...(skill.keywords || []),
+      ].join(' ')
+
+      const vector = await embed(text)
+
+      if (vector.length > 0) {
+        this.index.set(skill.name, {
+          skillName: skill.name,
+          skillPath,
+          description: skill.description || '',
+          keywords: skill.keywords || [],
+          vector,
+        })
+      }
+    }
+
+    this.indexBuilt = true
+    console.log(`[SkillIndex] Built index with ${this.index.size} vectors in ${Date.now() - startTime}ms`)
+
+    // 缓存到 localStorage
+    this.saveToCache(skillChecksum)
+  }
+
+  /**
+   * 语义搜索：返回 top-K 相似技能
+   */
+  async search(query: string, topK = 3): Promise<string[]> {
+    if (!this.indexBuilt || this.index.size === 0) {
+      return []
+    }
+
+    const queryVector = await embed(query)
+    if (queryVector.length === 0) {
+      return [] // embedding 失败，fallback 到关键词匹配
+    }
+
+    // 计算相似度并排序
+    const scored: { path: string; score: number }[] = []
+
+    for (const entry of this.index.values()) {
+      const score = cosineSimilarity(queryVector, entry.vector)
+      if (score > 0.3) { // 相似度阈值
+        scored.push({ path: entry.skillPath, score })
+      }
+    }
+
+    scored.sort((a, b) => b.score - a.score)
+    const results = scored.slice(0, topK).map(s => s.path)
+
+    if (results.length > 0) {
+      console.log(`[SkillIndex] Semantic match: ${results.join(', ')}`)
+    }
+
+    return results
+  }
+
+  private computeChecksum(skills: OpenClawSkill[]): string {
+    const data = skills.map(s => `${s.name}:${s.description}:${(s.keywords || []).join(',')}`).join('|')
+    // 简单的哈希
+    let hash = 0
+    for (let i = 0; i < data.length; i++) {
+      const char = data.charCodeAt(i)
+      hash = ((hash << 5) - hash) + char
+      hash = hash & hash
+    }
+    return `v1-${hash.toString(36)}`
+  }
+
+  private loadFromCache(): { checksum: string; entries: Record<string, SkillVectorEntry> } | null {
+    try {
+      const cached = localStorage.getItem('ddos_skill_vectors')
+      if (cached) {
+        return JSON.parse(cached)
+      }
+    } catch (e) {
+      console.warn('[SkillIndex] Failed to load cache:', e)
+    }
+    return null
+  }
+
+  private saveToCache(checksum: string): void {
+    try {
+      const entries: Record<string, SkillVectorEntry> = {}
+      for (const [key, value] of this.index.entries()) {
+        entries[key] = value
+      }
+      localStorage.setItem('ddos_skill_vectors', JSON.stringify({ checksum, entries }))
+    } catch (e) {
+      console.warn('[SkillIndex] Failed to save cache:', e)
+    }
+  }
+
+  /** 检查索引是否就绪 */
+  isReady(): boolean {
+    return this.indexBuilt && this.index.size > 0
+  }
+}
+
 class LocalClawService {
   private storeActions: StoreActions | null = null
   private serverUrl = CONFIG.LOCAL_SERVER_URL
   private soulContent: string = ''
-  private isConnected = false
+
+  // P0: 动态工具列表 (从 /tools 端点获取)
+  private availableTools: ToolInfo[] = []
+
+  // P1: 动态技能触发器 (从 /skills manifest.keywords 构建)
+  private skillTriggers: Record<string, { keywords: string[]; path: string }> = { ...DEFAULT_SKILL_TRIGGERS }
+
+  // P4: 技能嵌入索引 (语义检索)
+  private skillEmbeddingIndex = new SkillEmbeddingIndex()
 
   // JIT 缓存 - 避免重复读取
   private contextCache: Map<string, { content: string; timestamp: number }> = new Map()
@@ -269,7 +440,6 @@ class LocalClawService {
       const data = await response.json()
       console.log('[LocalClaw] Connected to Native Server:', data)
 
-      this.isConnected = true
       this.storeActions?.setConnectionStatus('connected')
       this.storeActions?.setConnectionError(null)
       
@@ -290,13 +460,15 @@ class LocalClawService {
       // 加载所有数据到 store (Soul/Skills/Memories)
       await this.loadAllDataToStore()
 
+      // P0: 加载动态工具列表
+      await this.loadTools()
+
       // 初始化今日日志
       await this.initDailyLog()
 
       return true
     } catch (error: any) {
       console.error('[LocalClaw] Connection failed:', error)
-      this.isConnected = false
       this.storeActions?.setConnectionStatus('error')
       this.storeActions?.setConnectionError(
         '无法连接本地服务器。请确保 ddos-local-server.py 正在运行。'
@@ -309,7 +481,6 @@ class LocalClawService {
    * 断开连接
    */
   disconnect() {
-    this.isConnected = false
     this.storeActions?.setConnectionStatus('disconnected')
   }
 
@@ -339,6 +510,69 @@ class LocalClawService {
     } catch (error) {
       console.warn('[LocalClaw] Failed to load SOUL.md:', error)
     }
+  }
+
+  /**
+   * P0: 加载动态工具列表
+   */
+  private async loadTools(): Promise<void> {
+    try {
+      const response = await fetch(`${this.serverUrl}/tools`)
+      if (response.ok) {
+        this.availableTools = await response.json()
+        console.log(`[LocalClaw] ${this.availableTools.length} tools loaded (${this.availableTools.filter(t => t.type === 'plugin').length} plugins)`)
+      }
+    } catch (error) {
+      console.warn('[LocalClaw] Failed to load tools, using defaults:', error)
+    }
+  }
+
+  /**
+   * P0: 生成动态工具文档 (注入到系统提示词)
+   */
+  private buildToolsDocumentation(): string {
+    if (this.availableTools.length === 0) {
+      // fallback: 硬编码工具列表
+      return `### 文件操作
+- readFile: 读取文件内容
+- writeFile: 写入文件
+- appendFile: 追加内容到文件
+- listDir: 列出目录
+
+### 系统操作
+- runCmd: 执行 Shell 命令
+
+### 网络能力
+- weather: 查询天气 (参数: location)
+- webSearch: 网页搜索 (参数: query)`
+    }
+
+    const builtins = this.availableTools.filter(t => t.type === 'builtin')
+    const plugins = this.availableTools.filter(t => t.type === 'plugin')
+
+    let doc = '### 内置工具\n'
+    for (const tool of builtins) {
+      doc += `- ${tool.name}`
+      if (tool.description) doc += `: ${tool.description}`
+      doc += '\n'
+    }
+
+    if (plugins.length > 0) {
+      doc += '\n### 插件工具\n'
+      for (const tool of plugins) {
+        doc += `- ${tool.name}`
+        if (tool.description) doc += `: ${tool.description}`
+        if (tool.inputs && Object.keys(tool.inputs).length > 0) {
+          const params = Object.entries(tool.inputs)
+            .map(([k, v]: [string, any]) => `${k}${v?.required ? '(必填)' : ''}`)
+            .join(', ')
+          doc += ` (参数: ${params})`
+        }
+        doc += '\n'
+      }
+    }
+
+    return doc
   }
 
   /**
@@ -379,6 +613,9 @@ class LocalClawService {
           this.storeActions?.setOpenClawSkills(skills)
           localStorage.setItem('ddos_skills_json', JSON.stringify(skills))
           console.log(`[LocalClaw] ${skills.length} skills loaded to store`)
+
+          // P1: 从 manifest.keywords 动态构建技能触发器
+          this.buildSkillTriggersFromManifest(skills)
         }
       }
     } catch (e) {
@@ -399,6 +636,36 @@ class LocalClawService {
     } catch (e) {
       console.warn('[LocalClaw] Failed to load memories:', e)
     }
+  }
+
+  /**
+   * P1: 从 /skills 返回的 manifest.keywords 动态构建触发器
+   * P4: 同时构建语义嵌入索引
+   * 有 keywords 的技能会覆盖 DEFAULT_SKILL_TRIGGERS 中的同名条目
+   */
+  private buildSkillTriggersFromManifest(skills: OpenClawSkill[]): void {
+    // 从 DEFAULT_SKILL_TRIGGERS 开始
+    this.skillTriggers = { ...DEFAULT_SKILL_TRIGGERS }
+
+    for (const skill of skills) {
+      if (skill.keywords && skill.keywords.length > 0 && skill.path) {
+        const skillMdPath = `skills/${skill.name}/SKILL.md`
+        this.skillTriggers[skill.name] = {
+          keywords: skill.keywords,
+          path: skillMdPath,
+        }
+      }
+    }
+
+    const dynamicCount = skills.filter(s => s.keywords && s.keywords.length > 0).length
+    if (dynamicCount > 0) {
+      console.log(`[LocalClaw] Skill triggers: ${Object.keys(this.skillTriggers).length} total (${dynamicCount} from manifests)`)
+    }
+
+    // P4: 异步构建语义嵌入索引 (不阻塞主流程)
+    this.skillEmbeddingIndex.buildIndex(skills).catch(err => {
+      console.warn('[LocalClaw] Failed to build skill embedding index:', err)
+    })
   }
 
   // ============================================
@@ -439,8 +706,19 @@ class LocalClawService {
       contextParts.push(`## 相关经验\n${sopMemory}`)
     }
 
-    // 4. 动态技能注入 - 根据关键词匹配，同时提取示例
-    const matchedSkills = this.matchSkills(queryLower)
+    // 3.5 P2: 执行追踪检索 - 查找相似任务的成功工具序列
+    const relatedTraces = await this.searchExecTraces(queryLower, 3)
+    const successfulTraces = relatedTraces.filter(t => t.success)
+    if (successfulTraces.length > 0) {
+      const traceHints = successfulTraces.map(t => {
+        const toolSeq = t.tools.map(tool => `${tool.name}()`).join(' → ')
+        return `- 任务: "${t.task.slice(0, 50)}..." → ${toolSeq}`
+      }).join('\n')
+      contextParts.push(`## 历史成功案例\n${traceHints}`)
+    }
+
+    // 4. 动态技能注入 - 优先语义检索，fallback 关键词匹配
+    const matchedSkills = await this.matchSkillsAsync(queryLower)
     for (const skillPath of matchedSkills) {
       const skillContent = await this.readFileWithCache(skillPath)
       if (skillContent) {
@@ -493,18 +771,34 @@ class LocalClawService {
   }
 
   /**
-   * 匹配用户查询与技能关键词
+   * 匹配用户查询与技能 (P1: 使用动态 skillTriggers, P4: 优先语义检索)
    */
-  private matchSkills(queryLower: string): string[] {
+  private async matchSkillsAsync(queryLower: string): Promise<string[]> {
+    // P4: 优先使用语义检索
+    if (this.skillEmbeddingIndex.isReady()) {
+      const semanticMatches = await this.skillEmbeddingIndex.search(queryLower, 3)
+      if (semanticMatches.length > 0) {
+        return semanticMatches
+      }
+    }
+
+    // Fallback: 关键词匹配
+    return this.matchSkillsByKeyword(queryLower)
+  }
+
+  /**
+   * 关键词匹配 (fallback 方法)
+   */
+  private matchSkillsByKeyword(queryLower: string): string[] {
     const matched: string[] = []
     
-    for (const [skillName, config] of Object.entries(SKILL_TRIGGERS)) {
+    for (const [skillName, config] of Object.entries(this.skillTriggers)) {
       const hasMatch = config.keywords.some(keyword => 
         queryLower.includes(keyword.toLowerCase())
       )
       if (hasMatch) {
         matched.push(config.path)
-        console.log(`[LocalClaw] JIT: 匹配技能 ${skillName}`)
+        console.log(`[LocalClaw] JIT: 关键词匹配技能 ${skillName}`)
       }
     }
     
@@ -602,7 +896,8 @@ class LocalClawService {
    */
   async sendMessage(
     prompt: string,
-    onUpdate?: (content: string) => void
+    onUpdate?: (content: string) => void,
+    onStep?: (step: ExecutionStep) => void
   ): Promise<string> {
     if (!isLLMConfigured()) {
       throw new Error('LLM 未配置。请在设置中配置 API Key。')
@@ -623,7 +918,7 @@ class LocalClawService {
     this.logToEphemeral(`用户: ${prompt.slice(0, 100)}${prompt.length > 100 ? '...' : ''}`, 'action').catch(() => {})
 
     try {
-      const result = await this.runReActLoop(prompt, onUpdate)
+      const result = await this.runReActLoop(prompt, onUpdate, onStep)
       
       this.storeActions?.updateExecutionStatus(execId, {
         status: 'success',
@@ -717,7 +1012,8 @@ class LocalClawService {
 
   private async runReActLoop(
     userPrompt: string,
-    onUpdate?: (content: string) => void
+    onUpdate?: (content: string) => void,
+    onStep?: (step: ExecutionStep) => void
   ): Promise<string> {
     this.storeActions?.setAgentStatus('thinking')
 
@@ -732,6 +1028,7 @@ class LocalClawService {
     console.log('[LocalClaw] JIT Context built:', dynamicContext.slice(0, 200) + '...')
 
     const systemPrompt = SYSTEM_PROMPT_TEMPLATE
+      .replace('{available_tools}', this.buildToolsDocumentation())
       .replace('{context}', dynamicContext)
       .replace('{dynamic_examples}', dynamicExamples)
 
@@ -743,6 +1040,10 @@ class LocalClawService {
     let turnCount = 0
     let finalResponse = ''
     let lastToolResult = ''  // 保存最后一次工具结果，防止循环耗尽时返回空
+
+    // P2: 执行追踪收集
+    const traceTools: ExecTraceToolCall[] = []
+    const traceStartTime = Date.now()
 
     while (turnCount < maxTurns) {
       turnCount++
@@ -768,36 +1069,73 @@ class LocalClawService {
           const thoughtMatch = response.match(/"thought"\s*:\s*"([^"]*)"/)
           if (thoughtMatch) {
             console.log(`[LocalClaw] Thought: ${thoughtMatch[1].slice(0, 100)}`)
+            // 发送思考步骤
+            onStep?.({
+              id: `think-${Date.now()}`,
+              type: 'thinking',
+              content: thoughtMatch[1],
+              timestamp: Date.now(),
+            })
           }
         }
 
         if (toolCall) {
-          // 🛡️ Reflexion: 高风险工具执行前检查
+          // 🛡️ P3: 危险操作检测 + 用户审批
           if (CONFIG.HIGH_RISK_TOOLS.includes(toolCall.name)) {
             const argsStr = JSON.stringify(toolCall.args)
-            // 简单的危险命令检测
-            const dangerousPatterns = ['rm -rf', 'del /f', 'format', 'mkfs', 'dd if=/dev']
-            const isDangerous = dangerousPatterns.some(p => argsStr.toLowerCase().includes(p))
-            
-            if (isDangerous) {
+            const argsLower = argsStr.toLowerCase()
+
+            // 匹配危险模式
+            const matchedDanger = CONFIG.DANGER_PATTERNS.find(p =>
+              argsLower.includes(p.pattern.toLowerCase())
+            )
+
+            if (matchedDanger) {
               this.storeActions?.addLog({
                 id: `precheck-${Date.now()}`,
                 timestamp: Date.now(),
                 level: 'warn',
-                message: `[PreCheck] 检测到高危命令，已阻止: ${argsStr.slice(0, 100)}`,
+                message: `[PreCheck] 检测到危险操作 (${matchedDanger.reason}): ${argsStr.slice(0, 100)}`,
               })
-              
-              messages.push({ role: 'assistant', content: response })
-              messages.push({
-                role: 'user',
-                content: `[安全检查] 检测到潜在危险操作，已阻止执行。
-命令: ${argsStr}
 
-请使用更安全的方法，或明确告知用户风险后让用户自行执行。`,
+              // 请求用户审批 (如果 store 支持)
+              let approved = false
+              if (this.storeActions?.requestApproval) {
+                try {
+                  approved = await this.storeActions.requestApproval({
+                    toolName: toolCall.name,
+                    args: toolCall.args,
+                    dangerLevel: matchedDanger.level,
+                    reason: matchedDanger.reason,
+                  })
+                } catch {
+                  approved = false
+                }
+              }
+
+              if (!approved) {
+                // 用户拒绝或无审批UI：阻止执行，让 Agent 重新思考
+                messages.push({ role: 'assistant', content: response })
+                messages.push({
+                  role: 'user',
+                  content: `[用户审批] 操作已被用户拒绝。
+工具: ${toolCall.name}
+命令: ${argsStr}
+原因: ${matchedDanger.reason} (风险等级: ${matchedDanger.level})
+
+请使用更安全的替代方案，或向用户解释为什么需要此操作。`,
+                })
+
+                this.storeActions?.setAgentStatus('thinking')
+                continue // 跳过执行，让 Agent 重新思考
+              }
+              // approved = true: 继续执行
+              this.storeActions?.addLog({
+                id: `approved-${Date.now()}`,
+                timestamp: Date.now(),
+                level: 'info',
+                message: `[Approval] 用户已批准危险操作: ${toolCall.name}`,
               })
-              
-              this.storeActions?.setAgentStatus('thinking')
-              continue // 跳过执行，让 Agent 重新思考
             }
           }
           
@@ -810,7 +1148,38 @@ class LocalClawService {
             message: `调用工具: ${toolCall.name}`,
           })
 
+          // 发送工具调用步骤
+          onStep?.({
+            id: `call-${Date.now()}`,
+            type: 'tool_call',
+            content: JSON.stringify(toolCall.args, null, 2),
+            toolName: toolCall.name,
+            toolArgs: toolCall.args,
+            timestamp: Date.now(),
+          })
+
+          const toolStartTime = Date.now()
           const toolResult = await this.executeTool(toolCall)
+          const toolLatency = Date.now() - toolStartTime
+
+          // 发送工具结果步骤
+          onStep?.({
+            id: `result-${Date.now()}`,
+            type: toolResult.status === 'error' ? 'error' : 'tool_result',
+            content: toolResult.result.slice(0, 2000),
+            toolName: toolCall.name,
+            duration: toolLatency,
+            timestamp: Date.now(),
+          })
+
+          // P2: 记录到执行追踪
+          traceTools.push({
+            name: toolCall.name,
+            args: toolCall.args,
+            status: toolResult.status === 'error' ? 'error' : 'success',
+            latency: toolLatency,
+            order: traceTools.length + 1,
+          })
 
           // 📝 记录工具调用到短暂层
           this.logToEphemeral(
@@ -888,6 +1257,14 @@ class LocalClawService {
           // 无工具调用，返回最终响应
           finalResponse = response
           
+          // 发送最终输出步骤
+          onStep?.({
+            id: `output-${Date.now()}`,
+            type: 'output',
+            content: response.slice(0, 2000),
+            timestamp: Date.now(),
+          })
+          
           // 📝 记录响应摘要到短暂层
           const summary = response.slice(0, 100).replace(/\n/g, ' ')
           this.logToEphemeral(`回复: ${summary}...`, 'result').catch(() => {})
@@ -902,6 +1279,23 @@ class LocalClawService {
     }
 
     this.storeActions?.setAgentStatus('idle')
+
+    // P2: 保存执行追踪
+    if (traceTools.length > 0) {
+      const trace: ExecTrace = {
+        id: `trace-${traceStartTime}`,
+        task: userPrompt.slice(0, 200),
+        tools: traceTools,
+        success: traceTools.every(t => t.status === 'success'),
+        duration: Date.now() - traceStartTime,
+        timestamp: traceStartTime,
+        tags: userPrompt.split(/\s+/).filter(w => w.length > 2 && w.length < 15).slice(0, 5),
+      }
+      this.saveExecTrace(trace).catch(err => {
+        console.warn('[LocalClaw] Failed to save exec trace:', err)
+      })
+    }
+
     // 如果循环耗尽但有工具结果，将最后的工具结果作为回复
     if (!finalResponse && lastToolResult) {
       return `执行完成。工具返回结果:\n${lastToolResult}`
@@ -1013,6 +1407,44 @@ ${stepsReport}
     } catch {
       return `任务执行完成。\n\n${stepsReport}`
     }
+  }
+
+  // ============================================
+  // 📊 P2: 执行追踪管理
+  // ============================================
+
+  /**
+   * 保存执行追踪到后端
+   */
+  private async saveExecTrace(trace: ExecTrace): Promise<void> {
+    try {
+      const res = await fetch(`${this.serverUrl}/api/traces/save`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(trace),
+      })
+      if (res.ok) {
+        console.log(`[LocalClaw] Exec trace saved: ${trace.id} (${trace.tools.length} tools)`)
+      }
+    } catch (err) {
+      console.warn('[LocalClaw] Failed to save exec trace:', err)
+    }
+  }
+
+  /**
+   * 搜索相关执行追踪 (用于上下文注入)
+   */
+  private async searchExecTraces(query: string, limit = 3): Promise<ExecTrace[]> {
+    try {
+      const url = `${this.serverUrl}/api/traces/search?query=${encodeURIComponent(query)}&limit=${limit}`
+      const res = await fetch(url)
+      if (res.ok) {
+        return await res.json()
+      }
+    } catch (err) {
+      console.warn('[LocalClaw] Failed to search traces:', err)
+    }
+    return []
   }
 
   // ============================================
