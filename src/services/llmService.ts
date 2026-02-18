@@ -3,12 +3,68 @@
  * 支持流式 (SSE) 和非流式请求
  */
 
-import type { LLMConfig } from '@/types'
+import type { LLMConfig, ToolInfo } from '@/types'
 
-// 简化的消息类型，仅需 role + content
-type SimpleChatMessage = {
-  role: 'system' | 'user' | 'assistant' | string
+// ============================================
+// Function Calling 类型定义
+// ============================================
+
+/** OpenAI Function Definition schema */
+export interface FunctionDefinition {
+  name: string
+  description?: string
+  parameters?: {
+    type: 'object'
+    properties: Record<string, any>
+    required?: string[]
+  }
+}
+
+/** 流式 delta 中的 tool_call 片段 */
+interface ToolCallDelta {
+  index: number
+  id?: string
+  type?: string
+  function?: {
+    name?: string
+    arguments?: string
+  }
+}
+
+/** 累积后的完整 tool_call */
+export interface FCToolCall {
+  id: string
+  function: {
+    name: string
+    arguments: string
+  }
+}
+
+/** streamChat 返回值 (FC 模式) */
+export interface LLMStreamResult {
   content: string
+  toolCalls: FCToolCall[]
+  finishReason: string | null
+}
+
+// ============================================
+// 消息类型
+// ============================================
+
+/** 支持 tool role 和 tool_calls 的消息类型 */
+export type SimpleChatMessage = {
+  role: 'system' | 'user' | 'assistant' | 'tool' | string
+  content: string | null
+  // assistant 消息携带的 tool_calls
+  tool_calls?: Array<{
+    id: string
+    type: 'function'
+    function: { name: string; arguments: string }
+  }>
+  // tool 消息需要的 tool_call_id
+  tool_call_id?: string
+  // tool 消息可选的 name
+  name?: string
 }
 
 // localStorage keys
@@ -47,10 +103,19 @@ export function isLLMConfigured(): boolean {
 
 interface ChatCompletionRequest {
   model: string
-  messages: Array<{ role: string; content: string }>
+  messages: Array<{
+    role: string
+    content: string | null
+    tool_calls?: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>
+    tool_call_id?: string
+    name?: string
+  }>
   stream?: boolean
   temperature?: number
   max_tokens?: number
+  // Function Calling 参数
+  tools?: Array<{ type: 'function'; function: FunctionDefinition }>
+  tool_choice?: 'auto' | 'none' | 'required'
 }
 
 function buildUrl(baseUrl: string): string {
@@ -73,11 +138,12 @@ function buildHeaders(apiKey: string): Record<string, string> {
 }
 
 /**
- * 非流式调用
+ * 非流式调用 (支持 Function Calling)
  */
 export async function chat(
   messages: SimpleChatMessage[],
   config?: Partial<LLMConfig>,
+  tools?: Array<{ type: 'function'; function: FunctionDefinition }>,
 ): Promise<string> {
   const cfg = { ...getLLMConfig(), ...config }
   if (!cfg.apiKey || !cfg.baseUrl || !cfg.model) {
@@ -86,8 +152,19 @@ export async function chat(
 
   const body: ChatCompletionRequest = {
     model: cfg.model,
-    messages: messages.map(m => ({ role: m.role, content: m.content })),
+    messages: messages.map(m => ({
+      role: m.role,
+      content: m.content,
+      ...(m.tool_calls ? { tool_calls: m.tool_calls } : {}),
+      ...(m.tool_call_id ? { tool_call_id: m.tool_call_id } : {}),
+      ...(m.name ? { name: m.name } : {}),
+    })),
     stream: false,
+  }
+
+  if (tools && tools.length > 0) {
+    body.tools = tools
+    body.tool_choice = 'auto'
   }
 
   const res = await fetch(buildUrl(cfg.baseUrl), {
@@ -106,14 +183,18 @@ export async function chat(
 }
 
 /**
- * 流式调用 (SSE)
+ * 流式调用 (SSE) - 支持 Function Calling
+ * 
+ * 当传入 tools 参数时，返回 LLMStreamResult 包含 toolCalls;
+ * 未传 tools 时行为与旧版一致 (toolCalls 为空数组)。
  */
 export async function streamChat(
   messages: SimpleChatMessage[],
   onChunk: (chunk: string) => void,
   signal?: AbortSignal,
   config?: Partial<LLMConfig>,
-): Promise<void> {
+  tools?: Array<{ type: 'function'; function: FunctionDefinition }>,
+): Promise<LLMStreamResult> {
   const cfg = { ...getLLMConfig(), ...config }
   if (!cfg.apiKey || !cfg.baseUrl || !cfg.model) {
     throw new Error('LLM 未配置，请在设置中配置 API')
@@ -121,8 +202,19 @@ export async function streamChat(
 
   const body: ChatCompletionRequest = {
     model: cfg.model,
-    messages: messages.map(m => ({ role: m.role, content: m.content })),
+    messages: messages.map(m => ({
+      role: m.role,
+      content: m.content,
+      ...(m.tool_calls ? { tool_calls: m.tool_calls } : {}),
+      ...(m.tool_call_id ? { tool_call_id: m.tool_call_id } : {}),
+      ...(m.name ? { name: m.name } : {}),
+    })),
     stream: true,
+  }
+
+  if (tools && tools.length > 0) {
+    body.tools = tools
+    body.tool_choice = 'auto'
   }
 
   const res = await fetch(buildUrl(cfg.baseUrl), {
@@ -143,6 +235,12 @@ export async function streamChat(
   const decoder = new TextDecoder()
   let buffer = ''
 
+  // 累积结果
+  let fullContent = ''
+  let finishReason: string | null = null
+  // tool_calls 累积器: index → { id, name, arguments }
+  const toolCallAccumulator: Map<number, { id: string; name: string; arguments: string }> = new Map()
+
   try {
     while (true) {
       const { done, value } = await reader.read()
@@ -158,12 +256,49 @@ export async function streamChat(
         if (!trimmed || !trimmed.startsWith('data:')) continue
 
         const data = trimmed.slice(5).trim()
-        if (data === '[DONE]') return
+        if (data === '[DONE]') {
+          // 构建最终结果
+          const toolCalls: FCToolCall[] = []
+          for (const [, acc] of toolCallAccumulator) {
+            toolCalls.push({
+              id: acc.id,
+              function: { name: acc.name, arguments: acc.arguments },
+            })
+          }
+          return { content: fullContent, toolCalls, finishReason }
+        }
 
         try {
           const parsed = JSON.parse(data)
-          const content = parsed.choices?.[0]?.delta?.content
-          if (content) onChunk(content)
+          const choice = parsed.choices?.[0]
+
+          // 更新 finish_reason
+          if (choice?.finish_reason) {
+            finishReason = choice.finish_reason
+          }
+
+          const delta = choice?.delta
+          if (!delta) continue
+
+          // 累积文本内容
+          if (delta.content) {
+            fullContent += delta.content
+            onChunk(delta.content)
+          }
+
+          // 累积 tool_calls delta
+          if (delta.tool_calls && Array.isArray(delta.tool_calls)) {
+            for (const tc of delta.tool_calls as ToolCallDelta[]) {
+              const idx = tc.index
+              if (!toolCallAccumulator.has(idx)) {
+                toolCallAccumulator.set(idx, { id: '', name: '', arguments: '' })
+              }
+              const acc = toolCallAccumulator.get(idx)!
+              if (tc.id) acc.id = tc.id
+              if (tc.function?.name) acc.name += tc.function.name
+              if (tc.function?.arguments) acc.arguments += tc.function.arguments
+            }
+          }
         } catch {
           // 忽略解析错误，继续处理
         }
@@ -172,6 +307,16 @@ export async function streamChat(
   } finally {
     reader.releaseLock()
   }
+
+  // 流结束但没收到 [DONE]，也返回已累积的结果
+  const toolCalls: FCToolCall[] = []
+  for (const [, acc] of toolCallAccumulator) {
+    toolCalls.push({
+      id: acc.id,
+      function: { name: acc.name, arguments: acc.arguments },
+    })
+  }
+  return { content: fullContent, toolCalls, finishReason }
 }
 
 /**
@@ -271,5 +416,68 @@ export function cosineSimilarity(a: number[], b: number[]): number {
   if (denominator === 0) return 0
 
   return dotProduct / denominator
+}
+
+// ============================================
+// ToolInfo → OpenAI Function Schema 转换
+// ============================================
+
+/**
+ * 将 DD-OS ToolInfo 转换为 OpenAI Function Calling 的 tools 参数格式
+ */
+export function convertToolInfoToFunctions(
+  tools: ToolInfo[]
+): Array<{ type: 'function'; function: FunctionDefinition }> {
+  return tools
+    .filter(t => t.type !== 'instruction') // 指令型技能无需注册为 function
+    .map(t => ({
+      type: 'function' as const,
+      function: toolInfoToFunctionDef(t),
+    }))
+}
+
+/**
+ * 单个 ToolInfo → FunctionDefinition
+ */
+function toolInfoToFunctionDef(tool: ToolInfo): FunctionDefinition {
+  const def: FunctionDefinition = {
+    name: tool.name,
+    description: tool.description || tool.name,
+  }
+
+  // 将 ToolInfo.inputs 转换为 JSON Schema parameters
+  if (tool.inputs && Object.keys(tool.inputs).length > 0) {
+    const properties: Record<string, any> = {}
+    const required: string[] = []
+
+    for (const [key, schema] of Object.entries(tool.inputs)) {
+      if (typeof schema === 'object' && schema !== null) {
+        // 已经是 JSON Schema 格式 (如 { type: 'string', description: '...', required: true })
+        const { required: isRequired, ...rest } = schema
+        properties[key] = rest
+        // 确保有 type 字段
+        if (!properties[key].type) {
+          properties[key].type = 'string'
+        }
+        if (isRequired) {
+          required.push(key)
+        }
+      } else {
+        // 简单值，推断为 string
+        properties[key] = { type: 'string', description: String(schema) }
+      }
+    }
+
+    def.parameters = {
+      type: 'object',
+      properties,
+      ...(required.length > 0 ? { required } : {}),
+    }
+  } else {
+    // 无参数的工具
+    def.parameters = { type: 'object', properties: {} }
+  }
+
+  return def
 }
 

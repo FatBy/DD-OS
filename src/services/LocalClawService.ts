@@ -8,7 +8,8 @@
  * - 本地记忆持久化
  */
 
-import { chat, streamChat, isLLMConfigured, embed, cosineSimilarity } from './llmService'
+import { chat, streamChat, isLLMConfigured, embed, cosineSimilarity, convertToolInfoToFunctions } from './llmService'
+import type { SimpleChatMessage, LLMStreamResult } from './llmService'
 import type { ExecutionStatus, OpenClawSkill, MemoryEntry, ToolInfo, ExecTrace, ExecTraceToolCall, ApprovalRequest, ExecutionStep } from '@/types'
 import { parseSoulMd, type ParsedSoul } from '@/utils/soulParser'
 
@@ -212,6 +213,34 @@ const SYSTEM_PROMPT_TEMPLATE = `你是 DD-OS，一个运行在用户本地电脑
 9. **主动记忆**: 发现用户偏好或有价值的信息时，主动调用 saveMemory 保存
 
 {dynamic_examples}
+
+## 当前上下文
+{context}
+`
+
+// ============================================
+// FC (Function Calling) 模式系统提示词 - 精简版
+// ============================================
+
+const SYSTEM_PROMPT_FC = `你是 DD-OS，一个运行在用户本地电脑上的 AI 操作系统。
+
+## 核心身份
+{soul_summary}
+
+## 工作模式
+- 你可以通过调用工具直接操作用户的电脑
+- 工具会以 function calling 的形式自动注册，无需记忆工具文档
+- 直接调用合适的工具来完成任务，无需输出 JSON
+
+## 行为准则
+1. **先思考再行动**: 如果不确定用户意图，先询问澄清
+2. **语义理解**: 用户说"技能/SKILL"是指插件概念，不是命令；"Agent"是指智能体
+3. **简洁高效**: 每次调用一个工具，逐步完成任务
+4. **风险评估**: 执行危险操作（如删除、修改系统文件）前先告知用户
+
+## 记忆提示
+- saveMemory: 用户表达偏好或重要信息时主动保存
+- searchMemory: 遇到"之前/上次/记得"等词时检索历史
 
 ## 当前上下文
 {context}
@@ -1169,7 +1198,46 @@ class LocalClawService {
   // 🧠 ReAct 循环
   // ============================================
 
+  /**
+   * ReAct 循环 - 路由器
+   * 检测 FC 支持并自动选择合适的执行模式
+   */
   private async runReActLoop(
+    userPrompt: string,
+    onUpdate?: (content: string) => void,
+    onStep?: (step: ExecutionStep) => void
+  ): Promise<string> {
+    // 检测是否应该使用 FC 模式
+    // 条件: 有可用工具 && 模型支持 FC (暂时通过配置/特性检测)
+    const useFunctionCalling = this.shouldUseFunctionCalling()
+    
+    if (useFunctionCalling && this.availableTools.length > 0) {
+      console.log('[LocalClaw] Using Function Calling mode')
+      return this.runReActLoopFC(userPrompt, onUpdate, onStep)
+    } else {
+      console.log('[LocalClaw] Using Legacy text-based mode')
+      return this.runReActLoopLegacy(userPrompt, onUpdate, onStep)
+    }
+  }
+
+  /**
+   * 检测是否应该使用 Function Calling 模式
+   * 目前通过 localStorage 配置项控制，便于 A/B 测试和回退
+   */
+  private shouldUseFunctionCalling(): boolean {
+    // 可通过 localStorage 设置 'ddos_use_fc' = 'true' / 'false' 控制
+    const fcSetting = localStorage.getItem('ddos_use_fc')
+    if (fcSetting === 'false') return false
+    if (fcSetting === 'true') return true
+    // 默认启用 FC 模式
+    return true
+  }
+
+  /**
+   * ReAct 循环 - Legacy 文本模式 (原实现)
+   * 保留用于不支持 FC 的模型或回退场景
+   */
+  private async runReActLoopLegacy(
     userPrompt: string,
     onUpdate?: (content: string) => void,
     onStep?: (step: ExecutionStep) => void
@@ -1488,6 +1556,272 @@ class LocalClawService {
       // 如果结果只是 Exit Code 错误，给出更友好的提示
       if (/^Exit Code: \d+/.test(lastToolResult.trim()) || /Exit Code: (?!0)\d+/.test(lastToolResult)) {
         return `执行完成，但工具调用未成功。返回信息:\n${lastToolResult}\n\n可能原因: 网络连接问题或命令不可用。你可以尝试换一种方式描述需求。`
+      }
+      return `执行完成。工具返回结果:\n${lastToolResult}`
+    }
+    return finalResponse || '任务执行完成，但未生成总结。'
+  }
+
+  // ============================================
+  // 🚀 ReAct 循环 - Function Calling 模式
+  // ============================================
+
+  /**
+   * ReAct 循环 - 原生 Function Calling 模式
+   * 使用 OpenAI-compatible tools API 实现工具调用
+   */
+  private async runReActLoopFC(
+    userPrompt: string,
+    onUpdate?: (content: string) => void,
+    onStep?: (step: ExecutionStep) => void
+  ): Promise<string> {
+    this.storeActions?.setAgentStatus('thinking')
+
+    // 复杂度感知轮次分配 (与 Legacy 保持一致)
+    const isSimpleTask = userPrompt.length < 20 && 
+      !userPrompt.match(/代码|编写|创建|修复|分析|部署|配置|脚本|搜索|安装|下载|code|create|fix|analyze|search|install/)
+    const isHeavyTask = userPrompt.length > 80 ||
+      !!userPrompt.match(/并且|然后|之后|同时|自动|批量|全部|and then|also|batch/)
+    const maxTurns = isSimpleTask ? 3 : isHeavyTask ? CONFIG.MAX_REACT_TURNS : 15
+    console.log(`[LocalClaw/FC] Task complexity: ${isSimpleTask ? 'simple' : isHeavyTask ? 'heavy' : 'normal'}, maxTurns: ${maxTurns}`)
+
+    // JIT: 动态构建上下文
+    const { context: dynamicContext } = await this.buildDynamicContext(userPrompt)
+
+    // 构建精简系统提示词 (FC 模式无需工具文档)
+    const soulSummary = this.soulContent ? this.extractSoulSummary(this.soulContent) : ''
+    const systemPrompt = SYSTEM_PROMPT_FC
+      .replace('{soul_summary}', soulSummary || '一个友好、专业的 AI 助手')
+      .replace('{context}', dynamicContext)
+
+    // 转换工具为 OpenAI Function Calling 格式
+    const tools = convertToolInfoToFunctions(this.availableTools)
+    console.log(`[LocalClaw/FC] Registered ${tools.length} functions`)
+
+    // 消息历史 (使用标准 OpenAI 格式)
+    const messages: SimpleChatMessage[] = [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userPrompt },
+    ]
+
+    let turnCount = 0
+    let finalResponse = ''
+    let lastToolResult = ''
+
+    // P2: 执行追踪收集
+    const traceTools: ExecTraceToolCall[] = []
+    const traceStartTime = Date.now()
+
+    while (turnCount < maxTurns) {
+      turnCount++
+      console.log(`[LocalClaw/FC] Turn ${turnCount}`)
+
+      try {
+        // 调用 LLM (带 tools 参数)
+        let streamedContent = ''
+        const result: LLMStreamResult = await streamChat(
+          messages,
+          (chunk) => {
+            streamedContent += chunk
+            onUpdate?.(streamedContent)
+          },
+          undefined, // signal
+          undefined, // config
+          tools
+        )
+
+        const { content, toolCalls, finishReason } = result
+        console.log(`[LocalClaw/FC] finish_reason: ${finishReason}, toolCalls: ${toolCalls.length}`)
+
+        // 判断是否有工具调用
+        if (toolCalls.length > 0) {
+          // 构建 assistant 消息 (包含 tool_calls)
+          const assistantMsg: SimpleChatMessage = {
+            role: 'assistant',
+            content: content || null,
+            tool_calls: toolCalls.map(tc => ({
+              id: tc.id,
+              type: 'function' as const,
+              function: tc.function,
+            })),
+          }
+          messages.push(assistantMsg)
+
+          // 逐个执行工具并收集结果
+          for (const tc of toolCalls) {
+            const toolName = tc.function.name
+            let toolArgs: Record<string, unknown> = {}
+            
+            try {
+              toolArgs = JSON.parse(tc.function.arguments || '{}')
+            } catch {
+              console.warn(`[LocalClaw/FC] Failed to parse args for ${toolName}:`, tc.function.arguments)
+            }
+
+            // 发送思考步骤 (如果有 content)
+            if (content) {
+              onStep?.({
+                id: `think-${Date.now()}`,
+                type: 'thinking',
+                content: content.slice(0, 500),
+                timestamp: Date.now(),
+              })
+            }
+
+            // 🛡️ P3: 危险操作检测 + 用户审批 (与 Legacy 保持一致)
+            if (CONFIG.HIGH_RISK_TOOLS.includes(toolName)) {
+              const argsStr = JSON.stringify(toolArgs)
+              const argsLower = argsStr.toLowerCase()
+              const matchedDanger = CONFIG.DANGER_PATTERNS.find(p =>
+                argsLower.includes(p.pattern.toLowerCase())
+              )
+
+              if (matchedDanger) {
+                this.storeActions?.addLog({
+                  id: `precheck-${Date.now()}`,
+                  timestamp: Date.now(),
+                  level: 'warn',
+                  message: `[PreCheck] 检测到危险操作 (${matchedDanger.reason}): ${argsStr.slice(0, 100)}`,
+                })
+
+                let approved = false
+                if (this.storeActions?.requestApproval) {
+                  try {
+                    approved = await this.storeActions.requestApproval({
+                      toolName,
+                      args: toolArgs,
+                      dangerLevel: matchedDanger.level,
+                      reason: matchedDanger.reason,
+                    })
+                  } catch {
+                    approved = false
+                  }
+                }
+
+                if (!approved) {
+                  // 用户拒绝：返回错误消息让 LLM 重新思考
+                  messages.push({
+                    role: 'tool',
+                    tool_call_id: tc.id,
+                    content: `操作被用户拒绝。原因: ${matchedDanger.reason} (风险等级: ${matchedDanger.level})。请使用更安全的替代方案。`,
+                  })
+                  continue
+                }
+              }
+            }
+
+            // 执行工具
+            this.storeActions?.setAgentStatus('executing')
+            this.storeActions?.addLog({
+              id: `tool-${Date.now()}`,
+              timestamp: Date.now(),
+              level: 'info',
+              message: `调用工具: ${toolName}`,
+            })
+
+            onStep?.({
+              id: `call-${Date.now()}`,
+              type: 'tool_call',
+              content: JSON.stringify(toolArgs, null, 2),
+              toolName,
+              toolArgs,
+              timestamp: Date.now(),
+            })
+
+            const toolStartTime = Date.now()
+            const toolResult = await this.executeTool({ name: toolName, args: toolArgs })
+            const toolLatency = Date.now() - toolStartTime
+
+            onStep?.({
+              id: `result-${Date.now()}`,
+              type: toolResult.status === 'error' ? 'error' : 'tool_result',
+              content: toolResult.result.slice(0, 2000),
+              toolName,
+              duration: toolLatency,
+              timestamp: Date.now(),
+            })
+
+            // P2: 记录到执行追踪
+            traceTools.push({
+              name: toolName,
+              args: toolArgs,
+              status: toolResult.status === 'error' ? 'error' : 'success',
+              latency: toolLatency,
+              order: traceTools.length + 1,
+            })
+
+            lastToolResult = toolResult.result
+
+            // 添加 tool 消息 (标准 OpenAI 格式)
+            messages.push({
+              role: 'tool',
+              tool_call_id: tc.id,
+              content: toolResult.result,
+              name: toolName,
+            })
+
+            // 🔄 技能变更检测 (与 Legacy 保持一致)
+            if (toolName === 'runCmd' && (
+              toolResult.result.includes('Skill installed') ||
+              toolResult.result.includes('tools registered') ||
+              toolResult.result.includes('git clone')
+            )) {
+              try {
+                await this.loadTools()
+                await this.loadAllDataToStore()
+                console.log('[LocalClaw/FC] Tools & skills refreshed mid-loop')
+              } catch {
+                console.warn('[LocalClaw/FC] Failed to refresh tools mid-loop')
+              }
+            }
+          }
+
+          this.storeActions?.setAgentStatus('thinking')
+        } else {
+          // 无工具调用 - LLM 直接回复用户
+          finalResponse = content || ''
+          
+          onStep?.({
+            id: `output-${Date.now()}`,
+            type: 'output',
+            content: finalResponse.slice(0, 2000),
+            timestamp: Date.now(),
+          })
+
+          // 记录响应摘要
+          const summary = finalResponse.slice(0, 100).replace(/\n/g, ' ')
+          this.logToEphemeral(`回复: ${summary}...`, 'result').catch(() => {})
+
+          break
+        }
+      } catch (error: any) {
+        console.error('[LocalClaw/FC] ReAct error:', error)
+        finalResponse = `执行出错: ${error.message}`
+        break
+      }
+    }
+
+    this.storeActions?.setAgentStatus('idle')
+
+    // P2: 保存执行追踪
+    if (traceTools.length > 0) {
+      const trace: ExecTrace = {
+        id: `trace-${traceStartTime}`,
+        task: userPrompt.slice(0, 200),
+        tools: traceTools,
+        success: traceTools.every(t => t.status === 'success'),
+        duration: Date.now() - traceStartTime,
+        timestamp: traceStartTime,
+        tags: userPrompt.split(/\s+/).filter(w => w.length > 2 && w.length < 15).slice(0, 5),
+      }
+      this.saveExecTrace(trace).catch(err => {
+        console.warn('[LocalClaw/FC] Failed to save exec trace:', err)
+      })
+    }
+
+    if (!finalResponse && lastToolResult) {
+      if (/^Exit Code: \d+/.test(lastToolResult.trim()) || /Exit Code: (?!0)\d+/.test(lastToolResult)) {
+        return `执行完成，但工具调用未成功。返回信息:\n${lastToolResult}\n\n可能原因: 网络连接问题或命令不可用。`
       }
       return `执行完成。工具返回结果:\n${lastToolResult}`
     }

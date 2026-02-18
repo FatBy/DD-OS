@@ -64,7 +64,7 @@ export interface SessionsSlice {
   clearTaskHistory: () => void
 }
 
-export const createSessionsSlice: StateCreator<SessionsSlice> = (set, get) => ({
+export const createSessionsSlice: StateCreator<SessionsSlice> = (set, _get) => ({
   sessions: [],
   sessionsLoading: true,
   selectedSessionKey: null,
