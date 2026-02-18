@@ -234,28 +234,42 @@ class SkillDiscovery:
     def find_skill(self, name: str) -> Optional[Dict[str, Any]]:
         """
         Find a skill by name.
+        Supports both kebab-case and snake_case names.
         
         Args:
-            name: Skill name
+            name: Skill name (e.g., 'general-task' or 'general_task')
             
         Returns:
             Full skill definition or None
         """
+        # Generate name variants for matching
+        alt_name = name.replace('_', '-')
+        alt_name2 = name.replace('-', '_')
+        name_variants = list(set([name, alt_name, alt_name2]))
+        
         # Search in all locations
         for directory in [self.builtin_dir, self.custom_dir, self.project_skills_dir]:
             if not directory.exists():
                 continue
             
-            # Direct match
-            skill_file = directory / name / 'SKILL.md'
-            if skill_file.exists():
-                return self.parser.parse_file(str(skill_file))
+            # Direct match with name variants
+            for variant in name_variants:
+                skill_file = directory / variant / 'SKILL.md'
+                if skill_file.exists():
+                    return self.parser.parse_file(str(skill_file))
             
-            # Search subdirectories
+            # Search subdirectories (match by metadata name or directory name)
             for candidate in directory.glob('**/SKILL.md'):
                 try:
+                    candidate_dir_name = candidate.parent.name
+                    # Quick directory name check first
+                    if candidate_dir_name in name_variants:
+                        return self.parser.parse_file(str(candidate))
+                    
+                    # Full metadata check
                     skill_def = self.parser.parse_file(str(candidate))
-                    if skill_def['metadata'].get('name') == name:
+                    meta_name = skill_def['metadata'].get('name', '')
+                    if meta_name in name_variants:
                         return skill_def
                 except Exception:
                     continue

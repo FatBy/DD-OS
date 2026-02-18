@@ -30,11 +30,40 @@ interface Particle {
   opacity: number
 }
 
+// 能量核心状态 (由 WorldView 从 store 计算后传入)
+interface EnergyCoreState {
+  name: string            // identity.name → 颜色哈希种子
+  skills: Array<{ id: string; active: boolean }>
+  complexity: number      // 0-100
+  activity: number        // 0-1
+  turbulence: number      // 0-1
+}
+
+interface CoreParticle {
+  id: string
+  angle: number
+  speed: number
+  radiusX: number
+  radiusY: number
+  tilt: number
+  color: string
+  size: number
+  alpha: number
+  active: boolean
+  yRatio: number  // 稳定的 Y 轴压扁比例
+}
+
+interface Ripple {
+  x: number; y: number
+  radius: number; alpha: number
+}
+
 interface RenderState {
   nexuses: Map<string, NexusEntity>
   camera: CameraState
   selectedNexusId: string | null
   renderSettings: RenderSettings
+  energyCore?: EnergyCoreState
 }
 
 // 兼容类型定义
@@ -77,6 +106,9 @@ export class GameCanvas {
   private nexusCache: Map<string, BufferCanvas> = new Map()
   private particles: Particle[] = []
   private _time = 0  // 全局时间（驱动呼吸光晕等动态效果）
+  private coreParticles: CoreParticle[] = []
+  private mousePos = { x: 0, y: 0 }
+  private ripples: Ripple[] = []
 
   private state: RenderState = {
     nexuses: new Map(),
@@ -114,11 +146,27 @@ export class GameCanvas {
   destroy(): void {
     cancelAnimationFrame(this.animFrameId)
     this.nexusCache.clear()
+    this.coreParticles = []
+    this.ripples = []
     console.log('[GameCanvas] Destroyed')
   }
 
   updateState(state: RenderState): void {
+    const prevSkillCount = this.state.energyCore?.skills.length ?? -1
+    const newSkillCount = state.energyCore?.skills.length ?? -1
+    if (state.energyCore && prevSkillCount !== newSkillCount) {
+      this.initCoreParticles(state.energyCore)
+    }
     this.state = state
+  }
+
+  setMousePosition(x: number, y: number): void {
+    this.mousePos = { x, y }
+  }
+
+  triggerRipple(x: number, y: number): void {
+    if (this.ripples.length >= 10) return
+    this.ripples.push({ x, y, radius: 0, alpha: 0.8 })
   }
 
   // ---- Coordinate Transforms (ISO) ----
@@ -177,9 +225,14 @@ export class GameCanvas {
 
     const { camera, nexuses, selectedNexusId, renderSettings } = this.state
 
-    // Layer 1: Deep Space (星空背景)
+    // Layer 0: Deep Space (星空背景)
     if (renderSettings.showParticles) {
       this.renderStarfield(ctx, w, h)
+    }
+
+    // Layer 1: Energy Core (能量核心 - 星空之上，网格之下)
+    if (this.state.energyCore) {
+      this.renderEnergyCore(ctx, w, h)
     }
 
     // Layer 2: ISO Grid
@@ -204,6 +257,12 @@ export class GameCanvas {
     } catch (e) {
       console.error('[GameCanvas] Planet render error:', e)
     }
+
+    // Layer 4: Ripples (交互波纹 - 最顶层)
+    this.updateRipples()
+    if (this.ripples.length > 0) {
+      this.renderRipples(ctx, w, h)
+    }
   }
 
   // ---- Layer 1: 深空背景 (星空 + 氛围光晕 + 宇宙尘埃) ----
@@ -227,8 +286,8 @@ export class GameCanvas {
     const pulse = Math.sin(time) * 0.08 + 1
     const maxDim = Math.max(w, h)
     const glowGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, maxDim * 0.7 * pulse)
-    glowGrad.addColorStop(0, `hsla(220, 60%, 12%, ${0.25 * pulse})`)
-    glowGrad.addColorStop(0.4, `hsla(250, 50%, 8%, ${0.12 * pulse})`)
+    glowGrad.addColorStop(0, `hsla(220, 60%, 12%, ${0.12 * pulse})`)
+    glowGrad.addColorStop(0.4, `hsla(250, 50%, 8%, ${0.06 * pulse})`)
     glowGrad.addColorStop(1, 'transparent')
     ctx.fillStyle = glowGrad
     ctx.fillRect(0, 0, w, h)
@@ -255,7 +314,7 @@ export class GameCanvas {
       const nx = (Math.sin(i * 73.7 + time * 0.15) * 0.4 + 0.5) * w
       const ny = (Math.cos(i * 127.3 + time * 0.1) * 0.4 + 0.5) * h
       const nr = maxDim * (0.08 + Math.sin(time + i * 2) * 0.02)
-      const alpha = (Math.sin(time * 0.8 + i * 1.5) + 1) * 0.02 + 0.01
+      const alpha = (Math.sin(time * 0.8 + i * 1.5) + 1) * 0.01 + 0.005
 
       const nebulaGrad = ctx.createRadialGradient(nx, ny, 0, nx, ny, nr)
       nebulaGrad.addColorStop(0, `hsla(${220 + i * 25}, 50%, 45%, ${alpha})`)
@@ -269,15 +328,33 @@ export class GameCanvas {
 
   private renderIsoGrid(ctx: CanvasRenderingContext2D, camera: CameraState): void {
     ctx.save()
-    ctx.strokeStyle = 'rgba(80, 160, 255, 0.07)'
     ctx.lineWidth = 1
     const range = 10
+    const centerX = this.canvas.clientWidth / 2
+    const centerY = this.canvas.clientHeight / 2
+    const maxDim = Math.max(this.canvas.clientWidth, this.canvas.clientHeight) * 0.5
+
     for (let i = -range; i <= range; i++) {
       const p1 = this.worldToScreen(-range, i, camera)
       const p2 = this.worldToScreen(range, i, camera)
+
+      // 根据线段中点到屏幕中心的距离调整透明度（中心渐隐）
+      const midX1 = (p1.x + p2.x) / 2
+      const midY1 = (p1.y + p2.y) / 2
+      const dist1 = Math.sqrt((midX1 - centerX) ** 2 + (midY1 - centerY) ** 2)
+      const fade1 = Math.min(1, Math.max(0, (dist1 / maxDim - 0.2) / 0.6))
+
+      ctx.strokeStyle = `rgba(80, 160, 255, ${0.04 * fade1})`
       ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke()
+
       const p3 = this.worldToScreen(i, -range, camera)
       const p4 = this.worldToScreen(i, range, camera)
+      const midX2 = (p3.x + p4.x) / 2
+      const midY2 = (p3.y + p4.y) / 2
+      const dist2 = Math.sqrt((midX2 - centerX) ** 2 + (midY2 - centerY) ** 2)
+      const fade2 = Math.min(1, Math.max(0, (dist2 / maxDim - 0.2) / 0.6))
+
+      ctx.strokeStyle = `rgba(80, 160, 255, ${0.04 * fade2})`
       ctx.beginPath(); ctx.moveTo(p3.x, p3.y); ctx.lineTo(p4.x, p4.y); ctx.stroke()
     }
     ctx.restore()
@@ -695,5 +772,239 @@ export class GameCanvas {
 
   clearCache(): void {
     this.nexusCache.clear()
+  }
+
+  // ================================================================
+  // 能量核心渲染系统
+  // ================================================================
+
+  // 基于名字生成唯一配色方案 (移植自 SoulOrb.tsx)
+  private getCoreColors(name: string): {
+    core: string; glow: string; skillActive: string; skillInactive: string; hue: number
+  } {
+    let hash = 0
+    for (let i = 0; i < name.length; i++) {
+      hash = name.charCodeAt(i) + ((hash << 5) - hash)
+    }
+    const h = Math.abs(hash % 360)
+    return {
+      core: `hsla(${h}, 85%, 60%, 1)`,
+      glow: `hsla(${h}, 90%, 70%, 0.5)`,
+      skillActive: `hsla(${h}, 95%, 85%, 1)`,
+      skillInactive: `hsla(${(h + 180) % 360}, 10%, 40%, 0.2)`,
+      hue: h,
+    }
+  }
+
+  // 初始化核心粒子 (每个技能 = 一个粒子)
+  private initCoreParticles(core: EnergyCoreState): void {
+    const colors = this.getCoreColors(core.name)
+
+    const sourceData = core.skills.length > 0
+      ? core.skills
+      : Array.from({ length: 20 }, (_, i) => ({ id: `dummy-${i}`, active: Math.random() > 0.7 }))
+
+    this.coreParticles = sourceData.map((skill, i) => ({
+      id: skill.id,
+      angle: (Math.PI * 2 * i) / (sourceData.length || 1),
+      speed: (skill.active ? 0.008 : 0.003) * (Math.random() * 0.5 + 0.8),
+      radiusX: 100,
+      radiusY: 100,
+      tilt: Math.random() * Math.PI * 2,
+      color: skill.active ? colors.skillActive : colors.skillInactive,
+      size: skill.active ? Math.random() * 2 + 1.5 : Math.random() + 0.5,
+      alpha: skill.active ? 0.9 : 0.3,
+      active: skill.active,
+      yRatio: 0.6 + Math.random() * 0.3,
+    }))
+  }
+
+  // 能量核心主渲染入口
+  private renderEnergyCore(ctx: CanvasRenderingContext2D, w: number, h: number): void {
+    const core = this.state.energyCore
+    if (!core) return
+
+    const colors = this.getCoreColors(core.name)
+    const minDim = Math.min(w, h)
+    const coreR = minDim * 0.16
+
+    // 视差偏移
+    const cx = w / 2 + this.mousePos.x * 15
+    const cy = h / 2 + this.mousePos.y * 15
+
+    const speedMult = 1 + core.activity * 2
+    const time = this._time * speedMult
+
+    // Layer A: 核心光晕 (呼吸效果) — 双层光晕增强视觉存在感
+    const breath = Math.sin(time * 1.5) * 0.05 + 1
+
+    // 外层大范围光晕
+    const outerGlow = ctx.createRadialGradient(cx, cy, coreR * 0.3, cx, cy, coreR * 6 * breath)
+    outerGlow.addColorStop(0, `hsla(${colors.hue}, 70%, 50%, 0.15)`)
+    outerGlow.addColorStop(0.3, `hsla(${colors.hue}, 60%, 40%, 0.06)`)
+    outerGlow.addColorStop(1, 'rgba(0,0,0,0)')
+    ctx.fillStyle = outerGlow
+    ctx.fillRect(0, 0, w, h)
+
+    // 内层高亮光晕
+    const innerGlow = ctx.createRadialGradient(cx, cy, 0, cx, cy, coreR * 3 * breath)
+    innerGlow.addColorStop(0, colors.glow)
+    innerGlow.addColorStop(0.4, `hsla(${colors.hue}, 80%, 60%, 0.12)`)
+    innerGlow.addColorStop(1, 'rgba(0,0,0,0)')
+    ctx.fillStyle = innerGlow
+    ctx.fillRect(0, 0, w, h)
+
+    // Layer B: 核心本体 (Lissajous 纹路)
+    this.renderCoreBody(ctx, cx, cy, coreR, colors, core, time)
+
+    // Layer C: 技能粒子轨道
+    this.renderCoreParticles(ctx, cx, cy, w, h, minDim, colors, core, speedMult)
+  }
+
+  // 核心本体: 黑色球体 + Lissajous 能量纹路
+  private renderCoreBody(
+    ctx: CanvasRenderingContext2D,
+    cx: number, cy: number, coreR: number,
+    colors: ReturnType<GameCanvas['getCoreColors']>,
+    core: EnergyCoreState,
+    time: number,
+  ): void {
+    ctx.save()
+    ctx.beginPath()
+    ctx.arc(cx, cy, coreR, 0, Math.PI * 2)
+    ctx.clip()
+
+    // 背景深色球体
+    const bgGrad = ctx.createRadialGradient(cx - coreR * 0.3, cy - coreR * 0.3, 0, cx, cy, coreR)
+    bgGrad.addColorStop(0, 'hsla(0, 0%, 15%, 1)')
+    bgGrad.addColorStop(1, 'hsla(0, 0%, 5%, 1)')
+    ctx.fillStyle = bgGrad
+    ctx.fill()
+
+    // Lissajous 能量纹路
+    const lineCount = 6 + Math.floor(core.complexity / 10)
+    ctx.strokeStyle = colors.core
+    ctx.lineWidth = 1.5
+    ctx.globalAlpha = 0.5
+
+    for (let i = 0; i < lineCount; i++) {
+      ctx.beginPath()
+      const phase = (i / lineCount) * Math.PI * 2
+
+      for (let x = -coreR; x <= coreR; x += 2) {
+        const turbMod = core.turbulence * Math.sin(time * 0.5 + x * 0.1) * 0.2
+        const yBase = Math.sin(x / coreR * Math.PI + time + phase + turbMod) * (coreR * 0.4)
+        const scale = Math.sqrt(Math.max(0, 1 - (x / coreR) ** 2))
+
+        // 2D 旋转模拟球体自转
+        const rot = time * 0.2
+        const rx = x * Math.cos(rot) - yBase * scale * Math.sin(rot)
+        const ry = x * Math.sin(rot) + yBase * scale * Math.cos(rot)
+
+        if (x === -coreR) ctx.moveTo(cx + rx, cy + ry)
+        else ctx.lineTo(cx + rx, cy + ry)
+      }
+      ctx.stroke()
+    }
+
+    ctx.globalAlpha = 1
+    ctx.restore()
+
+    // 球体边缘光晕 (增强轮廓感)
+    const rimGlow = ctx.createRadialGradient(cx, cy, coreR * 0.85, cx, cy, coreR * 1.15)
+    rimGlow.addColorStop(0, 'rgba(0,0,0,0)')
+    rimGlow.addColorStop(0.5, `hsla(${colors.hue}, 80%, 60%, 0.25)`)
+    rimGlow.addColorStop(1, 'rgba(0,0,0,0)')
+    ctx.fillStyle = rimGlow
+    ctx.beginPath()
+    ctx.arc(cx, cy, coreR * 1.15, 0, Math.PI * 2)
+    ctx.fill()
+  }
+
+  // 技能粒子: 3D 轨道投影
+  private renderCoreParticles(
+    ctx: CanvasRenderingContext2D,
+    cx: number, cy: number,
+    w: number, h: number,
+    minDim: number,
+    colors: ReturnType<GameCanvas['getCoreColors']>,
+    _core: EnergyCoreState,
+    speedMult: number,
+  ): void {
+    const margin = 50
+
+    for (const p of this.coreParticles) {
+      p.angle += p.speed * speedMult
+
+      // 动态轨道半径
+      const baseR = minDim * (p.active ? 0.2 : 0.35)
+      p.radiusX = baseR
+      p.radiusY = baseR * p.yRatio
+
+      // 3D 轨道坐标
+      const ux = Math.cos(p.angle) * p.radiusX
+      const uy = Math.sin(p.angle) * p.radiusY
+
+      // 倾角旋转 -> 3D 投影
+      const cosT = Math.cos(p.tilt)
+      const sinT = Math.sin(p.tilt)
+      const x = ux * cosT - uy * sinT
+      const y = ux * sinT + uy * cosT
+      const z = Math.sin(p.angle)
+
+      const screenX = cx + x
+      const screenY = cy + y
+
+      // 视锥剔除
+      if (screenX < -margin || screenX > w + margin ||
+          screenY < -margin || screenY > h + margin) continue
+
+      const pScale = 1 + z * 0.25
+      const alpha = p.alpha * (0.6 + z * 0.4)
+
+      // 绘制粒子
+      ctx.beginPath()
+      ctx.arc(screenX, screenY, p.size * pScale, 0, Math.PI * 2)
+      ctx.fillStyle = p.color
+      ctx.globalAlpha = Math.max(0.05, alpha)
+      ctx.fill()
+
+      // 低频能量连接线
+      if (p.active && Math.random() > 0.99) {
+        ctx.beginPath()
+        ctx.moveTo(screenX, screenY)
+        ctx.lineTo(cx, cy)
+        ctx.strokeStyle = colors.skillActive
+        ctx.lineWidth = 0.5
+        ctx.globalAlpha = 0.3
+        ctx.stroke()
+      }
+    }
+    ctx.globalAlpha = 1
+  }
+
+  // 波纹更新
+  private updateRipples(): void {
+    this.ripples = this.ripples.filter(r => {
+      r.radius += 4
+      r.alpha -= 0.015
+      return r.alpha > 0
+    })
+  }
+
+  // 波纹渲染
+  private renderRipples(ctx: CanvasRenderingContext2D, _w: number, _h: number): void {
+    const colors = this.state.energyCore
+      ? this.getCoreColors(this.state.energyCore.name)
+      : null
+    const strokeColor = colors ? `hsla(${colors.hue}, 80%, 70%,` : 'rgba(255, 255, 255,'
+
+    for (const r of this.ripples) {
+      ctx.beginPath()
+      ctx.arc(r.x, r.y, r.radius, 0, Math.PI * 2)
+      ctx.strokeStyle = `${strokeColor} ${r.alpha})`
+      ctx.lineWidth = 2
+      ctx.stroke()
+    }
   }
 }

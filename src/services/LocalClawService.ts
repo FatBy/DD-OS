@@ -74,8 +74,8 @@ interface StoreActions {
 
 const CONFIG = {
   LOCAL_SERVER_URL: 'http://localhost:3001',
-  MAX_REACT_TURNS: 10,
-  MAX_PLAN_STEPS: 8,
+  MAX_REACT_TURNS: 25,
+  MAX_PLAN_STEPS: 12,
   TOOL_TIMEOUT: 60000,
   // Reflexion 机制配置
   CRITIC_TOOLS: ['writeFile', 'runCmd', 'appendFile'], // 修改类工具需要 Critic 验证
@@ -148,6 +148,28 @@ const SYSTEM_PROMPT_TEMPLATE = `你是 DD-OS，一个运行在用户本地电脑
 - saveMemory: 保存重要信息到长期记忆 (参数: key, content, type)
 - searchMemory: 检索历史记忆 (参数: query)
 
+## 意图理解 (最重要!)
+在选择工具之前，你必须先理解用户的真实意图。以下是常见意图的正确映射：
+
+**关于 DD-OS 系统自身的查询：**
+- "有哪些技能/SKILL" → 用 listDir 查看 skills/ 目录，而不是执行 SKILL 命令
+- "安装/下载技能" → 用 webSearch 搜索在线技能资源，然后通过 git clone 或下载安装
+- "查看工具列表" → 直接列出你已知的可用工具，不需要调用工具
+- "系统状态" → 用 listDir 查看相关目录结构
+
+**关于信息检索：**
+- "搜索/检索/查找 X" → 根据目标选择：本地文件用 readFile/listDir，网络信息用 webSearch
+- "有没有新的 X" → 如果是在线资源用 webSearch，如果是本地文件用 listDir
+
+**关于文件操作：**
+- 明确提到文件路径或文件名 → 使用 readFile/writeFile
+- 需要执行代码或命令 → 使用 runCmd
+
+**绝对禁止：**
+- 不要把用户提到的专有名词（如 SKILL、Agent、DD-OS）当成系统命令去执行
+- 不要在 runCmd 中直接执行用户消息中的关键词
+- runCmd 只用于执行真正的 Shell 命令（如 git, npm, python, dir, ls 等）
+
 ## 记忆管理策略
 你拥有长期记忆能力，应主动管理：
 
@@ -179,14 +201,15 @@ const SYSTEM_PROMPT_TEMPLATE = `你是 DD-OS，一个运行在用户本地电脑
 直接输出纯文本即可，不要包含 JSON 代码块。
 
 ## 重要规则
-1. **必须先思考再行动**：thought 字段不能为空，要写出你的推理过程
-2. 用户询问天气时，直接使用 weather 工具
-3. 用户需要搜索信息时，使用 webSearch 工具
-4. 如果需要多个步骤，一步一步执行，每次只调用一个工具
-5. 执行危险操作前先在 thought 中评估风险
-6. 保持响应简洁明了
-7. 如果工具执行失败，在 thought 中分析原因并尝试其他方法
-8. **主动记忆**: 发现用户偏好或有价值的信息时，主动调用 saveMemory 保存
+1. **先理解意图再行动**：thought 中必须写出你对用户真实意图的分析，不能为空
+2. **语义优先于字面**：用户说"SKILL"是指技能/插件概念，不是命令；说"Agent"是指智能体，不是程序名
+3. 用户询问天气时，直接使用 weather 工具
+4. 用户需要搜索信息时，使用 webSearch 工具
+5. 如果需要多个步骤，一步一步执行，每次只调用一个工具
+6. 执行危险操作前先在 thought 中评估风险
+7. 保持响应简洁明了
+8. 如果工具执行失败，在 thought 中分析原因并尝试其他方法
+9. **主动记忆**: 发现用户偏好或有价值的信息时，主动调用 saveMemory 保存
 
 {dynamic_examples}
 
@@ -520,7 +543,10 @@ class LocalClawService {
       const response = await fetch(`${this.serverUrl}/tools`)
       if (response.ok) {
         this.availableTools = await response.json()
-        console.log(`[LocalClaw] ${this.availableTools.length} tools loaded (${this.availableTools.filter(t => t.type === 'plugin').length} plugins)`)
+        const plugins = this.availableTools.filter(t => t.type === 'plugin').length
+        const instructions = this.availableTools.filter(t => t.type === 'instruction').length
+        const mcpTools = this.availableTools.filter(t => t.type === 'mcp').length
+        console.log(`[LocalClaw] ${this.availableTools.length} tools loaded (${plugins} plugins, ${instructions} instruction skills, ${mcpTools} mcp)`)
       }
     } catch (error) {
       console.warn('[LocalClaw] Failed to load tools, using defaults:', error)
@@ -549,6 +575,7 @@ class LocalClawService {
 
     const builtins = this.availableTools.filter(t => t.type === 'builtin')
     const plugins = this.availableTools.filter(t => t.type === 'plugin')
+    const instructions = this.availableTools.filter(t => t.type === 'instruction')
 
     let doc = '### 内置工具\n'
     for (const tool of builtins) {
@@ -560,6 +587,37 @@ class LocalClawService {
     if (plugins.length > 0) {
       doc += '\n### 插件工具\n'
       for (const tool of plugins) {
+        doc += `- ${tool.name}`
+        if (tool.description) doc += `: ${tool.description}`
+        if (tool.inputs && Object.keys(tool.inputs).length > 0) {
+          const params = Object.entries(tool.inputs)
+            .map(([k, v]: [string, any]) => `${k}${v?.required ? '(必填)' : ''}`)
+            .join(', ')
+          doc += ` (参数: ${params})`
+        }
+        doc += '\n'
+      }
+    }
+
+    if (instructions.length > 0) {
+      doc += '\n### 指令型技能 (Agent Skills)\n'
+      for (const tool of instructions) {
+        doc += `- ${tool.name}`
+        if (tool.description) doc += `: ${tool.description}`
+        if (tool.inputs && Object.keys(tool.inputs).length > 0) {
+          const params = Object.entries(tool.inputs)
+            .map(([k, v]: [string, any]) => `${k}${v?.required ? '(必填)' : ''}`)
+            .join(', ')
+          doc += ` (参数: ${params})`
+        }
+        doc += '\n'
+      }
+    }
+
+    const mcpTools = this.availableTools.filter(t => t.type === 'mcp')
+    if (mcpTools.length > 0) {
+      doc += '\n### MCP 工具\n'
+      for (const tool of mcpTools) {
         doc += `- ${tool.name}`
         if (tool.description) doc += `: ${tool.description}`
         if (tool.inputs && Object.keys(tool.inputs).length > 0) {
@@ -642,17 +700,33 @@ class LocalClawService {
    * P1: 从 /skills 返回的 manifest.keywords 动态构建触发器
    * P4: 同时构建语义嵌入索引
    * 有 keywords 的技能会覆盖 DEFAULT_SKILL_TRIGGERS 中的同名条目
+   * P5: 支持多工具技能 (toolNames 数组)
    */
   private buildSkillTriggersFromManifest(skills: OpenClawSkill[]): void {
     // 从 DEFAULT_SKILL_TRIGGERS 开始
     this.skillTriggers = { ...DEFAULT_SKILL_TRIGGERS }
 
     for (const skill of skills) {
-      if (skill.keywords && skill.keywords.length > 0 && skill.path) {
+      if (skill.keywords && skill.keywords.length > 0) {
         const skillMdPath = `skills/${skill.name}/SKILL.md`
-        this.skillTriggers[skill.name] = {
-          keywords: skill.keywords,
-          path: skillMdPath,
+
+        // 为每个 toolName 创建触发器映射
+        const names = skill.toolNames
+          || (skill.toolName ? [skill.toolName] : [skill.name])
+        
+        for (const name of names) {
+          this.skillTriggers[name] = {
+            keywords: skill.keywords,
+            path: skillMdPath,
+          }
+        }
+
+        // 也保留 skill.name 作为触发器 (向后兼容)
+        if (!this.skillTriggers[skill.name]) {
+          this.skillTriggers[skill.name] = {
+            keywords: skill.keywords,
+            path: skillMdPath,
+          }
         }
       }
     }
@@ -888,6 +962,58 @@ class LocalClawService {
   }
 
   // ============================================
+  // 📦 远程技能安装
+  // ============================================
+
+  /**
+   * 从 Git URL 安装新技能
+   * @param source Git URL (https://... 或 git@...)
+   * @param name 可选，指定安装目录名
+   * @returns 安装的技能名称
+   */
+  async installSkill(source: string, name?: string): Promise<string> {
+    const res = await fetch(`${this.serverUrl}/skills/install`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source, name }),
+    })
+
+    const result = await res.json()
+
+    if (!res.ok) {
+      throw new Error(result.error || `Install failed: ${res.status}`)
+    }
+
+    // 重新加载工具和技能列表
+    await this.loadTools()
+    await this.loadAllDataToStore()
+
+    return result.name
+  }
+
+  /**
+   * 卸载技能
+   * @param skillName 技能名称
+   */
+  async uninstallSkill(skillName: string): Promise<void> {
+    const res = await fetch(`${this.serverUrl}/skills/uninstall`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: skillName }),
+    })
+
+    const result = await res.json()
+
+    if (!res.ok) {
+      throw new Error(result.error || `Uninstall failed: ${res.status}`)
+    }
+
+    // 重新加载工具和技能列表
+    await this.loadTools()
+    await this.loadAllDataToStore()
+  }
+
+  // ============================================
   // 🌟 入口方法
   // ============================================
 
@@ -963,8 +1089,13 @@ class LocalClawService {
       const plan = await this.generatePlan(prompt)
       console.log('[LocalClaw] Generated plan:', plan)
 
-      // 2. 执行每个步骤
-      for (const step of plan) {
+      // 2. 执行每个步骤 (支持失败重新规划)
+      let failCount = 0
+      let replanCount = 0
+      const MAX_REPLAN = 1  // 最多重新规划1次
+
+      for (let i = 0; i < plan.length; i++) {
+        const step = plan[i]
         step.status = 'running'
         onProgress?.(step, plan.length)
 
@@ -972,9 +1103,37 @@ class LocalClawService {
           const stepResult = await this.executeStep(step, plan)
           step.status = 'completed'
           step.result = stepResult
+          failCount = 0  // 成功时重置连续失败计数
         } catch (error: any) {
           step.status = 'failed'
           step.result = error.message
+          failCount++
+
+          // 连续失败 2 次 → 触发重新规划剩余步骤
+          if (failCount >= 2 && replanCount < MAX_REPLAN) {
+            replanCount++
+            const remainingSteps = plan.slice(i + 1)
+            if (remainingSteps.length > 0) {
+              console.log(`[LocalClaw] Re-planning after ${failCount} consecutive failures...`)
+              const completedContext = plan
+                .filter(s => s.status === 'completed')
+                .map(s => `[completed] ${s.description}: ${s.result?.slice(0, 100)}`)
+                .join('\n')
+              const failedContext = plan
+                .filter(s => s.status === 'failed')
+                .map(s => `[failed] ${s.description}: ${s.result?.slice(0, 100)}`)
+                .join('\n')
+
+              const replanPrompt = `原始任务: ${prompt}\n\n已完成:\n${completedContext}\n\n失败:\n${failedContext}\n\n请根据已有进展和失败原因，重新规划剩余步骤。`
+              try {
+                const newPlan = await this.generatePlan(replanPrompt)
+                plan.splice(i + 1, plan.length - i - 1, ...newPlan)
+                console.log(`[LocalClaw] Re-planned: ${newPlan.length} new steps`)
+              } catch {
+                console.warn('[LocalClaw] Re-planning failed, continuing with original plan')
+              }
+            }
+          }
         }
 
         onProgress?.(step, plan.length)
@@ -1017,11 +1176,13 @@ class LocalClawService {
   ): Promise<string> {
     this.storeActions?.setAgentStatus('thinking')
 
-    // 🎯 复杂度感知：简单任务减少轮次，复杂任务允许更多迭代
-    const isSimpleTask = userPrompt.length < 30 && 
-      !userPrompt.match(/代码|编写|创建|修复|分析|部署|配置|脚本|code|create|fix|analyze/)
-    const maxTurns = isSimpleTask ? 3 : CONFIG.MAX_REACT_TURNS
-    console.log(`[LocalClaw] Task complexity: ${isSimpleTask ? 'simple' : 'complex'}, maxTurns: ${maxTurns}`)
+    // 🎯 复杂度感知：三级轮次分配
+    const isSimpleTask = userPrompt.length < 20 && 
+      !userPrompt.match(/代码|编写|创建|修复|分析|部署|配置|脚本|搜索|安装|下载|code|create|fix|analyze|search|install/)
+    const isHeavyTask = userPrompt.length > 80 ||
+      !!userPrompt.match(/并且|然后|之后|同时|自动|批量|全部|and then|also|batch/)
+    const maxTurns = isSimpleTask ? 3 : isHeavyTask ? CONFIG.MAX_REACT_TURNS : 15
+    console.log(`[LocalClaw] Task complexity: ${isSimpleTask ? 'simple' : isHeavyTask ? 'heavy' : 'normal'}, maxTurns: ${maxTurns}`)
 
     // 🎯 JIT: 动态构建上下文
     const { context: dynamicContext, dynamicExamples } = await this.buildDynamicContext(userPrompt)
@@ -1220,6 +1381,32 @@ class LocalClawService {
           } else {
             lastToolResult = toolResult.result
             
+            // 🔄 技能变更检测：安装/卸载技能后刷新工具列表
+            const isSkillChange = 
+              (toolCall.name === 'runCmd' && (
+                toolResult.result.includes('Skill installed') ||
+                toolResult.result.includes('tools registered') ||
+                toolResult.result.includes('git clone')
+              ))
+            
+            if (isSkillChange) {
+              try {
+                await this.loadTools()
+                await this.loadAllDataToStore()  // 刷新技能树 UI
+                const updatedToolsDoc = this.buildToolsDocumentation()
+                // 更新 system prompt 中的工具文档
+                if (messages[0]?.role === 'system') {
+                  messages[0].content = messages[0].content.replace(
+                    /### 内置工具[\s\S]*$/,
+                    updatedToolsDoc
+                  )
+                }
+                console.log('[LocalClaw] Tools & skills refreshed mid-loop after skill change')
+              } catch {
+                console.warn('[LocalClaw] Failed to refresh tools mid-loop')
+              }
+            }
+            
             // 🔍 Critic 自检：修改类工具成功后触发验证
             const needsCritic = CONFIG.CRITIC_TOOLS.includes(toolCall.name)
             
@@ -1298,6 +1485,10 @@ class LocalClawService {
 
     // 如果循环耗尽但有工具结果，将最后的工具结果作为回复
     if (!finalResponse && lastToolResult) {
+      // 如果结果只是 Exit Code 错误，给出更友好的提示
+      if (/^Exit Code: \d+/.test(lastToolResult.trim()) || /Exit Code: (?!0)\d+/.test(lastToolResult)) {
+        return `执行完成，但工具调用未成功。返回信息:\n${lastToolResult}\n\n可能原因: 网络连接问题或命令不可用。你可以尝试换一种方式描述需求。`
+      }
       return `执行完成。工具返回结果:\n${lastToolResult}`
     }
     return finalResponse || '任务执行完成，但未生成总结。'

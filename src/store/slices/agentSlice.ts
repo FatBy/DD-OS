@@ -1,5 +1,5 @@
 import type { StateCreator } from 'zustand'
-import type { AgentIdentity, AgentEvent, AgentRunStatus, LogEntry, MemoryEntry, Session } from '@/types'
+import type { AgentIdentity, AgentEvent, AgentRunStatus, LogEntry, MemoryEntry, JournalEntry, Session } from '@/types'
 import { sessionsToMemories } from '@/utils/dataMapper'
 
 export interface AgentSlice {
@@ -17,6 +17,10 @@ export interface AgentSlice {
   memories: MemoryEntry[]
   selectedMemoryId: string | null
   
+  // 冒险日志 (AI 生成的叙事)
+  journalEntries: JournalEntry[]
+  journalLoading: boolean
+  
   // Actions
   setAgentIdentity: (identity: AgentIdentity | null) => void
   setAgentStatus: (status: AgentRunStatus | 'idle') => void
@@ -30,6 +34,10 @@ export interface AgentSlice {
   setMemories: (memories: MemoryEntry[]) => void
   setMemoriesFromSessions: (sessions: Session[]) => void
   setSelectedMemory: (id: string | null) => void
+  
+  // 日志 actions
+  setJournalEntries: (entries: JournalEntry[]) => void
+  setJournalLoading: (loading: boolean) => void
 }
 
 const MAX_LOGS = 500
@@ -43,6 +51,8 @@ export const createAgentSlice: StateCreator<AgentSlice> = (set) => ({
   currentTaskId: null,
   memories: [],
   selectedMemoryId: null,
+  journalEntries: [],
+  journalLoading: false,
 
   setAgentIdentity: (identity) => set({ agentIdentity: identity, agentLoading: false }),
   
@@ -75,4 +85,7 @@ export const createAgentSlice: StateCreator<AgentSlice> = (set) => ({
   })),
   
   setSelectedMemory: (id) => set({ selectedMemoryId: id }),
+  
+  setJournalEntries: (entries) => set({ journalEntries: entries }),
+  setJournalLoading: (loading) => set({ journalLoading: loading }),
 })

@@ -83,6 +83,20 @@ export interface MemoryEntry {
   role?: 'user' | 'assistant'
 }
 
+// 冒险日志条目 (AI 生成的每日叙事摘要)
+export type JournalMood = 'productive' | 'learning' | 'casual' | 'challenging'
+
+export interface JournalEntry {
+  id: string
+  date: string                    // YYYY-MM-DD
+  title: string                   // AI 生成的标题 (如 "第一次成功debug")
+  narrative: string               // AI 生成的第一人称叙事 (~150字)
+  mood: JournalMood               // 当日氛围
+  keyFacts: string[]              // 从叙事中提取的关键事实
+  memoryCount: number             // 当日原始记忆数量
+  generatedAt: number             // 生成时间戳
+}
+
 // 灵魂维度 (用于雷达图可视化)
 export interface SoulDimension {
   name: string
@@ -183,6 +197,8 @@ export interface OpenClawSkill {
   path?: string
   // P1: 可执行技能扩展
   toolName?: string            // 注册的工具名 (如 "weather")
+  toolNames?: string[]         // 多工具名列表 (如 ["search_codebase", "search_symbol"])
+  toolType?: 'executable' | 'instruction'  // 工具类型: 可执行 / 指令型
   executable?: boolean         // 是否有 execute.py/.js
   inputs?: Record<string, any> // 输入参数 schema
   dangerLevel?: string         // safe | high | critical
@@ -337,22 +353,6 @@ export interface TaskExecResponse {
 }
 
 // ============================================
-// AI 增强类型
-// ============================================
-
-export interface SkillEnhancement {
-  skillId: string
-  importanceScore: number  // 0-100
-  reasoning: string
-  subCategory: string      // AI 功能分类 (通信/分析/执行/存储/系统/辅助)
-}
-
-export interface TaskEnhancement {
-  taskId: string
-  naturalTitle: string
-}
-
-// ============================================
 // AI 执行类型
 // ============================================
 
@@ -406,11 +406,12 @@ export interface ExecTraceToolCall {
 // P0: 动态工具信息
 export interface ToolInfo {
   name: string
-  type: 'builtin' | 'plugin'
+  type: 'builtin' | 'plugin' | 'instruction' | 'mcp'
   description?: string
   inputs?: Record<string, any>
   dangerLevel?: string
   version?: string
+  server?: string  // MCP 服务器名称
 }
 
 // ============================================

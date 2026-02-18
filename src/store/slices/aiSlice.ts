@@ -1,67 +1,16 @@
 import type { StateCreator } from 'zustand'
-import type { ChatMessage, AISummary, LLMConfig, ViewType, SkillEnhancement, TaskEnhancement, ExecutionStatus, ApprovalRequest } from '@/types'
-import type { SkillNode, TaskItem } from '@/types'
+import type { ChatMessage, AISummary, LLMConfig, ViewType, ExecutionStatus, ApprovalRequest, MemoryEntry, JournalEntry } from '@/types'
 import { getLLMConfig, saveLLMConfig, isLLMConfigured, streamChat, chat } from '@/services/llmService'
-import { buildSummaryMessages, buildChatMessages, buildSkillEnhancementPrompt, buildTaskNamingPrompt, parseJSONFromLLM, parseExecutionCommands, stripExecutionBlocks } from '@/services/contextBuilder'
+import { buildSummaryMessages, buildChatMessages, parseExecutionCommands, stripExecutionBlocks, buildJournalPrompt, parseJournalResult } from '@/services/contextBuilder'
 import { localClawService } from '@/services/LocalClawService'
 
 // 摘要缓存时间 (5分钟)
 const SUMMARY_CACHE_MS = 5 * 60 * 1000
-const ENHANCEMENT_CACHE_MS = 30 * 60 * 1000 // 30分钟 - 增强结果缓存更久
 
 // LocalStorage 键名
 const STORAGE_KEYS = {
-  SKILL_ENHANCEMENTS: 'ddos_skill_enhancements',
-  TASK_ENHANCEMENTS: 'ddos_task_enhancements',
-  SKILL_TIMESTAMP: 'ddos_skill_enhancements_ts',
-  TASK_TIMESTAMP: 'ddos_task_enhancements_ts',
   CHAT_HISTORY: 'ddos_chat_history',
   EXECUTION_STATUS: 'ddos_execution_status',
-}
-
-// 从 localStorage 加载持久化数据
-function loadSkillEnhancements(): { data: Record<string, SkillEnhancement>; timestamp: number } {
-  try {
-    const data = localStorage.getItem(STORAGE_KEYS.SKILL_ENHANCEMENTS)
-    const ts = localStorage.getItem(STORAGE_KEYS.SKILL_TIMESTAMP)
-    if (data && ts) {
-      return { data: JSON.parse(data), timestamp: parseInt(ts, 10) }
-    }
-  } catch (e) {
-    console.warn('[AI] Failed to load skill enhancements from localStorage:', e)
-  }
-  return { data: {}, timestamp: 0 }
-}
-
-function loadTaskEnhancements(): { data: Record<string, TaskEnhancement>; timestamp: number } {
-  try {
-    const data = localStorage.getItem(STORAGE_KEYS.TASK_ENHANCEMENTS)
-    const ts = localStorage.getItem(STORAGE_KEYS.TASK_TIMESTAMP)
-    if (data && ts) {
-      return { data: JSON.parse(data), timestamp: parseInt(ts, 10) }
-    }
-  } catch (e) {
-    console.warn('[AI] Failed to load task enhancements from localStorage:', e)
-  }
-  return { data: {}, timestamp: 0 }
-}
-
-function saveSkillEnhancements(data: Record<string, SkillEnhancement>, timestamp: number) {
-  try {
-    localStorage.setItem(STORAGE_KEYS.SKILL_ENHANCEMENTS, JSON.stringify(data))
-    localStorage.setItem(STORAGE_KEYS.SKILL_TIMESTAMP, timestamp.toString())
-  } catch (e) {
-    console.warn('[AI] Failed to save skill enhancements to localStorage:', e)
-  }
-}
-
-function saveTaskEnhancements(data: Record<string, TaskEnhancement>, timestamp: number) {
-  try {
-    localStorage.setItem(STORAGE_KEYS.TASK_ENHANCEMENTS, JSON.stringify(data))
-    localStorage.setItem(STORAGE_KEYS.TASK_TIMESTAMP, timestamp.toString())
-  } catch (e) {
-    console.warn('[AI] Failed to save task enhancements to localStorage:', e)
-  }
 }
 
 // 聊天记录持久化
@@ -98,8 +47,6 @@ function persistChatState(messages: ChatMessage[], statuses: Record<string, Exec
 const emptySummary = (): AISummary => ({ content: '', loading: false, error: null, timestamp: 0 })
 
 // 初始化时加载持久化数据
-const initialSkillEnhancements = loadSkillEnhancements()
-const initialTaskEnhancements = loadTaskEnhancements()
 const initialChatHistory = loadChatHistory()
 
 export interface AiSlice {
@@ -135,19 +82,6 @@ export interface AiSlice {
   abortChat: () => void
   setChatContext: (view: ViewType) => void
 
-  // AI 增强
-  skillEnhancements: Record<string, SkillEnhancement>
-  skillEnhancementsLoading: boolean
-  skillEnhancementsTimestamp: number
-  taskEnhancements: Record<string, TaskEnhancement>
-  taskEnhancementsLoading: boolean
-  taskEnhancementsTimestamp: number
-
-  enhanceSkills: (skills: SkillNode[]) => Promise<void>
-  enhanceTaskNames: (tasks: TaskItem[]) => Promise<void>
-  clearSkillEnhancements: () => void
-  clearTaskEnhancements: () => void
-
   // AI 执行
   executionStatuses: Record<string, ExecutionStatus>
   updateExecutionStatus: (id: string, updates: Partial<ExecutionStatus>) => void
@@ -156,6 +90,9 @@ export interface AiSlice {
   pendingApproval: (ApprovalRequest & { resolve: (approved: boolean) => void }) | null
   requestApproval: (req: Omit<ApprovalRequest, 'id' | 'timestamp'>) => Promise<boolean>
   respondToApproval: (approved: boolean) => void
+
+  // 冒险日志生成
+  generateJournal: (memories: MemoryEntry[]) => Promise<void>
 }
 
 export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) => ({
@@ -168,13 +105,6 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
   chatContext: 'world',
   chatError: null,
   _chatAbort: null,
-  // 从 localStorage 恢复持久化数据
-  skillEnhancements: initialSkillEnhancements.data,
-  skillEnhancementsLoading: false,
-  skillEnhancementsTimestamp: initialSkillEnhancements.timestamp,
-  taskEnhancements: initialTaskEnhancements.data,
-  taskEnhancementsLoading: false,
-  taskEnhancementsTimestamp: initialTaskEnhancements.timestamp,
   executionStatuses: initialChatHistory.statuses,
 
   setLlmConfig: (config) => {
@@ -319,7 +249,7 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
           const result = await localClawService.sendMessage(
             message,
             // onUpdate: 仅更新流式内容指示
-            (content) => {
+            (_content) => {
               set({ chatStreamContent: '...' })
             },
             // onStep: 将执行步骤追加到任务屋
@@ -597,106 +527,6 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
 
   setChatContext: (view) => set({ chatContext: view }),
 
-  // ============================================
-  // AI 增强 Actions
-  // ============================================
-
-  enhanceSkills: async (skills) => {
-    if (!isLLMConfigured() || skills.length === 0) return
-
-    // 缓存检查
-    const ts = get().skillEnhancementsTimestamp
-    if (ts && Date.now() - ts < ENHANCEMENT_CACHE_MS && Object.keys(get().skillEnhancements).length > 0) {
-      return
-    }
-
-    set({ skillEnhancementsLoading: true })
-
-    try {
-      const messages = buildSkillEnhancementPrompt(skills)
-      const response = await chat(messages)
-      const parsed = parseJSONFromLLM<Array<{ skillId: string; importanceScore: number; reasoning: string; subCategory?: string }>>(response)
-
-      const enhancementMap: Record<string, SkillEnhancement> = {}
-      for (const item of parsed) {
-        enhancementMap[item.skillId] = {
-          skillId: item.skillId,
-          importanceScore: item.importanceScore,
-          reasoning: item.reasoning,
-          subCategory: item.subCategory || '其他',
-        }
-      }
-
-      const timestamp = Date.now()
-      
-      // 保存到 localStorage
-      saveSkillEnhancements(enhancementMap, timestamp)
-
-      set({
-        skillEnhancements: enhancementMap,
-        skillEnhancementsLoading: false,
-        skillEnhancementsTimestamp: timestamp,
-      })
-    } catch (err: any) {
-      console.error('[AI] enhanceSkills failed:', err)
-      set({ skillEnhancementsLoading: false })
-    }
-  },
-
-  enhanceTaskNames: async (tasks) => {
-    if (!isLLMConfigured() || tasks.length === 0) return
-
-    // 缓存检查
-    const ts = get().taskEnhancementsTimestamp
-    if (ts && Date.now() - ts < ENHANCEMENT_CACHE_MS && Object.keys(get().taskEnhancements).length > 0) {
-      return
-    }
-
-    set({ taskEnhancementsLoading: true })
-
-    try {
-      const messages = buildTaskNamingPrompt(tasks)
-      const response = await chat(messages)
-      const parsed = parseJSONFromLLM<Array<{ taskId: string; naturalTitle: string }>>(response)
-
-      const enhancementMap: Record<string, TaskEnhancement> = {}
-      for (const item of parsed) {
-        enhancementMap[item.taskId] = {
-          taskId: item.taskId,
-          naturalTitle: item.naturalTitle,
-        }
-      }
-
-      const timestamp = Date.now()
-      
-      // 保存到 localStorage
-      saveTaskEnhancements(enhancementMap, timestamp)
-
-      set({
-        taskEnhancements: enhancementMap,
-        taskEnhancementsLoading: false,
-        taskEnhancementsTimestamp: timestamp,
-      })
-    } catch (err: any) {
-      console.error('[AI] enhanceTaskNames failed:', err)
-      set({ taskEnhancementsLoading: false })
-    }
-  },
-
-  clearSkillEnhancements: () => {
-    // 同时清除 localStorage
-    localStorage.removeItem(STORAGE_KEYS.SKILL_ENHANCEMENTS)
-    localStorage.removeItem(STORAGE_KEYS.SKILL_TIMESTAMP)
-    set({ skillEnhancements: {}, skillEnhancementsTimestamp: 0 })
-  },
-
-  clearTaskEnhancements: () => {
-    // 同时清除 localStorage
-    localStorage.removeItem(STORAGE_KEYS.TASK_ENHANCEMENTS)
-    localStorage.removeItem(STORAGE_KEYS.TASK_TIMESTAMP)
-    set({ taskEnhancements: {}, taskEnhancementsTimestamp: 0 })
-  },
-
   updateExecutionStatus: (id, updates) => {
     set((state) => {
       const current = state.executionStatuses[id]
@@ -746,6 +576,85 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
       pending.resolve(approved)
       set({ pendingApproval: null })
       console.log(`[Approval] User ${approved ? 'approved' : 'rejected'} operation: ${pending.toolName}`)
+    }
+  },
+
+  // ============================================
+  // 冒险日志生成
+  // ============================================
+  generateJournal: async (memories) => {
+    if (!isLLMConfigured() || memories.length === 0) return
+
+    const fullState = get() as any
+    // 避免重复生成
+    if (fullState.journalLoading) return
+    fullState.setJournalLoading?.(true)
+
+    try {
+      // 按日期分组
+      const groups = new Map<string, MemoryEntry[]>()
+      for (const mem of memories) {
+        const date = (() => {
+          try {
+            const d = new Date(mem.timestamp)
+            return isNaN(d.getTime()) ? 'unknown' : d.toLocaleDateString('sv-SE')
+          } catch { return 'unknown' }
+        })()
+        if (date === 'unknown') continue
+        if (!groups.has(date)) groups.set(date, [])
+        groups.get(date)!.push(mem)
+      }
+
+      // 检查 localStorage 缓存
+      const CACHE_KEY = 'ddos_journal_entries'
+      let cached: JournalEntry[] = []
+      try {
+        const raw = localStorage.getItem(CACHE_KEY)
+        if (raw) cached = JSON.parse(raw)
+      } catch {}
+
+      const cachedDates = new Set(cached.map(e => e.date))
+      const entries: JournalEntry[] = [...cached]
+      const newDates = Array.from(groups.keys()).filter(d => !cachedDates.has(d))
+
+      // 只生成缺失的日期（最多 5 天，避免 API 过载）
+      const datesToGenerate = newDates.slice(-5)
+
+      for (const date of datesToGenerate) {
+        const dayMemories = groups.get(date)!
+        try {
+          const messages = buildJournalPrompt(date, dayMemories)
+          const response = await chat(messages)
+          const result = parseJournalResult(response)
+
+          entries.push({
+            id: `journal-${date}`,
+            date,
+            title: result.title,
+            narrative: result.narrative,
+            mood: result.mood,
+            keyFacts: result.keyFacts,
+            memoryCount: dayMemories.length,
+            generatedAt: Date.now(),
+          })
+        } catch (err) {
+          console.warn(`[Journal] Failed to generate for ${date}:`, err)
+        }
+      }
+
+      // 按日期排序（最新在前）
+      entries.sort((a, b) => b.date.localeCompare(a.date))
+
+      // 持久化到 localStorage
+      try {
+        localStorage.setItem(CACHE_KEY, JSON.stringify(entries.slice(0, 30)))
+      } catch {}
+
+      fullState.setJournalEntries?.(entries)
+    } catch (err) {
+      console.error('[Journal] Generation failed:', err)
+    } finally {
+      fullState.setJournalLoading?.(false)
     }
   },
 })

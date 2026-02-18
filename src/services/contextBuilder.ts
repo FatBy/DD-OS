@@ -3,7 +3,7 @@
  * 根据当前页面类型构建 LLM 的 system prompt 和数据上下文
  */
 
-import type { ChatMessage, ViewType, TaskItem, SkillNode, MemoryEntry, SoulTruth, SoulBoundary, ExecutionCommand } from '@/types'
+import type { ChatMessage, ViewType, TaskItem, SkillNode, MemoryEntry, SoulTruth, SoulBoundary, ExecutionCommand, JournalMood } from '@/types'
 
 // ============================================
 // 系统 Prompt
@@ -280,95 +280,6 @@ export function parseJSONFromLLM<T = unknown>(response: string): T {
   throw new Error('无法解析 LLM 返回的 JSON')
 }
 
-/**
- * 构建技能重要度分析 Prompt
- */
-export function buildSkillEnhancementPrompt(skills: SkillNode[]): ChatMessage[] {
-  const limitedSkills = skills.slice(0, 50)
-
-  const skillsList = limitedSkills.map(s => ({
-    id: s.id,
-    name: s.name,
-    category: s.category || '未分类',
-    status: s.status || (s.unlocked ? 'active' : 'inactive'),
-    description: s.description || '',
-  }))
-
-  return [
-    {
-      id: 'sys',
-      role: 'system',
-      content: `你是 DD-OS 技能分析专家。根据技能的名称、分类、状态和描述，完成两个任务：
-1. 评估每个技能对 AI Agent 的重要程度（0-100 分）
-2. 将技能归类到功能子分类中
-
-评分标准：
-- 90-100: 核心必备技能（如记忆管理、任务执行）
-- 70-89: 重要辅助技能（如浏览器自动化、代码分析）
-- 50-69: 一般技能
-- 0-49: 可选/低优先级技能
-
-子分类参考（可自行判断最合适的分类名）：
-- 通信: 消息平台、通知、社交相关
-- 分析: 数据分析、代码审查、信息提取
-- 执行: 自动化操作、文件操作、系统调用
-- 存储: 数据库、文件系统、缓存
-- 系统: 核心框架、运行时、配置
-- 辅助: 工具类、格式化、转换
-
-你必须返回纯 JSON 数组，不要包含任何其他文字。`,
-      timestamp: Date.now(),
-    },
-    {
-      id: 'user',
-      role: 'user',
-      content: `分析以下 ${limitedSkills.length} 个技能，返回 JSON 数组：
-${JSON.stringify(skillsList, null, 2)}
-
-返回格式：[{"skillId":"技能id","importanceScore":85,"reasoning":"一句话理由","subCategory":"分类名"}]`,
-      timestamp: Date.now(),
-    },
-  ]
-}
-
-/**
- * 构建任务自然语言命名 Prompt
- */
-export function buildTaskNamingPrompt(tasks: TaskItem[]): ChatMessage[] {
-  const limitedTasks = tasks.slice(0, 50)
-
-  const tasksList = limitedTasks.map(t => ({
-    id: t.id,
-    originalTitle: t.title,
-    description: t.description || '',
-    status: t.status,
-    priority: t.priority,
-  }))
-
-  return [
-    {
-      id: 'sys',
-      role: 'system',
-      content: `你是 DD-OS 任务命名专家。根据任务的原始标题和描述，生成简洁易懂的中文任务名称。
-要求：
-- 每个名称 5-15 个字
-- 使用自然语言，让人一眼看懂任务内容
-- 如果原始标题已经足够好，可以保留或微调
-你必须返回纯 JSON 数组，不要包含任何其他文字。`,
-      timestamp: Date.now(),
-    },
-    {
-      id: 'user',
-      role: 'user',
-      content: `为以下 ${limitedTasks.length} 个任务生成自然语言标题，返回 JSON 数组：
-${JSON.stringify(tasksList, null, 2)}
-
-返回格式：[{"taskId":"任务id","naturalTitle":"自然语言标题"}]`,
-      timestamp: Date.now(),
-    },
-  ]
-}
-
 // ============================================
 // AI 执行命令解析
 // ============================================
@@ -404,4 +315,88 @@ export function parseExecutionCommands(content: string): ExecutionCommand[] {
  */
 export function stripExecutionBlocks(content: string): string {
   return content.replace(/```execute\s*[\s\S]*?\s*```/g, '').trim()
+}
+
+// ============================================
+// 冒险日志生成 Prompt
+// ============================================
+
+/**
+ * 构建每日冒险日志生成 Prompt
+ * 将某一天的原始记忆转化为叙事故事
+ */
+export function buildJournalPrompt(
+  date: string,
+  memories: MemoryEntry[]
+): ChatMessage[] {
+  const memoriesSummary = memories.map(m => {
+    const roleTag = m.role === 'user' ? '用户' : 'AI'
+    return `[${roleTag}] ${m.title}: ${m.content.slice(0, 200)}`
+  }).join('\n')
+
+  return [
+    {
+      id: 'sys',
+      role: 'system',
+      content: `你是一个 AI 冒险日志撰写者。你的任务是将一天的对话记录转化为一篇简短、有趣、第一人称的冒险日志。
+
+写作要求：
+- 使用第一人称（"我"），以 AI 助手的视角书写
+- 像写冒险日记一样，把对话经历变成有趣的小故事
+- 控制在 100-200 字以内
+- 语气要活泼自然，可以加入一些小幽默
+- 不要太正式，就像朋友之间分享今天发生的事
+- 使用中文
+
+你必须返回 JSON 格式，不要包含其他文字：
+{
+  "title": "简短有趣的标题（5-10字）",
+  "narrative": "第一人称叙事故事",
+  "mood": "productive|learning|casual|challenging 选一个",
+  "keyFacts": ["关键事实1", "关键事实2", "关键事实3"]
+}
+
+mood 选择标准：
+- productive: 完成了很多实际工作，如编程、修复bug、部署
+- learning: 探索新知识，学习新概念，研究问题
+- casual: 轻松聊天，日常对话，闲聊
+- challenging: 遇到困难、调试棘手问题、解决复杂任务`,
+      timestamp: Date.now(),
+    },
+    {
+      id: 'user',
+      role: 'user',
+      content: `日期：${date}\n对话记录共 ${memories.length} 条：\n${memoriesSummary}\n\n请将以上内容转化为冒险日志 JSON。`,
+      timestamp: Date.now(),
+    },
+  ]
+}
+
+/**
+ * 解析日志生成结果
+ */
+export function parseJournalResult(response: string): {
+  title: string
+  narrative: string
+  mood: JournalMood
+  keyFacts: string[]
+} {
+  const parsed = parseJSONFromLLM<{
+    title?: string
+    narrative?: string
+    mood?: string
+    keyFacts?: string[]
+  }>(response)
+
+  const validMoods: JournalMood[] = ['productive', 'learning', 'casual', 'challenging']
+  const mood = validMoods.includes(parsed.mood as JournalMood) 
+    ? (parsed.mood as JournalMood) 
+    : 'casual'
+
+  return {
+    title: parsed.title || '未命名日志',
+    narrative: parsed.narrative || '今天发生了一些事情...',
+    mood,
+    keyFacts: Array.isArray(parsed.keyFacts) ? parsed.keyFacts.slice(0, 5) : [],
+  }
 }

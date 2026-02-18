@@ -26,6 +26,7 @@ API:
 
 import os
 import sys
+import re
 import json
 import argparse
 import threading
@@ -33,10 +34,26 @@ import time
 import uuid
 import subprocess
 import shlex
+import shutil
 from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import unquote, urlparse, parse_qs
 from datetime import datetime
+
+# PyYAML (skill-executor/parser.py 已依赖)
+try:
+    import yaml
+    HAS_YAML = True
+except ImportError:
+    HAS_YAML = False
+
+# MCP 客户端支持
+try:
+    from skills.mcp_manager import MCPClientManager
+    HAS_MCP = True
+except ImportError:
+    HAS_MCP = False
+    MCPClientManager = None
 
 VERSION = "4.0.0"
 
@@ -48,54 +65,105 @@ PLUGIN_TIMEOUT = 60               # 插件执行超时(秒)
 
 
 # ============================================
+# 🔌 SKILL.md Frontmatter 解析
+# ============================================
+
+def parse_skill_frontmatter(skill_md_path: Path) -> dict:
+    """从 SKILL.md 提取 YAML frontmatter 元数据"""
+    try:
+        content = skill_md_path.read_text(encoding='utf-8')
+    except Exception:
+        return {}
+
+    match = re.match(r'^---\s*\n(.*?)\n---\s*\n', content, re.DOTALL)
+    if not match:
+        # 无 frontmatter，提取第一段非标题文本作为 description
+        desc = ''
+        for line in content.split('\n'):
+            line = line.strip()
+            if line and not line.startswith('#'):
+                desc = line[:200]
+                break
+        return {'description': desc}
+
+    if HAS_YAML:
+        try:
+            return yaml.safe_load(match.group(1)) or {}
+        except Exception:
+            return {}
+    else:
+        # 无 PyYAML 时用简单正则提取 key: value
+        result = {}
+        for line in match.group(1).split('\n'):
+            m = re.match(r'^(\w+)\s*:\s*(.+)$', line.strip())
+            if m:
+                key, val = m.group(1), m.group(2).strip()
+                # 简单处理数组 [a, b, c]
+                if val.startswith('[') and val.endswith(']'):
+                    val = [v.strip().strip('"\'') for v in val[1:-1].split(',') if v.strip()]
+                result[key] = val
+        return result
+
+
+def skill_name_to_tool_name(name: str) -> str:
+    """将 skill 名称标准化为工具名 (kebab-case -> snake_case)"""
+    return name.replace('-', '_').replace(' ', '_').lower()
+
+
+# ============================================
 # 🔌 动态工具注册表
 # ============================================
 
 class ToolRegistry:
-    """动态工具发现与注册 - 支持内置工具 + 插件工具"""
+    """动态工具发现与注册 - 支持内置工具 + 插件工具 + 指令型工具 + MCP工具"""
 
     def __init__(self, clawd_path: Path):
         self.clawd_path = clawd_path
         self.builtin_tools: dict = {}      # name -> callable
-        self.plugin_tools: dict = {}       # name -> ToolSpec dict
+        self.plugin_tools: dict = {}       # name -> ToolSpec dict (有 execute.py)
+        self.instruction_tools: dict = {}  # name -> InstructionSpec (纯 SKILL.md)
+        self.mcp_tools: dict = {}          # name -> MCPToolSpec dict (MCP 服务器)
+        self.mcp_manager: 'MCPClientManager | None' = None
 
     def register_builtin(self, name: str, handler):
         """注册内置工具"""
         self.builtin_tools[name] = handler
 
     def scan_plugins(self):
-        """扫描 skills/ 目录，自动注册有 manifest.json 的插件工具"""
+        """递归扫描 skills/ 目录，注册可执行插件 + 指令型技能"""
         skills_dir = self.clawd_path / 'skills'
         if not skills_dir.exists():
             return
 
-        found = 0
-        for item in skills_dir.iterdir():
-            if not item.is_dir():
+        plugin_count = 0
+        instruction_count = 0
+
+        # 递归查找所有包含 SKILL.md 或 manifest.json 的目录
+        seen_dirs: set = set()
+
+        # 1. 先扫描 manifest.json (可执行插件优先)
+        for manifest_path in skills_dir.rglob('manifest.json'):
+            skill_dir = manifest_path.parent
+            dir_key = str(skill_dir.resolve())
+            if dir_key in seen_dirs:
                 continue
-            manifest_path = item / 'manifest.json'
-            if not manifest_path.exists():
-                continue
+            seen_dirs.add(dir_key)
+
             try:
                 spec = json.loads(manifest_path.read_text(encoding='utf-8'))
-                
-                # 支持两种 manifest 格式:
-                # 1. 新格式: { "tools": [{ "toolName": "...", ... }, ...] }
-                # 2. 旧格式: { "toolName": "...", ... }
-                
+
                 tools_list = spec.get('tools', [])
                 if not tools_list:
-                    # 旧格式: 单个工具定义
                     tools_list = [spec]
-                
+
                 for tool_spec in tools_list:
                     tool_name = tool_spec.get('toolName', '')
                     executable = tool_spec.get('executable', spec.get('executable', 'execute.py'))
-                    
+
                     if not tool_name:
                         continue
 
-                    exe_path = item / executable
+                    exe_path = skill_dir / executable
                     if not exe_path.exists():
                         print(f"[ToolRegistry] Warning: {exe_path} not found, skipping {tool_name}")
                         continue
@@ -112,28 +180,103 @@ class ToolRegistry:
                         'inputs': tool_spec.get('inputs', {}),
                         'outputs': tool_spec.get('outputs', {}),
                         'description': tool_spec.get('description', ''),
-                        'dangerLevel': tool_spec.get('dangerLevel', 'safe'),
+                        'dangerLevel': tool_spec.get('dangerLevel', spec.get('dangerLevel', 'safe')),
                         'version': tool_spec.get('version', spec.get('version', '1.0.0')),
-                        'skill_dir': str(item),
-                        'keywords': tool_spec.get('keywords', []),
+                        'skill_dir': str(skill_dir),
+                        'keywords': tool_spec.get('keywords', spec.get('keywords', [])),
                     }
-                    found += 1
+                    plugin_count += 1
                     print(f"[ToolRegistry] Registered plugin: {tool_name} ({exe_path.name})")
-                    
+
             except Exception as e:
                 print(f"[ToolRegistry] Error loading {manifest_path}: {e}")
 
-        if found > 0:
-            print(f"[ToolRegistry] {found} plugin tool(s) registered")
+        # 2. 扫描 SKILL.md (指令型技能 - 没有 manifest.json 或没有 executable 的)
+        for skill_md in skills_dir.rglob('SKILL.md'):
+            skill_dir = skill_md.parent
+            dir_key = str(skill_dir.resolve())
+
+            # 已被 manifest.json 扫描注册的目录跳过
+            if dir_key in seen_dirs:
+                continue
+            seen_dirs.add(dir_key)
+
+            try:
+                frontmatter = parse_skill_frontmatter(skill_md)
+                original_name = frontmatter.get('name', skill_dir.name)
+                tool_name = skill_name_to_tool_name(original_name)
+
+                # 冲突检查
+                if tool_name in self.builtin_tools or tool_name in self.plugin_tools:
+                    print(f"[ToolRegistry] Warning: instruction skill '{tool_name}' conflicts, skipping")
+                    continue
+
+                self.instruction_tools[tool_name] = {
+                    'name': tool_name,
+                    'original_name': original_name,
+                    'skill_path': str(skill_md),
+                    'skill_dir': str(skill_dir),
+                    'description': frontmatter.get('description', ''),
+                    'inputs': frontmatter.get('inputs', {}),
+                    'keywords': frontmatter.get('tags', frontmatter.get('keywords', [])),
+                    'dangerLevel': 'safe',
+                    'version': frontmatter.get('version', '1.0.0'),
+                }
+                instruction_count += 1
+                print(f"[ToolRegistry] Registered instruction skill: {tool_name} ({skill_md.relative_to(skills_dir)})")
+
+            except Exception as e:
+                print(f"[ToolRegistry] Error loading {skill_md}: {e}")
+
+        total = plugin_count + instruction_count
+        if total > 0:
+            print(f"[ToolRegistry] {total} tool(s) registered ({plugin_count} plugins, {instruction_count} instruction skills)")
+
+    def scan_mcp_servers(self):
+        """扫描并连接 MCP 服务器"""
+        if not HAS_MCP:
+            print("[ToolRegistry] MCP support not available (missing mcp_manager)")
+            return
+
+        self.mcp_manager = MCPClientManager(clawd_path=self.clawd_path)
+        count = self.mcp_manager.initialize_all()
+
+        if count > 0:
+            # 注册 MCP 工具
+            mcp_tool_count = 0
+            for tool_info in self.mcp_manager.get_all_tools():
+                tool_name = tool_info['name']
+                # 冲突检查
+                if tool_name in self.builtin_tools or tool_name in self.plugin_tools or tool_name in self.instruction_tools:
+                    print(f"[ToolRegistry] Warning: MCP tool '{tool_name}' conflicts with existing tool, skipping")
+                    continue
+
+                self.mcp_tools[tool_name] = {
+                    'name': tool_name,
+                    'server': tool_info.get('server', ''),
+                    'description': tool_info.get('description', ''),
+                    'inputs': tool_info.get('inputs', {}),
+                    'dangerLevel': 'safe',
+                    'version': '1.0.0',
+                }
+                mcp_tool_count += 1
+
+            print(f"[ToolRegistry] {mcp_tool_count} MCP tool(s) registered from {count} server(s)")
 
     def is_registered(self, name: str) -> bool:
-        return name in self.builtin_tools or name in self.plugin_tools
+        return name in self.builtin_tools or name in self.plugin_tools or name in self.instruction_tools or name in self.mcp_tools
 
     def get_plugin(self, name: str) -> dict | None:
         return self.plugin_tools.get(name)
 
+    def get_instruction(self, name: str) -> dict | None:
+        return self.instruction_tools.get(name)
+
+    def get_mcp_tool(self, name: str) -> dict | None:
+        return self.mcp_tools.get(name)
+
     def list_all(self) -> list:
-        """返回所有已注册工具（内置+插件）"""
+        """返回所有已注册工具（内置+插件+指令型+MCP）"""
         tools = []
         for name in self.builtin_tools:
             tools.append({'name': name, 'type': 'builtin'})
@@ -145,6 +288,25 @@ class ToolRegistry:
                 'inputs': spec.get('inputs', {}),
                 'dangerLevel': spec.get('dangerLevel', 'safe'),
                 'version': spec.get('version', '1.0.0'),
+            })
+        for name, spec in self.instruction_tools.items():
+            tools.append({
+                'name': name,
+                'type': 'instruction',
+                'description': spec.get('description', ''),
+                'inputs': spec.get('inputs', {}),
+                'dangerLevel': 'safe',
+                'version': spec.get('version', '1.0.0'),
+            })
+        for name, spec in self.mcp_tools.items():
+            tools.append({
+                'name': name,
+                'type': 'mcp',
+                'server': spec.get('server', ''),
+                'description': spec.get('description', ''),
+                'inputs': spec.get('inputs', {}),
+                'dangerLevel': 'safe',
+                'version': '1.0.0',
             })
         return tools
 
@@ -212,6 +374,8 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
             self.handle_task_status(task_id, offset)
         elif path == '/api/traces/search':
             self.handle_trace_search(query)
+        elif path == '/mcp/servers':
+            self.handle_mcp_servers_list()
         else:
             self.send_error_json(f'Unknown endpoint: {path}', 404)
     
@@ -235,6 +399,15 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
             self.handle_tools_reload(data)
         elif path == '/api/traces/save':
             self.handle_trace_save(data)
+        elif path == '/mcp/reload':
+            self.handle_mcp_reload(data)
+        elif path.startswith('/mcp/servers/') and path.endswith('/reconnect'):
+            server_name = path[13:-10]  # Extract server name
+            self.handle_mcp_reconnect(server_name)
+        elif path == '/skills/install':
+            self.handle_skill_install(data)
+        elif path == '/skills/uninstall':
+            self.handle_skill_uninstall(data)
         elif path == '/task/execute':
             self.handle_task_execute(data)
         else:
@@ -245,7 +418,7 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
     # ============================================
     
     def handle_tool_execution(self, data):
-        """处理工具调用请求 - 支持内置工具和插件工具"""
+        """处理工具调用请求 - 支持内置工具、插件工具、指令型工具和MCP工具"""
         tool_name = data.get('name', '')
         args = data.get('args', {})
 
@@ -262,12 +435,19 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
         status = "success"
 
         try:
-            # 优先检查插件工具
-            plugin_spec = self.registry.get_plugin(tool_name)
-            if plugin_spec:
+            # 1. 指令型工具 -> 路由到 skill-executor
+            instruction_spec = self.registry.get_instruction(tool_name)
+            if instruction_spec:
+                result = self._execute_instruction_tool(instruction_spec, tool_name, args)
+            # 2. 插件工具 -> subprocess 执行
+            elif self.registry.get_plugin(tool_name):
+                plugin_spec = self.registry.get_plugin(tool_name)
                 result = self._execute_plugin_tool(plugin_spec, tool_name, args)
+            # 3. MCP 工具 -> 通过 MCPManager 调用
+            elif self.registry.get_mcp_tool(tool_name):
+                result = self._execute_mcp_tool(tool_name, args)
+            # 4. 内置工具 -> 直接调度
             else:
-                # 内置工具调度
                 builtin_handlers = {
                     'readFile': self._tool_read_file,
                     'writeFile': self._tool_write_file,
@@ -333,6 +513,64 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
 
         except subprocess.TimeoutExpired:
             raise RuntimeError(f"Plugin timed out after {PLUGIN_TIMEOUT}s")
+
+    def _execute_instruction_tool(self, spec: dict, tool_name: str, args: dict) -> str:
+        """执行指令型工具 - 通过 skill-executor 解析 SKILL.md 并返回指令"""
+        skill_executor = self.clawd_path / 'skills' / 'skill-executor' / 'execute.py'
+
+        if not skill_executor.exists():
+            raise RuntimeError(f"skill-executor not found at {skill_executor}")
+
+        # 使用 original_name (kebab-case) 让 SkillDiscovery 能找到目录
+        original_name = spec.get('original_name', tool_name)
+
+        input_data = json.dumps({
+            'tool': 'run_skill',
+            'args': {
+                'skill_name': original_name,
+                'args': args,
+                'project_root': str(self.clawd_path),
+            }
+        }, ensure_ascii=False)
+
+        try:
+            process = subprocess.run(
+                [sys.executable, str(skill_executor)],
+                input=input_data,
+                capture_output=True,
+                text=True,
+                timeout=PLUGIN_TIMEOUT,
+                cwd=str(skill_executor.parent),
+            )
+
+            if process.returncode != 0:
+                stderr = process.stderr[:MAX_OUTPUT_SIZE] if process.stderr else ''
+                raise RuntimeError(f"Instruction skill error: {stderr}")
+
+            result = json.loads(process.stdout)
+            if not result.get('success'):
+                raise RuntimeError(result.get('error', 'Unknown error'))
+
+            return result.get('instructions', result.get('output', ''))
+
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f"Instruction skill timed out after {PLUGIN_TIMEOUT}s")
+        except json.JSONDecodeError:
+            # skill-executor 返回非 JSON 时，直接返回原文
+            return process.stdout[:MAX_OUTPUT_SIZE] if process.stdout else ''
+
+    def _execute_mcp_tool(self, tool_name: str, args: dict) -> str:
+        """执行 MCP 工具 - 通过 MCPManager 调用远程 MCP 服务器"""
+        if not self.registry.mcp_manager:
+            raise RuntimeError("MCP manager not initialized")
+
+        try:
+            result = self.registry.mcp_manager.call_tool(tool_name, args, timeout=PLUGIN_TIMEOUT)
+            if result is None:
+                return ""
+            return str(result)
+        except Exception as e:
+            raise RuntimeError(f"MCP tool execution failed: {e}")
     
     def _resolve_path(self, relative_path: str, allow_outside: bool = False) -> Path:
         """解析并验证路径安全性"""
@@ -453,7 +691,30 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
                 result_parts.append(f"STDOUT:\n{stdout}")
             if stderr:
                 result_parts.append(f"STDERR:\n{stderr}")
-            result_parts.append(f"Exit Code: {process.returncode}")
+            
+            rc = process.returncode
+            if rc == 0:
+                result_parts.append(f"Exit Code: 0 (成功)")
+            else:
+                # 提供常见 exit code 的可读解释
+                code_hints = {
+                    1: "通用错误",
+                    2: "参数错误或命令误用",
+                    3: "URL 格式错误 (curl)",
+                    6: "无法解析主机名 (DNS 失败)",
+                    7: "无法连接到服务器",
+                    28: "操作超时",
+                    35: "SSL/TLS 连接错误",
+                    56: "网络数据接收失败",
+                    60: "SSL 证书验证失败",
+                    127: "命令未找到",
+                    128: "无效的退出参数",
+                }
+                hint = code_hints.get(rc, "未知错误")
+                result_parts.append(f"Exit Code: {rc} ({hint})")
+                # 当没有任何输出时，补充提示帮助 LLM 理解错误
+                if not stdout and not stderr:
+                    result_parts.append(f"注意: 命令 '{command[:80]}' 执行失败且无输出。建议换用其他工具或方式完成任务。")
             
             return '\n'.join(result_parts)
         
@@ -709,54 +970,126 @@ curl -X POST http://localhost:3001/api/tools/execute \\
             self.send_error_json(f'Read error: {str(e)}', 500)
     
     def handle_skills(self):
+        """GET /skills - 递归扫描所有技能 (SKILL.md + manifest.json)"""
         skills = []
         skills_dir = self.clawd_path / 'skills'
-        
-        if skills_dir.exists() and skills_dir.is_dir():
-            for item in skills_dir.iterdir():
-                if item.is_dir():
-                    skill_md = item / 'SKILL.md'
-                    manifest_path = item / 'manifest.json'
-                    description = ''
-                    skill_data = {
-                        'name': item.name,
-                        'description': description,
-                        'location': 'local',
-                        'path': str(item),
-                        'status': 'active',
-                        'enabled': True,
-                    }
 
-                    # 读取 SKILL.md 描述
-                    if skill_md.exists():
-                        try:
-                            content = skill_md.read_text(encoding='utf-8')
-                            for line in content.split('\n'):
-                                line = line.strip()
-                                if line and not line.startswith('#'):
-                                    skill_data['description'] = line[:100]
-                                    break
-                        except:
-                            pass
+        if not skills_dir.exists() or not skills_dir.is_dir():
+            self.send_json([])
+            return
 
-                    # 读取 manifest.json (P1: 可执行技能元数据)
-                    if manifest_path.exists():
-                        try:
-                            manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
-                            skill_data['toolName'] = manifest.get('toolName', '')
-                            skill_data['executable'] = bool(manifest.get('executable', ''))
-                            skill_data['inputs'] = manifest.get('inputs', {})
-                            skill_data['dangerLevel'] = manifest.get('dangerLevel', 'safe')
-                            skill_data['keywords'] = manifest.get('keywords', [])
-                            skill_data['version'] = manifest.get('version', '1.0.0')
-                            if manifest.get('description'):
-                                skill_data['description'] = manifest['description']
-                        except:
-                            pass
+        seen = set()
 
-                    skills.append(skill_data)
-        
+        # Phase 1: 扫描有 SKILL.md 的目录
+        for skill_md in skills_dir.rglob('SKILL.md'):
+            skill_dir = skill_md.parent
+            dir_key = str(skill_dir.resolve())
+            if dir_key in seen:
+                continue
+            seen.add(dir_key)
+
+            frontmatter = parse_skill_frontmatter(skill_md)
+            manifest_path = skill_dir / 'manifest.json'
+
+            skill_data = {
+                'name': frontmatter.get('name', skill_dir.name),
+                'description': frontmatter.get('description', ''),
+                'location': 'local',
+                'path': str(skill_dir),
+                'status': 'active',
+                'enabled': True,
+                'keywords': frontmatter.get('tags', frontmatter.get('keywords', [])),
+            }
+
+            # 无 frontmatter description 时提取正文首段
+            if not skill_data['description']:
+                try:
+                    content = skill_md.read_text(encoding='utf-8')
+                    for line in content.split('\n'):
+                        line = line.strip()
+                        if line and not line.startswith('#') and not line.startswith('---'):
+                            skill_data['description'] = line[:200]
+                            break
+                except Exception:
+                    pass
+
+            self._enrich_skill_from_manifest(skill_data, manifest_path, frontmatter)
+            skills.append(skill_data)
+
+        # Phase 2: 扫描有 manifest.json 但没有 SKILL.md 的目录
+        for manifest_path in skills_dir.rglob('manifest.json'):
+            skill_dir = manifest_path.parent
+            dir_key = str(skill_dir.resolve())
+            if dir_key in seen:
+                continue
+            seen.add(dir_key)
+
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+            except Exception:
+                continue
+
+            skill_data = {
+                'name': manifest.get('name', skill_dir.name),
+                'description': manifest.get('description', ''),
+                'location': 'local',
+                'path': str(skill_dir),
+                'status': 'active',
+                'enabled': True,
+                'keywords': manifest.get('keywords', []),
+            }
+
+            self._enrich_skill_from_manifest(skill_data, manifest_path, {})
+            skills.append(skill_data)
+
         self.send_json(skills)
+
+    def _enrich_skill_from_manifest(self, skill_data: dict, manifest_path: Path, frontmatter: dict):
+        """从 manifest.json 补充技能元数据 (多工具格式 + 关键词合并)"""
+        if manifest_path.exists():
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+
+                # 支持新格式 tools: [...] 和旧格式 toolName: "..."
+                tools_list = manifest.get('tools', [])
+                if not tools_list:
+                    tools_list = [manifest]
+
+                tool_names = [t.get('toolName') for t in tools_list if t.get('toolName')]
+                if tool_names:
+                    skill_data['toolNames'] = tool_names
+                    skill_data['toolName'] = tool_names[0]
+                    skill_data['executable'] = True
+
+                # 合并关键词 (manifest 优先)
+                manifest_keywords = list(manifest.get('keywords', []))
+                for t in tools_list:
+                    manifest_keywords.extend(t.get('keywords', []))
+                if manifest_keywords:
+                    skill_data['keywords'] = list(set(manifest_keywords))
+
+                skill_data['dangerLevel'] = manifest.get('dangerLevel', 'safe')
+                skill_data['version'] = manifest.get('version', '1.0.0')
+                if manifest.get('description'):
+                    skill_data['description'] = manifest['description']
+
+                # 合并所有 inputs
+                all_inputs = {}
+                for t in tools_list:
+                    all_inputs.update(t.get('inputs', {}))
+                if all_inputs:
+                    skill_data['inputs'] = all_inputs
+
+            except Exception:
+                pass
+        else:
+            # 纯 SKILL.md - 指令型技能
+            skill_data['toolType'] = 'instruction'
+            tool_name = skill_name_to_tool_name(skill_data['name'])
+            skill_data['toolName'] = tool_name
+            skill_data['toolNames'] = [tool_name]
+            if frontmatter.get('inputs'):
+                skill_data['inputs'] = frontmatter['inputs']
 
     def handle_tools_list(self):
         """GET /tools - 列出所有已注册的工具"""
@@ -765,6 +1098,7 @@ curl -X POST http://localhost:3001/api/tools/execute \\
     def handle_tools_reload(self, data=None):
         """POST /tools/reload - 热重载插件工具"""
         self.registry.plugin_tools.clear()
+        self.registry.instruction_tools.clear()
         self.registry.scan_plugins()
         tools = self.registry.list_all()
         self.send_json({
@@ -772,6 +1106,212 @@ curl -X POST http://localhost:3001/api/tools/execute \\
             'message': f'Reloaded. {len(tools)} tools registered.',
             'tools': tools,
         })
+
+    # ============================================
+    # 🔌 MCP 服务器管理
+    # ============================================
+
+    def handle_mcp_servers_list(self):
+        """GET /mcp/servers - 列出 MCP 服务器状态"""
+        if not self.registry.mcp_manager:
+            self.send_json({
+                'status': 'ok',
+                'enabled': False,
+                'servers': {},
+                'message': 'MCP support not initialized'
+            })
+            return
+
+        status = self.registry.mcp_manager.get_server_status()
+        mcp_tools = [t for t in self.registry.list_all() if t.get('type') == 'mcp']
+
+        self.send_json({
+            'status': 'ok',
+            'enabled': True,
+            'servers': status,
+            'toolCount': len(mcp_tools),
+            'tools': mcp_tools,
+        })
+
+    def handle_mcp_reload(self, data=None):
+        """POST /mcp/reload - 重新加载 MCP 服务器"""
+        if not HAS_MCP:
+            self.send_json({
+                'status': 'error',
+                'message': 'MCP support not available'
+            }, 400)
+            return
+
+        # 清理现有 MCP 工具
+        self.registry.mcp_tools.clear()
+        if self.registry.mcp_manager:
+            self.registry.mcp_manager.shutdown_all()
+
+        # 重新扫描
+        self.registry.scan_mcp_servers()
+
+        mcp_tools = [t for t in self.registry.list_all() if t.get('type') == 'mcp']
+        self.send_json({
+            'status': 'ok',
+            'message': f'MCP reloaded. {len(mcp_tools)} tool(s) registered.',
+            'tools': mcp_tools,
+        })
+
+    def handle_mcp_reconnect(self, server_name: str):
+        """POST /mcp/servers/{name}/reconnect - 重连 MCP 服务器"""
+        if not self.registry.mcp_manager:
+            self.send_json({
+                'status': 'error',
+                'message': 'MCP support not initialized'
+            }, 400)
+            return
+
+        success = self.registry.mcp_manager.reconnect_server(server_name)
+
+        if success:
+            # 更新工具注册
+            self.registry.mcp_tools.clear()
+            for tool_info in self.registry.mcp_manager.get_all_tools():
+                tool_name = tool_info['name']
+                if tool_name not in self.registry.builtin_tools and tool_name not in self.registry.plugin_tools:
+                    self.registry.mcp_tools[tool_name] = {
+                        'name': tool_name,
+                        'server': tool_info.get('server', ''),
+                        'description': tool_info.get('description', ''),
+                        'inputs': tool_info.get('inputs', {}),
+                        'dangerLevel': 'safe',
+                        'version': '1.0.0',
+                    }
+
+            self.send_json({
+                'status': 'ok',
+                'message': f'Server {server_name} reconnected',
+                'server': server_name,
+            })
+        else:
+            self.send_json({
+                'status': 'error',
+                'message': f'Failed to reconnect server: {server_name}'
+            }, 500)
+
+    # ============================================
+    # 📦 远程技能安装/卸载
+    # ============================================
+
+    def handle_skill_install(self, data):
+        """POST /skills/install - 从 Git URL 安装技能"""
+        source = data.get('source', '')
+        name = data.get('name', '')
+
+        if not source:
+            self.send_error_json('Missing source parameter', 400)
+            return
+
+        if not source.startswith(('http://', 'https://', 'git@')):
+            self.send_error_json('Unsupported source format. Use a Git URL (https://... or git@...)', 400)
+            return
+
+        try:
+            # 从 URL 提取仓库名
+            match = re.search(r'/([^/]+?)(?:\.git)?$', source)
+            repo_name = name or (match.group(1) if match else 'downloaded-skill')
+            # 安全化名称
+            repo_name = re.sub(r'[^\w\-.]', '_', repo_name)
+
+            target = self.clawd_path / 'skills' / repo_name
+            if target.exists():
+                self.send_error_json(f'Skill already exists: {repo_name}. Use /skills/uninstall first.', 409)
+                return
+
+            # 确保 skills/ 目录存在
+            (self.clawd_path / 'skills').mkdir(parents=True, exist_ok=True)
+
+            # Git clone (shallow, 限制深度)
+            process = subprocess.run(
+                ['git', 'clone', '--depth', '1', source, str(target)],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+
+            if process.returncode != 0:
+                # 清理失败的 clone
+                if target.exists():
+                    shutil.rmtree(target, ignore_errors=True)
+                stderr = process.stderr[:500] if process.stderr else 'Unknown error'
+                raise RuntimeError(f"git clone failed: {stderr}")
+
+            # 验证: 必须有 SKILL.md 或 manifest.json
+            has_skill_md = (target / 'SKILL.md').exists() or any(target.rglob('SKILL.md'))
+            has_manifest = (target / 'manifest.json').exists()
+
+            if not has_skill_md and not has_manifest:
+                shutil.rmtree(target, ignore_errors=True)
+                self.send_error_json('Invalid skill: no SKILL.md or manifest.json found', 400)
+                return
+
+            # 重新扫描注册
+            self.registry.plugin_tools.clear()
+            self.registry.instruction_tools.clear()
+            self.registry.scan_plugins()
+
+            self.send_json({
+                'status': 'ok',
+                'name': repo_name,
+                'path': str(target),
+                'message': f'Skill installed: {repo_name}',
+                'toolCount': len(self.registry.list_all()),
+            })
+
+        except subprocess.TimeoutExpired:
+            if target.exists():
+                shutil.rmtree(target, ignore_errors=True)
+            self.send_error_json('Git clone timed out (120s limit)', 500)
+        except RuntimeError as e:
+            self.send_error_json(str(e), 500)
+        except Exception as e:
+            self.send_error_json(f'Installation failed: {str(e)}', 500)
+
+    def handle_skill_uninstall(self, data):
+        """POST /skills/uninstall - 卸载技能"""
+        name = data.get('name', '')
+
+        if not name:
+            self.send_error_json('Missing name parameter', 400)
+            return
+
+        # 安全检查: 不允许路径遍历
+        if '..' in name or '/' in name or '\\' in name:
+            self.send_error_json('Invalid skill name', 400)
+            return
+
+        target = self.clawd_path / 'skills' / name
+
+        if not target.exists():
+            self.send_error_json(f'Skill not found: {name}', 404)
+            return
+
+        if not target.is_dir():
+            self.send_error_json(f'Not a directory: {name}', 400)
+            return
+
+        try:
+            shutil.rmtree(target)
+
+            # 重新扫描
+            self.registry.plugin_tools.clear()
+            self.registry.instruction_tools.clear()
+            self.registry.scan_plugins()
+
+            self.send_json({
+                'status': 'ok',
+                'name': name,
+                'message': f'Skill uninstalled: {name}',
+                'toolCount': len(self.registry.list_all()),
+            })
+
+        except Exception as e:
+            self.send_error_json(f'Uninstall failed: {str(e)}', 500)
 
     def handle_trace_save(self, data):
         """POST /api/traces/save - 保存执行追踪 (P2: 执行流记忆)"""
@@ -1214,6 +1754,8 @@ You are DD-OS, a local AI operating system running directly on the user's comput
         registry.register_builtin(name, name)  # handler resolved at dispatch time
     # 扫描插件工具
     registry.scan_plugins()
+    # 扫描 MCP 服务器
+    registry.scan_mcp_servers()
 
     # 清理过期执行追踪 (P2: 保留最近6个月)
     cleanup_old_traces(clawd_path)
@@ -1225,6 +1767,7 @@ You are DD-OS, a local AI operating system running directly on the user's comput
     
     tool_names = [t['name'] for t in registry.list_all()]
     plugin_count = len(registry.plugin_tools)
+    mcp_count = len(registry.mcp_tools)
     print(f"""
 +==================================================================+
 |              DD-OS Native Server v{VERSION}                         |
@@ -1233,7 +1776,7 @@ You are DD-OS, a local AI operating system running directly on the user's comput
 |  Server:  http://{args.host}:{args.port}                                    |
 |  Data:    {str(clawd_path)[:50]:<50} |
 +------------------------------------------------------------------+
-|  Tools:   {len(tool_names)} registered ({len(builtin_names)} builtin + {plugin_count} plugins)             |
+|  Tools:   {len(tool_names)} registered ({len(builtin_names)} builtin + {plugin_count} plugins + {mcp_count} mcp)    |
 |  API:     /api/tools/execute (POST)  |  /tools (GET)            |
 +==================================================================+
     """)

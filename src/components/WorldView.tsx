@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from 'react'
+import { useEffect, useRef, useCallback, useMemo } from 'react'
 import { motion } from 'framer-motion'
 import { useStore } from '@/store'
 import { GameCanvas } from '@/rendering/GameCanvas'
@@ -15,12 +15,37 @@ export function WorldView() {
   const selectNexus = useStore((s) => s.selectNexus)
   const openNexusPanel = useStore((s) => s.openNexusPanel)
 
+  // 新增：Soul 数据订阅
+  const soulIdentity = useStore((s) => s.soulIdentity)
+  const soulCoreTruths = useStore((s) => s.soulCoreTruths)
+  const soulDimensions = useStore((s) => s.soulDimensions)
+  const skills = useStore((s) => s.skills)
+
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const engineRef = useRef<GameCanvas | null>(null)
   const isDragging = useRef(false)
   const lastMouse = useRef({ x: 0, y: 0 })
 
   const isHouseOpen = currentView !== 'world'
+
+  // 计算能量核心参数 (memoized) - 即使无 soul 数据也显示默认核心
+  const energyCoreState = useMemo(() => {
+    const name = soulIdentity?.name || 'GENESIS'
+    const activeSkills = skills.filter(s => s.unlocked || s.status === 'active')
+    return {
+      name,
+      skills: skills.length > 0
+        ? skills.map(s => ({ id: s.id, active: s.unlocked || s.status === 'active' }))
+        : [],
+      complexity: Math.min(100, soulCoreTruths.length * 8 + soulDimensions.length * 4 + 20),
+      activity: skills.length > 0
+        ? Math.max(0.1, Math.min(1, activeSkills.length / (skills.length || 10)))
+        : 0.3,
+      turbulence: soulDimensions.length > 0
+        ? soulDimensions.reduce((sum, d) => sum + d.value, 0) / (soulDimensions.length * 100)
+        : 0.3,
+    }
+  }, [soulIdentity, soulCoreTruths, soulDimensions, skills])
 
   // 初始化/销毁渲染引擎
   useEffect(() => {
@@ -46,8 +71,11 @@ export function WorldView() {
 
   // 同步 store 状态到渲染引擎
   useEffect(() => {
-    engineRef.current?.updateState({ nexuses, camera, selectedNexusId, renderSettings })
-  }, [nexuses, camera, selectedNexusId, renderSettings])
+    engineRef.current?.updateState({
+      nexuses, camera, selectedNexusId, renderSettings,
+      energyCore: energyCoreState,
+    })
+  }, [nexuses, camera, selectedNexusId, renderSettings, energyCoreState])
 
   // ---- 鼠标交互 ----
 
@@ -65,6 +93,14 @@ export function WorldView() {
   }, [])
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    // 始终追踪鼠标位置（视差效果）
+    const rect = canvasRef.current?.getBoundingClientRect()
+    if (rect) {
+      const normX = (e.clientX - rect.left) / rect.width * 2 - 1
+      const normY = (e.clientY - rect.top) / rect.height * 2 - 1
+      engineRef.current?.setMousePosition(normX, normY)
+    }
+
     if (!isDragging.current) return
     const dx = (e.clientX - lastMouse.current.x) / camera.zoom
     const dy = (e.clientY - lastMouse.current.y) / camera.zoom
@@ -107,6 +143,9 @@ export function WorldView() {
     // 如果点击了 Nexus，打开详情面板
     if (nearest) {
       openNexusPanel(nearest)
+    } else {
+      // 没有点中行星，触发能量波纹
+      engineRef.current?.triggerRipple(screenX, screenY)
     }
   }, [camera, nexuses, selectNexus, openNexusPanel])
 

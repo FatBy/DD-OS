@@ -16,7 +16,7 @@ function detectOutputType(output: string): 'weather' | 'search' | 'file' | 'comm
   if (output.includes('文件内容') || output.includes('File content') || output.startsWith('#')) {
     return 'file'
   }
-  if (output.includes('执行命令') || output.includes('Command') || output.includes('Exit code')) {
+  if (output.includes('执行命令') || output.includes('Command') || output.includes('Exit Code') || output.includes('Exit code')) {
     return 'command'
   }
   return 'plain'
@@ -108,11 +108,28 @@ function FileOutput({ content }: { content: string }) {
 
 // 格式化命令输出
 function CommandOutput({ content }: { content: string }) {
+  // 解析 Exit Code 并高亮显示
+  const exitCodeMatch = content.match(/Exit Code:\s*(\d+)(?:\s*\(([^)]+)\))?/)
+  const exitCode = exitCodeMatch ? parseInt(exitCodeMatch[1]) : null
+  const exitHint = exitCodeMatch?.[2] || null
+  const isSuccess = exitCode === 0
+
   return (
     <div className="space-y-2 p-4">
       <div className="flex items-center gap-2 text-emerald-400">
         <Terminal className="w-5 h-5" />
         <span className="text-sm font-medium">命令输出</span>
+        {exitCode !== null && (
+          <span className={cn(
+            'ml-auto text-xs font-mono px-2 py-0.5 rounded',
+            isSuccess 
+              ? 'bg-emerald-500/15 text-emerald-400' 
+              : 'bg-red-500/15 text-red-400'
+          )}>
+            {isSuccess ? 'Exit 0' : `Exit ${exitCode}`}
+            {exitHint && !isSuccess && ` · ${exitHint}`}
+          </span>
+        )}
       </div>
       
       <pre className="text-sm font-mono text-emerald-400/80 leading-relaxed bg-black/40 rounded-lg p-3 overflow-x-auto max-h-80 overflow-y-auto whitespace-pre-wrap">

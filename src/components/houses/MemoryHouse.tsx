@@ -1,301 +1,508 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { ScrollText, Clock, Inbox, Loader2, Brain, ChevronDown, ChevronRight } from 'lucide-react'
+import { 
+  BookOpen, Sparkles, ChevronDown, Loader2, Inbox, 
+  Zap, GraduationCap, Coffee, Flame,
+  Hash, MessageSquare, RefreshCw, Play
+} from 'lucide-react'
 import { GlassCard } from '@/components/GlassCard'
-import { AISummaryCard } from '@/components/ai/AISummaryCard'
 import { useStore } from '@/store'
 import { cn } from '@/utils/cn'
-import type { MemoryEntry } from '@/types'
+import { isLLMConfigured } from '@/services/llmService'
+import type { MemoryEntry, JournalEntry, JournalMood } from '@/types'
 
-// 默认记忆（未连接时显示）
+// ============================================
+// Mood 配置
+// ============================================
+
+const moodConfig: Record<JournalMood, {
+  icon: typeof Zap
+  label: string
+  color: string        // Tailwind text color
+  bgColor: string      // Tailwind bg color  
+  borderColor: string  // Tailwind border color
+  glowColor: string    // GlassCard theme
+  emoji: string
+}> = {
+  productive: {
+    icon: Zap,
+    label: '高效日',
+    color: 'text-amber-400',
+    bgColor: 'bg-amber-500/10',
+    borderColor: 'border-amber-500/30',
+    glowColor: 'amber',
+    emoji: '⚡',
+  },
+  learning: {
+    icon: GraduationCap,
+    label: '探索日',
+    color: 'text-cyan-400',
+    bgColor: 'bg-cyan-500/10',
+    borderColor: 'border-cyan-500/30',
+    glowColor: 'cyan',
+    emoji: '🔍',
+  },
+  casual: {
+    icon: Coffee,
+    label: '休闲日',
+    color: 'text-emerald-400',
+    bgColor: 'bg-emerald-500/10',
+    borderColor: 'border-emerald-500/30',
+    glowColor: 'emerald',
+    emoji: '☕',
+  },
+  challenging: {
+    icon: Flame,
+    label: '挑战日',
+    color: 'text-purple-400',
+    bgColor: 'bg-purple-500/10',
+    borderColor: 'border-purple-500/30',
+    glowColor: 'purple',
+    emoji: '🔥',
+  },
+}
+
+// ============================================
+// 默认数据 (未连接时)
+// ============================================
+
 const defaultMemories: MemoryEntry[] = [
   {
     id: '1',
-    title: '欢迎来到记忆宫殿',
-    content: '这里存储着 Agent 的所有对话记忆。连接后，会话历史将显示在这里。',
+    title: '欢迎来到冒险日志',
+    content: '这里记录着你的 AI 伙伴每天的冒险故事。连接后，对话将被自动转化为有趣的日志。',
     type: 'long-term',
     timestamp: new Date().toISOString(),
     tags: ['系统', '指南'],
   },
+]
+
+const defaultJournal: JournalEntry[] = [
   {
-    id: '2',
-    title: '短期记忆',
-    content: '最近 24 小时内的对话会被标记为短期记忆，显示在最前面。',
-    type: 'short-term',
-    timestamp: new Date().toISOString(),
-    tags: ['系统'],
-  },
-  {
-    id: '3',
-    title: '长期记忆',
-    content: '超过 24 小时的对话会转为长期记忆，永久保存。',
-    type: 'long-term',
-    timestamp: new Date(Date.now() - 86400000 * 2).toISOString(),
-    tags: ['系统'],
+    id: 'demo-1',
+    date: new Date().toLocaleDateString('sv-SE'),
+    title: '冒险的起点',
+    narrative: '今天是我来到这个世界的第一天！虽然还没有正式开始工作，但我已经迫不及待想要和你一起探索了。我感觉自己就像一本空白的日记，等待着被精彩的故事填满。让我们一起创造属于我们的冒险吧！',
+    mood: 'casual',
+    keyFacts: ['系统初始化', '等待连接', '准备就绪'],
+    memoryCount: 1,
+    generatedAt: Date.now(),
   },
 ]
 
-interface TimelineGroup {
-  date: string
-  displayDate: string
-  memories: MemoryEntry[]
-}
+// ============================================
+// 工具函数
+// ============================================
 
 function getDisplayDate(dateStr: string): string {
   const today = new Date()
-  const todayStr = today.toLocaleDateString('sv-SE') // YYYY-MM-DD format
+  const todayStr = today.toLocaleDateString('sv-SE')
   const yesterdayDate = new Date(today)
   yesterdayDate.setDate(yesterdayDate.getDate() - 1)
   const yesterdayStr = yesterdayDate.toLocaleDateString('sv-SE')
 
   if (dateStr === todayStr) return '今天'
   if (dateStr === yesterdayStr) return '昨天'
-  return dateStr
-}
-
-// 安全解析时间 - 使用 Intl.DateTimeFormat 确保本地时区
-function safeParseTime(timestamp: string): string {
+  
+  // 更友好的日期格式
   try {
-    const date = new Date(timestamp)
-    if (isNaN(date.getTime())) return '--:--'
-    return new Intl.DateTimeFormat('zh-CN', {
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-    }).format(date)
+    const d = new Date(dateStr + 'T00:00:00')
+    if (isNaN(d.getTime())) return dateStr
+    return new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' }).format(d)
   } catch {
-    return '--:--'
+    return dateStr
   }
 }
 
-// 安全解析日期 - 使用本地时区
-function safeParseDate(timestamp: string): string {
-  try {
-    const date = new Date(timestamp)
-    if (isNaN(date.getTime())) return 'unknown'
-    return date.toLocaleDateString('sv-SE') // YYYY-MM-DD in local timezone
-  } catch {
-    return 'unknown'
-  }
-}
+// ============================================
+// 日志英雄卡
+// ============================================
 
-// 时间轴记忆卡片
-function TimelineMemoryCard({ 
-  memory, 
-  index,
-  isExpanded,
-  onToggle
+function JournalHeroCard({ 
+  entry, 
+  isExpanded, 
+  onToggle,
+  index 
 }: { 
-  memory: MemoryEntry
-  index: number
+  entry: JournalEntry
   isExpanded: boolean
   onToggle: () => void
+  index: number
 }) {
-  const isShortTerm = memory.type === 'short-term'
-  const time = safeParseTime(memory.timestamp)
+  const mood = moodConfig[entry.mood]
+  const MoodIcon = mood.icon
 
   return (
     <motion.div
-      initial={{ opacity: 0, x: -20 }}
-      animate={{ opacity: 1, x: 0 }}
-      transition={{ delay: Math.min(index * 0.05, 0.5) }}
-      className="relative pl-8 pb-6"
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: Math.min(index * 0.08, 0.4), duration: 0.4 }}
     >
-      {/* 连接点 */}
-      <div className={cn(
-        'absolute left-0 top-2 w-3 h-3 rounded-full border-2 border-slate-950',
-        isShortTerm ? 'bg-amber-400' : 'bg-emerald-400'
-      )} />
-
-      {/* 时间标签 */}
-      <div className="text-[10px] font-mono text-white/30 mb-1.5 flex items-center gap-2">
-        <span>{time}</span>
-        <span className={cn(
-          'px-1.5 py-0.5 rounded',
-          isShortTerm ? 'bg-amber-500/15 text-amber-400/70' : 'bg-emerald-500/15 text-emerald-400/70'
-        )}>
-          {isShortTerm ? '短期' : '长期'}
-        </span>
-        {memory.role && (
-          <span className={cn(
-            'px-1 rounded',
-            memory.role === 'user' ? 'bg-cyan-500/15 text-cyan-400/70' : 'bg-purple-500/15 text-purple-400/70'
-          )}>
-            {memory.role === 'user' ? '用户' : 'AI'}
-          </span>
-        )}
-      </div>
-
-      {/* 记忆卡片 */}
       <GlassCard
-        themeColor={isShortTerm ? 'amber' : 'emerald'}
-        className="p-4 cursor-pointer hover:scale-[1.005] transition-transform"
+        themeColor={mood.glowColor}
+        className={cn(
+          'p-0 overflow-hidden cursor-pointer transition-all duration-300',
+          'hover:scale-[1.01] hover:shadow-lg',
+          isExpanded && 'ring-1'
+        )}
         onClick={onToggle}
       >
-        <div className="flex items-start justify-between gap-2">
-          <h4 className="text-sm font-medium text-white/90">
-            {memory.title}
-          </h4>
-          <motion.div
-            animate={{ rotate: isExpanded ? 180 : 0 }}
-            transition={{ duration: 0.2 }}
-          >
-            <ChevronDown className="w-4 h-4 text-white/20 flex-shrink-0" />
-          </motion.div>
-        </div>
+        {/* 顶部 Mood 条带 */}
+        <div className={cn(
+          'h-1 w-full',
+          entry.mood === 'productive' && 'bg-gradient-to-r from-amber-500 to-orange-500',
+          entry.mood === 'learning' && 'bg-gradient-to-r from-cyan-500 to-blue-500',
+          entry.mood === 'casual' && 'bg-gradient-to-r from-emerald-500 to-teal-500',
+          entry.mood === 'challenging' && 'bg-gradient-to-r from-purple-500 to-pink-500',
+        )} />
 
-        {/* 预览/展开内容 */}
-        <AnimatePresence initial={false}>
-          {isExpanded ? (
-            <motion.div
-              initial={{ height: 0, opacity: 0 }}
-              animate={{ height: 'auto', opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }}
-              transition={{ duration: 0.2 }}
-              className="overflow-hidden"
-            >
-              <p className="text-sm text-white/70 mt-2 whitespace-pre-wrap leading-relaxed">
-                {memory.content}
-              </p>
-              {memory.tags.length > 0 && (
-                <div className="flex flex-wrap gap-1.5 mt-3">
-                  {memory.tags.map(tag => (
-                    <span
-                      key={tag}
-                      className="px-2 py-0.5 text-[9px] font-mono bg-white/5 rounded text-white/50"
-                    >
-                      {tag}
-                    </span>
-                  ))}
-                </div>
-              )}
-              <div className="text-[9px] font-mono text-white/25 mt-2">
-                {(() => {
-                  try {
-                    const d = new Date(memory.timestamp)
-                    return isNaN(d.getTime()) ? memory.timestamp : d.toLocaleString('zh-CN')
-                  } catch { return memory.timestamp }
-                })()}
+        <div className="p-5">
+          {/* 头部：日期 + Mood */}
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <span className="text-lg">{mood.emoji}</span>
+              <div>
+                <p className="text-[10px] font-mono text-white/40 uppercase tracking-wider">
+                  {getDisplayDate(entry.date)}
+                </p>
+                <h3 className="text-base font-medium text-white/90 leading-tight">
+                  {entry.title}
+                </h3>
               </div>
-            </motion.div>
-          ) : (
-            <p className="text-xs text-white/50 mt-1 line-clamp-2">
-              {memory.content}
-            </p>
-          )}
-        </AnimatePresence>
-
-        {/* 折叠状态下的标签预览 */}
-        {!isExpanded && memory.tags.length > 0 && (
-          <div className="flex gap-1 mt-2">
-            {memory.tags.slice(0, 3).map(tag => (
-              <span
-                key={tag}
-                className="text-[9px] font-mono text-white/30"
-              >
-                #{tag}
+            </div>
+            <div className="flex items-center gap-2">
+              <span className={cn(
+                'px-2 py-1 rounded-full text-[10px] font-mono flex items-center gap-1',
+                mood.bgColor, mood.color
+              )}>
+                <MoodIcon className="w-3 h-3" />
+                {mood.label}
               </span>
-            ))}
+              <motion.div
+                animate={{ rotate: isExpanded ? 180 : 0 }}
+                transition={{ duration: 0.2 }}
+              >
+                <ChevronDown className="w-4 h-4 text-white/20" />
+              </motion.div>
+            </div>
           </div>
-        )}
+
+          {/* 叙事预览 / 完整展示 */}
+          <AnimatePresence initial={false}>
+            {isExpanded ? (
+              <motion.div
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: 'auto', opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.3 }}
+                className="overflow-hidden"
+              >
+                <p className="text-sm text-white/70 leading-relaxed mb-4 whitespace-pre-wrap">
+                  {entry.narrative}
+                </p>
+
+                {/* 关键事实芯片 */}
+                {entry.keyFacts.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 mb-3">
+                    {entry.keyFacts.map((fact, i) => (
+                      <span
+                        key={i}
+                        className={cn(
+                          'px-2.5 py-1 rounded-full text-[10px] font-mono',
+                          'bg-white/5 text-white/50 border border-white/10',
+                          'flex items-center gap-1'
+                        )}
+                      >
+                        <Hash className="w-2.5 h-2.5" />
+                        {fact}
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                {/* 底部信息 */}
+                <div className="flex items-center justify-between pt-3 border-t border-white/5">
+                  <div className="flex items-center gap-1 text-[10px] font-mono text-white/30">
+                    <MessageSquare className="w-3 h-3" />
+                    <span>{entry.memoryCount} 条对话</span>
+                  </div>
+                  <span className="text-[9px] font-mono text-white/20">
+                    {entry.date}
+                  </span>
+                </div>
+              </motion.div>
+            ) : (
+              <p className="text-xs text-white/50 line-clamp-2 leading-relaxed">
+                {entry.narrative}
+              </p>
+            )}
+          </AnimatePresence>
+        </div>
       </GlassCard>
     </motion.div>
   )
 }
 
-// 日期分组标题 (支持折叠)
-function TimelineDateHeader({ 
-  group, 
-  isCollapsed, 
-  onToggle 
-}: { 
-  group: TimelineGroup
-  isCollapsed: boolean
-  onToggle: () => void 
-}) {
+// ============================================
+// 原始记忆折叠面板
+// ============================================
+
+function RawMemoryPanel({ memories }: { memories: MemoryEntry[] }) {
+  const [isOpen, setIsOpen] = useState(false)
+
+  if (memories.length === 0) return null
+
   return (
-    <div 
-      className="relative pl-8 pb-4 pt-2 cursor-pointer group select-none"
-      onClick={onToggle}
-    >
-      {/* 日期大节点 */}
-      <div className={cn(
-        "absolute left-[-4px] top-2 w-5 h-5 rounded-full border-2 flex items-center justify-center transition-colors",
-        isCollapsed 
-          ? "bg-white/10 border-white/20" 
-          : "bg-emerald-500/30 border-emerald-400/60"
-      )}>
-        <div className={cn(
-          "w-2 h-2 rounded-full transition-colors",
-          isCollapsed ? "bg-white/40" : "bg-emerald-400"
-        )} />
+    <div className="mt-4">
+      <button
+        onClick={() => setIsOpen(!isOpen)}
+        className="flex items-center gap-2 text-[10px] font-mono text-white/30 hover:text-white/50 transition-colors"
+      >
+        <motion.div animate={{ rotate: isOpen ? 180 : 0 }} transition={{ duration: 0.2 }}>
+          <ChevronDown className="w-3 h-3" />
+        </motion.div>
+        原始记忆数据 ({memories.length} 条)
+      </button>
+
+      <AnimatePresence>
+        {isOpen && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="overflow-hidden"
+          >
+            <div className="mt-2 space-y-1.5 max-h-60 overflow-y-auto">
+              {memories.map(mem => (
+                <div
+                  key={mem.id}
+                  className="px-3 py-2 bg-white/[0.03] rounded-lg border border-white/5"
+                >
+                  <div className="flex items-center gap-2 mb-0.5">
+                    <span className={cn(
+                      'text-[9px] px-1.5 py-0.5 rounded font-mono',
+                      mem.type === 'short-term' 
+                        ? 'bg-amber-500/15 text-amber-400/70' 
+                        : 'bg-emerald-500/15 text-emerald-400/70'
+                    )}>
+                      {mem.type === 'short-term' ? '短期' : '长期'}
+                    </span>
+                    {mem.role && (
+                      <span className={cn(
+                        'text-[9px] px-1 rounded font-mono',
+                        mem.role === 'user' ? 'text-cyan-400/60' : 'text-purple-400/60'
+                      )}>
+                        {mem.role === 'user' ? '用户' : 'AI'}
+                      </span>
+                    )}
+                    <span className="text-[9px] font-mono text-white/25 ml-auto">
+                      {(() => {
+                        try {
+                          const d = new Date(mem.timestamp)
+                          return isNaN(d.getTime()) ? '' : new Intl.DateTimeFormat('zh-CN', {
+                            hour: '2-digit', minute: '2-digit', hour12: false
+                          }).format(d)
+                        } catch { return '' }
+                      })()}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-white/50 line-clamp-2">{mem.content}</p>
+                </div>
+              ))}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  )
+}
+
+// ============================================
+// 统计侧边栏
+// ============================================
+
+function JournalStats({ 
+  journalEntries, 
+  memories,
+  onGenerate,
+  isGenerating,
+  llmReady,
+}: { 
+  journalEntries: JournalEntry[]
+  memories: MemoryEntry[]
+  onGenerate: () => void
+  isGenerating: boolean
+  llmReady: boolean
+}) {
+  // Mood 分布统计
+  const moodCounts = useMemo(() => {
+    const counts: Record<JournalMood, number> = { productive: 0, learning: 0, casual: 0, challenging: 0 }
+    journalEntries.forEach(e => { counts[e.mood]++ })
+    return counts
+  }, [journalEntries])
+
+  const totalDays = journalEntries.length
+  const totalMemories = memories.length
+  const hasMemories = memories.length > 0
+
+  return (
+    <div className="w-48 border-l border-white/10 p-4 space-y-4 flex flex-col">
+      <div className="flex items-center gap-2 mb-2">
+        <BookOpen className="w-4 h-4 text-emerald-400" />
+        <h4 className="font-mono text-xs text-emerald-300 uppercase">冒险统计</h4>
       </div>
 
-      <div className="flex items-center gap-3">
-        <h3 className="text-sm font-mono text-white/70 font-medium">
-          {group.displayDate}
-        </h3>
-        <span className="text-[10px] font-mono text-white/30 bg-white/5 px-2 py-0.5 rounded">
-          {group.memories.length} 条记忆
-        </span>
-        {/* 折叠指示箭头 */}
-        <ChevronRight className={cn(
-          "w-4 h-4 text-white/20 transition-transform duration-200 ml-auto mr-4 group-hover:text-white/40",
-          !isCollapsed && "rotate-90"
-        )} />
+      {/* 核心运行按钮 */}
+      <button
+        onClick={onGenerate}
+        disabled={isGenerating || !llmReady || !hasMemories}
+        className={cn(
+          'group relative w-full flex items-center justify-center gap-2.5',
+          'py-3 px-4 rounded-xl font-mono text-sm font-medium',
+          'transition-all duration-300 overflow-hidden',
+          'border',
+          isGenerating
+            ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400 cursor-wait'
+            : !llmReady || !hasMemories
+              ? 'bg-white/5 border-white/10 text-white/25 cursor-not-allowed'
+              : 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/25 hover:border-emerald-400/60 hover:shadow-lg hover:shadow-emerald-500/10 active:scale-[0.97]'
+        )}
+      >
+        {/* 按钮光晕背景 */}
+        {!isGenerating && llmReady && hasMemories && (
+          <div className="absolute inset-0 bg-gradient-to-r from-emerald-500/0 via-emerald-500/5 to-emerald-500/0 opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+        )}
+        
+        {isGenerating ? (
+          <>
+            <Loader2 className="w-4 h-4 animate-spin" />
+            <span>编写中...</span>
+          </>
+        ) : (
+          <>
+            <div className={cn(
+              'flex items-center justify-center w-6 h-6 rounded-lg',
+              llmReady && hasMemories 
+                ? 'bg-emerald-500/20 group-hover:bg-emerald-500/30' 
+                : 'bg-white/5'
+            )}>
+              <Play className="w-3.5 h-3.5 ml-0.5" />
+            </div>
+            <span>生成日志</span>
+          </>
+        )}
+      </button>
+
+      {!llmReady && (
+        <p className="text-[9px] font-mono text-amber-400/50 leading-relaxed">
+          需要在设置中配置 LLM API 才能生成日志
+        </p>
+      )}
+
+      <div className="space-y-3">
+        <div className="p-3 bg-white/5 rounded-lg">
+          <p className="text-[10px] font-mono text-white/40 uppercase">冒险天数</p>
+          <p className="text-2xl font-bold text-emerald-400">{totalDays}</p>
+        </div>
+
+        <div className="p-3 bg-white/5 rounded-lg">
+          <p className="text-[10px] font-mono text-white/40 uppercase">总记忆</p>
+          <p className="text-2xl font-bold text-cyan-400">{totalMemories}</p>
+        </div>
+
+        {/* Mood 分布 */}
+        {totalDays > 0 && (
+          <div className="p-3 bg-white/5 rounded-lg space-y-2">
+            <p className="text-[10px] font-mono text-white/40 uppercase">氛围分布</p>
+            {(Object.entries(moodCounts) as [JournalMood, number][])
+              .filter(([, count]) => count > 0)
+              .sort(([, a], [, b]) => b - a)
+              .map(([mood, count]) => {
+                const cfg = moodConfig[mood]
+                return (
+                  <div key={mood} className="flex items-center gap-2">
+                    <span className="text-sm">{cfg.emoji}</span>
+                    <div className="flex-1">
+                      <div className="h-1.5 bg-white/5 rounded-full overflow-hidden">
+                        <motion.div
+                          initial={{ width: 0 }}
+                          animate={{ width: `${(count / totalDays) * 100}%` }}
+                          transition={{ duration: 0.6, delay: 0.2 }}
+                          className={cn(
+                            'h-full rounded-full',
+                            mood === 'productive' && 'bg-amber-400',
+                            mood === 'learning' && 'bg-cyan-400',
+                            mood === 'casual' && 'bg-emerald-400',
+                            mood === 'challenging' && 'bg-purple-400',
+                          )}
+                        />
+                      </div>
+                    </div>
+                    <span className="text-[10px] font-mono text-white/40 w-4 text-right">{count}</span>
+                  </div>
+                )
+              })
+            }
+          </div>
+        )}
+      </div>
+
+      <div className="pt-4 border-t border-white/10 mt-auto">
+        <p className="text-[9px] font-mono text-white/30 leading-relaxed">
+          点击「生成日志」将对话转化为冒险故事，点击卡片查看完整内容。
+        </p>
       </div>
     </div>
   )
 }
 
+// ============================================
+// 主组件
+// ============================================
+
 export function MemoryHouse() {
   const storeMemories = useStore((s) => s.memories)
+  const journalEntries = useStore((s) => s.journalEntries)
+  const journalLoading = useStore((s) => s.journalLoading)
   const loading = useStore((s) => s.sessionsLoading)
   const connectionStatus = useStore((s) => s.connectionStatus)
+  const generateJournal = useStore((s) => s.generateJournal)
 
   const isConnected = connectionStatus === 'connected'
   const memories = isConnected && storeMemories.length > 0 ? storeMemories : defaultMemories
+  const journals = isConnected && journalEntries.length > 0 ? journalEntries : defaultJournal
+  const llmReady = isLLMConfigured()
+
+  // 按日期降序排列，最新日志显示在最上方
+  const sortedJournals = useMemo(() => 
+    [...journals].sort((a, b) => b.date.localeCompare(a.date)),
+    [journals]
+  )
 
   // 展开状态
   const [expandedId, setExpandedId] = useState<string | null>(null)
-  // 日期折叠状态
-  const [collapsedDates, setCollapsedDates] = useState<Record<string, boolean>>({})
 
   const toggleExpand = (id: string) => {
     setExpandedId(prev => prev === id ? null : id)
   }
 
-  const toggleDateGroup = (date: string) => {
-    setCollapsedDates(prev => ({ ...prev, [date]: !prev[date] }))
-  }
-
-  // 按日期分组并排序（编年体：从早到晚）
-  const timelineGroups = useMemo<TimelineGroup[]>(() => {
-    if (!memories || memories.length === 0) return []
-
-    const groups = new Map<string, MemoryEntry[]>()
-
-    for (const mem of memories) {
-      const date = safeParseDate(mem.timestamp)
-      if (!groups.has(date)) groups.set(date, [])
-      groups.get(date)!.push(mem)
+  // 自动生成日志（当记忆加载完成且 LLM 可用时）
+  useEffect(() => {
+    if (isConnected && llmReady && storeMemories.length > 0 && journalEntries.length === 0) {
+      generateJournal(storeMemories)
     }
+  }, [isConnected, llmReady, storeMemories.length, journalEntries.length, generateJournal, storeMemories])
 
-    return Array.from(groups.entries())
-      .map(([date, mems]) => ({
-        date,
-        displayDate: getDisplayDate(date),
-        memories: mems.sort((a, b) =>
-          new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-        ),
-      }))
-      .sort((a, b) => a.date.localeCompare(b.date))
-  }, [memories])
-
-  // 统计
-  const totalMemories = memories.length
-  const shortTermCount = memories.filter(m => m.type === 'short-term').length
-  const longTermCount = memories.filter(m => m.type === 'long-term').length
+  // 手动刷新
+  const handleRefresh = () => {
+    if (llmReady && memories.length > 0 && !journalLoading) {
+      // 清除缓存并重新生成
+      try { localStorage.removeItem('ddos_journal_entries') } catch {}
+      useStore.getState().setJournalEntries([])
+      generateJournal(memories)
+    }
+  }
 
   if (loading && isConnected) {
     return (
@@ -307,71 +514,72 @@ export function MemoryHouse() {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="px-4 pt-4">
-        <AISummaryCard view="memory" />
-      </div>
+      {/* LLM 未配置提示 */}
+      {!llmReady && isConnected && storeMemories.length > 0 && (
+        <div className="mx-4 mt-4 px-4 py-3 bg-white/5 border border-white/10 rounded-lg">
+          <div className="flex items-center gap-2 text-xs font-mono text-white/40">
+            <Sparkles className="w-3.5 h-3.5" />
+            <span>AI 未配置 - 前往设置配置 LLM API 以启用冒险日志自动生成</span>
+          </div>
+        </div>
+      )}
 
       <div className="flex flex-1 min-h-0">
-        {/* 主区域: 时间轴 */}
+        {/* 主区域: 冒险日志 */}
         <div className="flex-1 p-6 overflow-y-auto">
-          {/* 标题 */}
+          {/* 标题栏 */}
           <div className="flex items-center gap-2 mb-6">
-            <ScrollText className="w-5 h-5 text-emerald-400" />
+            <BookOpen className="w-5 h-5 text-emerald-400" />
             <h3 className="font-mono text-sm text-emerald-300 tracking-wider">
-              记忆编年史
+              冒险日志
             </h3>
-            <span className="ml-auto text-[10px] font-mono text-white/40">
-              {totalMemories} 条记忆
+            <span className="ml-auto flex items-center gap-2">
+              {journalLoading && (
+                <span className="flex items-center gap-1 text-[10px] font-mono text-amber-400/60">
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                  正在编写日志...
+                </span>
+              )}
+              {llmReady && (
+                <button
+                  onClick={handleRefresh}
+                  disabled={journalLoading}
+                  className="p-1 text-white/30 hover:text-emerald-400 transition-colors disabled:opacity-30"
+                  title="重新生成日志"
+                >
+                  <RefreshCw className={cn('w-3.5 h-3.5', journalLoading && 'animate-spin')} />
+                </button>
+              )}
+              <span className="text-[10px] font-mono text-white/40">
+                {sortedJournals.length} 篇日志
+              </span>
             </span>
           </div>
 
-          {memories.length > 0 ? (
-            <div className="relative">
-              {/* 垂直时间线 */}
-              <div className="absolute left-[5px] top-4 bottom-0 w-0.5 bg-gradient-to-b from-emerald-500/40 via-white/10 to-transparent" />
+          {sortedJournals.length > 0 ? (
+            <div className="space-y-4">
+              {sortedJournals.map((entry, idx) => (
+                <JournalHeroCard
+                  key={entry.id}
+                  entry={entry}
+                  isExpanded={expandedId === entry.id}
+                  onToggle={() => toggleExpand(entry.id)}
+                  index={idx}
+                />
+              ))}
 
-              {/* 时间轴内容 */}
-              {timelineGroups.map((group, groupIdx) => {
-                // 默认：今天或最后一组展开，其他折叠
-                const isCollapsed = collapsedDates[group.date] ?? (
-                  group.displayDate !== '今天' && groupIdx !== timelineGroups.length - 1
-                )
-
-                return (
-                  <div key={group.date} className="mb-6">
-                    <TimelineDateHeader 
-                      group={group} 
-                      isCollapsed={isCollapsed}
-                      onToggle={() => toggleDateGroup(group.date)}
-                    />
-                    
-                    <div className={cn(
-                      "transition-all duration-300 overflow-hidden",
-                      isCollapsed ? "max-h-0 opacity-0" : "max-h-[5000px] opacity-100"
-                    )}>
-                      {group.memories.map((memory, idx) => (
-                        <TimelineMemoryCard
-                          key={memory.id}
-                          memory={memory}
-                          index={idx}
-                          isExpanded={expandedId === memory.id}
-                          onToggle={() => toggleExpand(memory.id)}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                )
-              })}
+              {/* 底部：原始记忆折叠面板 */}
+              <RawMemoryPanel memories={memories} />
             </div>
           ) : (
             <div className="flex flex-col items-center justify-center h-48 text-center">
               <Inbox className="w-16 h-16 text-white/10 mb-4" />
               <p className="text-sm font-mono text-white/40">
-                {isConnected ? '暂无记忆数据' : '未连接'}
+                {isConnected ? '暂无冒险日志' : '未连接'}
               </p>
               <p className="text-xs font-mono text-white/25 mt-1">
                 {isConnected
-                  ? '对话开始后，记忆将自动出现在时间轴上'
+                  ? '对话开始后，AI 将自动编写你的冒险故事'
                   : '请先在左下角连接面板中连接'}
               </p>
             </div>
@@ -379,46 +587,13 @@ export function MemoryHouse() {
         </div>
 
         {/* 侧边栏: 统计 */}
-        <div className="w-44 border-l border-white/10 p-4 space-y-4">
-          <div className="flex items-center gap-2 mb-2">
-            <Brain className="w-4 h-4 text-emerald-400" />
-            <h4 className="font-mono text-xs text-emerald-300 uppercase">统计</h4>
-          </div>
-
-          <div className="space-y-3">
-            <div className="p-3 bg-white/5 rounded-lg">
-              <p className="text-[10px] font-mono text-white/40 uppercase">总记忆</p>
-              <p className="text-2xl font-bold text-emerald-400">{totalMemories}</p>
-            </div>
-
-            <div className="p-3 bg-white/5 rounded-lg">
-              <p className="text-[10px] font-mono text-white/40 uppercase flex items-center gap-1">
-                <Clock className="w-3 h-3" /> 短期
-              </p>
-              <p className="text-2xl font-bold text-amber-400">{shortTermCount}</p>
-            </div>
-
-            <div className="p-3 bg-white/5 rounded-lg">
-              <p className="text-[10px] font-mono text-white/40 uppercase flex items-center gap-1">
-                <Brain className="w-3 h-3" /> 长期
-              </p>
-              <p className="text-2xl font-bold text-emerald-400">{longTermCount}</p>
-            </div>
-
-            {timelineGroups.length > 0 && (
-              <div className="p-3 bg-white/5 rounded-lg">
-                <p className="text-[10px] font-mono text-white/40 uppercase">时间跨度</p>
-                <p className="text-lg font-bold text-purple-400">{timelineGroups.length} 天</p>
-              </div>
-            )}
-          </div>
-
-          <div className="pt-4 border-t border-white/10">
-            <p className="text-[9px] font-mono text-white/30 leading-relaxed">
-              记忆按时间顺序排列，点击日期折叠/展开，点击卡片查看完整内容。
-            </p>
-          </div>
-        </div>
+        <JournalStats 
+          journalEntries={sortedJournals} 
+          memories={memories} 
+          onGenerate={handleRefresh}
+          isGenerating={journalLoading}
+          llmReady={llmReady}
+        />
       </div>
     </div>
   )

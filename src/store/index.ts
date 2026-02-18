@@ -57,6 +57,7 @@ export const selectDevices = (state: AppStore) => state.devices
 export const selectTasks = (state: AppStore) => state.tasks
 export const selectSkills = (state: AppStore) => state.skills
 export const selectMemories = (state: AppStore) => state.memories
+export const selectJournalEntries = (state: AppStore) => state.journalEntries
 export const selectSoulDimensions = (state: AppStore) => state.soulDimensions
 export const selectSoulPrompts = (state: AppStore) => state.soulPrompts
 
