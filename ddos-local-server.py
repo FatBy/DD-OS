@@ -456,6 +456,7 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
                     'runCmd': self._tool_run_cmd,
                     'weather': self._tool_weather,
                     'webSearch': self._tool_web_search,
+                    'webFetch': self._tool_web_fetch,
                     'saveMemory': self._tool_save_memory,
                     'searchMemory': self._tool_search_memory,
                 }
@@ -812,6 +813,66 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
                 
         except Exception as e:
             return f"搜索失败: {str(e)}"
+    
+    def _tool_web_fetch(self, args: dict) -> str:
+        """获取网页内容 (简化版，提取主要文本)"""
+        import urllib.request
+        import urllib.parse
+        import re
+        from html.parser import HTMLParser
+        
+        url = args.get('url', '')
+        if not url:
+            raise ValueError("URL is required")
+        
+        # 确保 URL 有协议
+        if not url.startswith(('http://', 'https://')):
+            url = 'https://' + url
+        
+        try:
+            req = urllib.request.Request(url, headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            })
+            
+            with urllib.request.urlopen(req, timeout=15) as response:
+                # 检查内容类型
+                content_type = response.headers.get('Content-Type', '')
+                if 'text/html' not in content_type and 'text/plain' not in content_type:
+                    return f"无法读取此类型的内容: {content_type}"
+                
+                html = response.read().decode('utf-8', errors='ignore')
+            
+            # 简单的 HTML 文本提取
+            # 移除 script 和 style 标签
+            html = re.sub(r'<script[^>]*>[\s\S]*?</script>', '', html, flags=re.IGNORECASE)
+            html = re.sub(r'<style[^>]*>[\s\S]*?</style>', '', html, flags=re.IGNORECASE)
+            html = re.sub(r'<head[^>]*>[\s\S]*?</head>', '', html, flags=re.IGNORECASE)
+            
+            # 提取 title
+            title_match = re.search(r'<title[^>]*>([^<]*)</title>', html, re.IGNORECASE)
+            title = title_match.group(1).strip() if title_match else ''
+            
+            # 移除所有 HTML 标签
+            text = re.sub(r'<[^>]+>', ' ', html)
+            # 清理多余空白
+            text = re.sub(r'\s+', ' ', text).strip()
+            # 限制长度
+            text = text[:4000]
+            
+            result = f"URL: {url}\n"
+            if title:
+                result += f"标题: {title}\n"
+            result += f"\n内容摘要:\n{text}"
+            
+            return result
+            
+        except urllib.error.HTTPError as e:
+            return f"HTTP 错误 {e.code}: {e.reason}"
+        except urllib.error.URLError as e:
+            return f"无法访问 URL: {e.reason}"
+        except Exception as e:
+            return f"获取网页失败: {str(e)}"
     
     def _tool_save_memory(self, args: dict) -> str:
         """保存记忆到文件"""
@@ -1745,10 +1806,10 @@ You are DD-OS, a local AI operating system running directly on the user's comput
     
     # 🔌 初始化工具注册表
     registry = ToolRegistry(clawd_path)
-    # 注册 9 个内置工具
+    # 注册 10 个内置工具
     builtin_names = [
         'readFile', 'writeFile', 'appendFile', 'listDir', 'runCmd',
-        'weather', 'webSearch', 'saveMemory', 'searchMemory',
+        'weather', 'webSearch', 'webFetch', 'saveMemory', 'searchMemory',
     ]
     for name in builtin_names:
         registry.register_builtin(name, name)  # handler resolved at dispatch time

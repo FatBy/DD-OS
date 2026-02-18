@@ -599,7 +599,8 @@ class LocalClawService {
 
 ### 网络能力
 - weather: 查询天气 (参数: location)
-- webSearch: 网页搜索 (参数: query)`
+- webSearch: 网页搜索 (参数: query)
+- webFetch: 获取网页内容 (参数: url)`
     }
 
     const builtins = this.availableTools.filter(t => t.type === 'builtin')
