@@ -1802,6 +1802,9 @@ You are DD-OS, a local AI operating system running directly on the user's comput
     memory_dir = clawd_path / 'memory'
     memory_dir.mkdir(exist_ok=True)
     
+    skills_dir = clawd_path / 'skills'
+    skills_dir.mkdir(exist_ok=True)
+    
     cleanup_old_logs(clawd_path)
     
     # 🔌 初始化工具注册表

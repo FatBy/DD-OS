@@ -697,16 +697,25 @@ class LocalClawService {
       const skillsRes = await fetch(`${this.serverUrl}/skills`)
       if (skillsRes.ok) {
         const skills: OpenClawSkill[] = await skillsRes.json()
+        // 始终调用 setOpenClawSkills (即使空数组)，确保 channelsLoading 变为 false
+        this.storeActions?.setOpenClawSkills(skills)
         if (skills.length > 0) {
-          this.storeActions?.setOpenClawSkills(skills)
           localStorage.setItem('ddos_skills_json', JSON.stringify(skills))
           console.log(`[LocalClaw] ${skills.length} skills loaded to store`)
 
           // P1: 从 manifest.keywords 动态构建技能触发器
           this.buildSkillTriggersFromManifest(skills)
+        } else {
+          console.log('[LocalClaw] No skills found (empty array)')
         }
+      } else {
+        // API 失败也要设置空数组，解除 loading 状态
+        this.storeActions?.setOpenClawSkills([])
+        console.warn('[LocalClaw] Skills API returned non-OK status')
       }
     } catch (e) {
+      // 失败也要设置空数组，解除 loading 状态
+      this.storeActions?.setOpenClawSkills([])
       console.warn('[LocalClaw] Failed to load skills:', e)
     }
 
