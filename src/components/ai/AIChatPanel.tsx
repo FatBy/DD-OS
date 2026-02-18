@@ -10,7 +10,8 @@ import { ChatMessage, StreamingMessage } from './ChatMessage'
 import { ChatErrorBoundary } from './ChatErrorBoundary'
 
 export function AIChatPanel() {
-  const [isOpen, setIsOpen] = useState(false)
+  const isOpen = useStore((s) => s.isChatOpen)
+  const setIsOpen = useStore((s) => s.setChatOpen)
   const [input, setInput] = useState('')
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -86,19 +87,22 @@ export function AIChatPanel() {
         )}
       </AnimatePresence>
 
-      {/* 聊天面板 */}
+      {/* 聊天面板 - flex 布局子元素，推挤主内容区域 */}
       <AnimatePresence>
         {isOpen && (
           <motion.div
-            initial={{ opacity: 0, x: 300 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: 300 }}
+            initial={{ width: 0 }}
+            animate={{ width: 488 }}
+            exit={{ width: 0 }}
             transition={{ type: 'spring', damping: 25, stiffness: 300 }}
-            className="fixed right-4 bottom-4 top-4 w-[380px] z-[55]
-                       bg-slate-950/95 backdrop-blur-xl border border-white/10 rounded-2xl
-                       flex flex-col overflow-hidden
-                       shadow-[0_0_40px_rgba(0,0,0,0.5)]"
+            className="h-full shrink-0 overflow-hidden"
           >
+            <div className="w-[480px] h-full py-3 pr-3 pl-2 box-border">
+              <div
+                className="w-full h-full bg-slate-950/95 backdrop-blur-xl border border-white/10 rounded-2xl
+                           flex flex-col overflow-hidden
+                           shadow-[0_0_40px_rgba(0,0,0,0.5)]"
+              >
             {/* Header */}
             <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
               <div className="flex items-center gap-2">
@@ -245,6 +249,8 @@ export function AIChatPanel() {
                 </div>
               </div>
             )}
+              </div>
+            </div>
           </motion.div>
         )}
       </AnimatePresence>

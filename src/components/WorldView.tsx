@@ -150,7 +150,7 @@ export function WorldView() {
   }, [camera, nexuses, selectNexus, openNexusPanel])
 
   return (
-    <div className="fixed inset-0 overflow-hidden bg-black">
+    <div className="absolute inset-0 overflow-hidden bg-black">
       {/* Layer 0: 装饰性网格 (增加空间感，与 SoulOrb 风格统一) */}
       <div 
         className="absolute inset-0 z-0 pointer-events-none opacity-[0.06]"

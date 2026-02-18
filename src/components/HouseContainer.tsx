@@ -26,7 +26,7 @@ export function HouseContainer({ house, children }: HouseContainerProps) {
 
   return (
     <motion.div
-      className="fixed inset-0 z-10 flex items-center justify-center p-4 md:p-8"
+      className="absolute inset-0 z-10 flex items-center justify-center p-4 md:p-8"
       variants={houseVariants}
       initial="initial"
       animate="animate"
@@ -35,7 +35,7 @@ export function HouseContainer({ house, children }: HouseContainerProps) {
     >
       <GlassCard
         themeColor={house.themeColor}
-        className="w-[95vw] max-w-6xl h-[85vh] flex flex-col overflow-hidden"
+        className="w-full max-w-6xl h-[85vh] flex flex-col overflow-hidden"
       >
         {/* Title bar */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-white/10 shrink-0">

@@ -32,7 +32,7 @@ export function Dock() {
   const { currentView, setView } = useStore()
 
   return (
-    <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40">
+    <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-40">
       <motion.div
         className="flex items-end gap-1 px-4 py-3 bg-slate-900/60 backdrop-blur-2xl rounded-2xl border border-white/15 shadow-2xl"
         initial={{ y: 100, opacity: 0 }}

@@ -93,6 +93,10 @@ export interface AiSlice {
 
   // 冒险日志生成
   generateJournal: (memories: MemoryEntry[]) => Promise<void>
+
+  // 聊天面板开关
+  isChatOpen: boolean
+  setChatOpen: (open: boolean) => void
 }
 
 export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) => ({
@@ -106,6 +110,10 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
   chatError: null,
   _chatAbort: null,
   executionStatuses: initialChatHistory.statuses,
+
+  // 聊天面板开关
+  isChatOpen: false,
+  setChatOpen: (open) => set({ isChatOpen: open }),
 
   setLlmConfig: (config) => {
     saveLLMConfig(config)

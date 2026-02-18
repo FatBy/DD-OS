@@ -185,8 +185,21 @@ function App() {
     }
   }, [])
 
+  const isChatOpen = useStore((s) => s.isChatOpen)
+
+  // 聊天面板开关时触发 resize，让 Canvas 重新计算尺寸
+  useEffect(() => {
+    // 动画过程中多次触发 resize，确保 Canvas 平滑适应
+    const timers = [100, 300, 500].map(ms =>
+      setTimeout(() => window.dispatchEvent(new Event('resize')), ms)
+    )
+    return () => timers.forEach(clearTimeout)
+  }, [isChatOpen])
+
   return (
-    <div className="relative w-screen h-screen overflow-hidden bg-slate-950 text-white select-none">
+    <div className="flex w-screen h-screen overflow-hidden bg-slate-950 text-white select-none">
+      {/* Main content area */}
+      <div className="relative flex-1 min-w-0 h-full overflow-hidden">
       {/* Background layer: always present */}
       <ErrorBoundary>
         <WorldView />
@@ -206,8 +219,9 @@ function App() {
 
       {/* Connection control panel */}
       <ConnectionPanel />
+      </div>
 
-      {/* AI Chat panel */}
+      {/* AI Chat panel - flex sibling */}
       <AIChatPanel />
 
       {/* Observer: Nexus build proposal modal */}

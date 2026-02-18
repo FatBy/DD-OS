@@ -128,7 +128,7 @@ export function ConnectionPanel() {
   const recentLogs = logs.slice(-5).reverse()
 
   return (
-    <div className="fixed bottom-6 left-6 z-40">
+    <div className="absolute bottom-6 left-6 z-40">
       {/* 主状态栏 - 可点击展开 */}
       <motion.div
         className={cn(
