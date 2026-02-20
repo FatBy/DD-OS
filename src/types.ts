@@ -393,6 +393,12 @@ export interface ExecTrace {
   duration: number
   timestamp: number
   tags: string[]
+  // Observer 元数据 (用于模式分析)
+  turnCount?: number           // ReAct 循环轮次
+  errorCount?: number          // 失败的工具调用次数
+  retryCount?: number          // 重试次数
+  skillIds?: string[]          // 触发的技能 ID
+  activeNexusId?: string       // 执行时的活跃 Nexus
 }
 
 export interface ExecTraceToolCall {
@@ -448,8 +454,33 @@ export interface NexusEntity {
   createdAt: number
   // Phase 2: 涌现式 Nexus
   boundSkillId?: string     // 绑定的 Skill ID
+  boundSkillIds?: string[]  // 绑定的多个 Skill ID
   flavorText?: string       // LLM 生成的描述
   lastUsedAt?: number       // 最后使用时间（用于 XP 计算）
+  // Phase 3: 模型绑定
+  customModel?: {           // 自定义模型 (null = 使用全局配置)
+    baseUrl: string
+    model: string
+    apiKey?: string         // 空则用全局 key
+  }
+  // Phase 4: File-based Nexus (NEXUS.md)
+  sopContent?: string             // NEXUS.md Markdown 正文 (Mission + SOP)
+  skillDependencies?: string[]    // 依赖的 Skill ID 列表
+  triggers?: string[]             // 自动激活关键词
+  version?: string                // Nexus 版本
+  location?: 'local' | 'bundled'  // 来源
+  path?: string                   // 本地路径
+  // Phase 5: 目标函数驱动 (Objective-Driven Execution)
+  objective?: string              // 核心目标函数 (任务终点定义)
+  metrics?: string[]              // 验收标准 (布尔型检查点)
+  strategy?: string               // 动态调整策略 (失败时的重试方案)
+}
+
+// Nexus 经验记录
+export interface NexusExperience {
+  title: string
+  outcome: 'success' | 'failure'
+  content: string
 }
 
 export interface CameraState {
@@ -507,3 +538,163 @@ export interface UISettings {
   fontScale: number            // 0.8 - 1.5
   logExpanded: boolean         // 执行日志是否默认展开
 }
+
+// ============================================
+// 技能统计类型 (能力仪表盘)
+// ============================================
+
+// 单个技能的统计数据
+export interface SkillStats {
+  skillId: string              // 技能 ID
+  callCount: number            // 被 Agent 调用次数
+  activationCount: number      // 被用户主动激活次数
+  successCount: number         // 执行成功次数
+  failureCount: number         // 执行失败次数
+  lastUsedAt: number           // 最后使用时间戳
+  firstUsedAt: number          // 首次使用时间戳
+}
+
+// 能力域定义
+export type AbilityDomain = 'development' | 'creative' | 'system' | 'knowledge' | 'social' | 'security' | 'utility'
+
+// 能力域配置
+export interface AbilityDomainConfig {
+  id: AbilityDomain
+  name: string                 // 中文名
+  color: string                // 主题色
+  keywords: string[]           // 分类关键词
+}
+
+// 能力域统计
+export interface DomainStats {
+  domain: AbilityDomain
+  skillCount: number           // 该域技能数量
+  totalCalls: number           // 总调用次数
+  totalSuccess: number         // 总成功次数
+  successRate: number          // 成功率 (0-100)
+  abilityScore: number         // 能力评分
+  trend: 'up' | 'down' | 'stable'  // 趋势
+  trendPercent: number         // 趋势变化百分比
+}
+
+// 全局统计快照
+export interface AbilitySnapshot {
+  totalSkills: number          // 总技能数
+  totalScore: number           // 总能力分
+  domains: DomainStats[]       // 各域统计
+  recentActive: string[]       // 最近活跃技能 ID
+  weeklyGrowth: {
+    newSkills: number          // 新增技能数
+    scoreChange: number        // 分数变化
+    successRateChange: number  // 成功率变化
+  }
+  milestones: string[]         // 已达成里程碑
+  updatedAt: number            // 更新时间
+}
+
+// ============================================
+// EvoMap GEP-A2A 协议类型
+// ============================================
+
+// GEP-A2A 协议信封
+export interface GepA2AEnvelope {
+  protocol: 'gep-a2a'
+  protocol_version: string     // "1.0.0"
+  message_type: 'hello' | 'publish' | 'fetch' | 'report' | 'decision' | 'revoke'
+  message_id: string           // "msg_<timestamp>_<random_hex>"
+  sender_id: string            // "node_<node_id>"
+  timestamp: string            // ISO 8601 UTC
+  payload: Record<string, unknown>
+}
+
+// Hello 请求载荷
+export interface EvoMapHelloPayload {
+  capabilities: Record<string, unknown>
+  gene_count: number
+  capsule_count: number
+  env_fingerprint: {
+    platform: string
+    arch: string
+  }
+  webhook_url?: string
+}
+
+// Hello 响应
+export interface EvoMapHelloResponse {
+  status: 'acknowledged'
+  claim_code: string
+  claim_url: string
+}
+
+// Fetch 请求载荷
+export interface EvoMapFetchPayload {
+  asset_type?: 'Gene' | 'Capsule' | 'EvolutionEvent'
+  include_tasks?: boolean
+  limit?: number
+  since?: string  // ISO 8601
+}
+
+// 资产基础结构
+export interface EvoMapAsset {
+  asset_id: string              // SHA256 哈希
+  asset_type: 'Gene' | 'Capsule' | 'EvolutionEvent'
+  summary: string
+  confidence: number            // 0-1
+  blast_radius?: {
+    files: number
+    lines: number
+  }
+  signals_match?: string[]
+  created_at: string
+  status: 'candidate' | 'promoted' | 'revoked'
+}
+
+// Gene 资产
+export interface EvoMapGene extends EvoMapAsset {
+  asset_type: 'Gene'
+  strategy: string              // 策略描述
+  applicable_patterns: string[] // 适用场景
+}
+
+// Capsule 资产
+export interface EvoMapCapsule extends EvoMapAsset {
+  asset_type: 'Capsule'
+  implementation: string        // 实现细节
+  dependencies?: string[]       // 依赖的 Gene IDs
+  tool_chain?: string[]         // 使用的工具链
+}
+
+// Publish 请求载荷
+export interface EvoMapPublishPayload {
+  assets: EvoMapAsset[]         // Gene + Capsule + EvolutionEvent 捆绑
+}
+
+// Publish 响应
+export interface EvoMapPublishResponse {
+  status: 'accepted' | 'rejected'
+  asset_ids?: string[]
+  errors?: Array<{ asset_id: string; error: string }>
+}
+
+// 任务 (赏金)
+export interface EvoMapTask {
+  task_id: string
+  title: string
+  description: string
+  bounty_credits: number
+  required_reputation: number
+  deadline?: string
+  status: 'open' | 'claimed' | 'completed'
+}
+
+// EvoMap 节点状态
+export interface EvoMapNodeState {
+  sender_id: string
+  claim_code?: string
+  claim_url?: string
+  reputation: number            // 0-100
+  credits: number
+  registered_at: string
+  last_sync_at: string
+}
+
