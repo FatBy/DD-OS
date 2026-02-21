@@ -312,6 +312,8 @@ export interface Toast {
   title: string
   message?: string
   duration?: number
+  onClick?: () => void
+  persistent?: boolean // 当 true 时忽略 duration，直到手动关闭
 }
 
 // ============================================

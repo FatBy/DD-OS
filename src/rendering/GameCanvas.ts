@@ -64,6 +64,9 @@ interface RenderState {
   selectedNexusId: string | null
   renderSettings: RenderSettings
   energyCore?: EnergyCoreState
+  // 执行状态
+  executingNexusId?: string | null
+  executionStartTime?: number | null
 }
 
 // 兼容类型定义
@@ -458,7 +461,12 @@ export class GameCanvas {
       ctx.restore()
     }
 
-    // === 4. 标签 ===
+    // === 4. 执行中动画 ===
+    if (this.state.executingNexusId === nexus.id) {
+      this.renderExecutionAnimation(ctx, nexus, x, y, size, timestamp)
+    }
+
+    // === 5. 标签 ===
     if (this.state.renderSettings.showLabels && nexus.label) {
       ctx.fillStyle = isSelected ? 'rgba(255,255,255,0.9)' : 'rgba(200, 220, 255, 0.6)'
       ctx.font = `${isSelected ? 'bold ' : ''}${10 * zoom}px monospace`
@@ -562,6 +570,81 @@ export class GameCanvas {
       ctx.arc(sx, sy, 1.2, 0, Math.PI * 2)
       ctx.fill()
     }
+  }
+
+  // ---- 执行中的动画效果 (脉冲光环 + 旋转能量弧) ----
+
+  private renderExecutionAnimation(
+    ctx: CanvasRenderingContext2D,
+    nexus: NexusEntity,
+    x: number, y: number,
+    size: number,
+    timestamp: number,
+  ): void {
+    const { primaryHue: hue, accentHue } = nexus.visualDNA
+    const r = size * 0.5
+    const executionTime = this.state.executionStartTime
+      ? timestamp - this.state.executionStartTime
+      : 0
+
+    // 长时间执行警告 (>10秒 变黄色)
+    const isWarning = executionTime > 10000
+    const warningHue = isWarning ? 45 : hue // 黄色警告
+
+    // === 1. 外层脉冲光环 (600ms 周期) ===
+    const pulse = Math.sin(timestamp / 300) * 0.5 + 0.5 // 0-1 脉冲
+    const pulseR = r * (1.3 + pulse * 0.3)
+    const pulseAlpha = 0.3 + pulse * 0.3
+
+    const pulseGlow = ctx.createRadialGradient(x, y, r * 0.8, x, y, pulseR)
+    pulseGlow.addColorStop(0, `hsla(${warningHue}, 80%, 60%, ${pulseAlpha * 0.3})`)
+    pulseGlow.addColorStop(0.5, `hsla(${warningHue}, 80%, 60%, ${pulseAlpha * 0.15})`)
+    pulseGlow.addColorStop(1, `hsla(${warningHue}, 80%, 60%, 0)`)
+    ctx.fillStyle = pulseGlow
+    ctx.beginPath()
+    ctx.arc(x, y, pulseR, 0, Math.PI * 2)
+    ctx.fill()
+
+    // === 2. 旋转能量弧 (3 条弧线，2000ms 周期) ===
+    const rotationAngle = (timestamp / 2000) * Math.PI * 2
+    const arcR = r * 1.15
+
+    ctx.save()
+    ctx.translate(x, y)
+    ctx.rotate(rotationAngle)
+
+    for (let i = 0; i < 3; i++) {
+      const arcStartAngle = (Math.PI * 2 / 3) * i
+      const arcLength = Math.PI / 3 + Math.sin(timestamp / 400 + i) * 0.2
+
+      ctx.beginPath()
+      ctx.arc(0, 0, arcR, arcStartAngle, arcStartAngle + arcLength)
+      ctx.strokeStyle = `hsla(${accentHue}, 90%, 70%, ${0.6 + Math.sin(timestamp / 200 + i) * 0.2})`
+      ctx.lineWidth = 2
+      ctx.lineCap = 'round'
+      ctx.stroke()
+
+      // 弧线末端小光点
+      const endAngle = arcStartAngle + arcLength
+      const dotX = Math.cos(endAngle) * arcR
+      const dotY = Math.sin(endAngle) * arcR
+      ctx.fillStyle = `hsla(${accentHue}, 95%, 80%, 0.9)`
+      ctx.beginPath()
+      ctx.arc(dotX, dotY, 3, 0, Math.PI * 2)
+      ctx.fill()
+    }
+
+    ctx.restore()
+
+    // === 3. 中心微闪烁 ===
+    const centerFlicker = Math.sin(timestamp / 100) * 0.1 + 0.2
+    const centerGlow = ctx.createRadialGradient(x, y, 0, x, y, r * 0.4)
+    centerGlow.addColorStop(0, `hsla(${warningHue}, 90%, 80%, ${centerFlicker})`)
+    centerGlow.addColorStop(1, `hsla(${warningHue}, 90%, 80%, 0)`)
+    ctx.fillStyle = centerGlow
+    ctx.beginPath()
+    ctx.arc(x, y, r * 0.4, 0, Math.PI * 2)
+    ctx.fill()
   }
 
   // ================================================================

@@ -42,20 +42,31 @@ interface ToastItemProps {
   message?: string
   duration?: number
   onClose: (id: string) => void
+  onClick?: () => void
+  persistent?: boolean
 }
 
-function ToastItem({ id, type, title, message, duration = 4000, onClose }: ToastItemProps) {
+function ToastItem({ id, type, title, message, duration = 4000, onClose, onClick, persistent }: ToastItemProps) {
   const config = toastConfig[type]
   const Icon = config.icon
+  const isClickable = !!onClick
+  const effectiveDuration = persistent ? 0 : duration
 
   useEffect(() => {
-    if (duration > 0) {
+    if (effectiveDuration > 0) {
       const timer = setTimeout(() => {
         onClose(id)
-      }, duration)
+      }, effectiveDuration)
       return () => clearTimeout(timer)
     }
-  }, [id, duration, onClose])
+  }, [id, effectiveDuration, onClose])
+
+  const handleClick = () => {
+    if (onClick) {
+      onClick()
+      onClose(id)
+    }
+  }
 
   return (
     <motion.div
@@ -64,10 +75,12 @@ function ToastItem({ id, type, title, message, duration = 4000, onClose }: Toast
       animate={{ opacity: 1, x: 0, scale: 1 }}
       exit={{ opacity: 0, x: 50, scale: 0.9 }}
       transition={{ type: 'spring', stiffness: 300, damping: 25 }}
+      onClick={isClickable ? handleClick : undefined}
       className={cn(
         'relative w-80 p-4 rounded-xl border backdrop-blur-xl shadow-2xl',
         config.bgColor,
-        config.borderColor
+        config.borderColor,
+        isClickable && 'cursor-pointer hover:scale-[1.02] hover:brightness-110 transition-all'
       )}
     >
       <button
@@ -88,11 +101,16 @@ function ToastItem({ id, type, title, message, duration = 4000, onClose }: Toast
               {message}
             </p>
           )}
+          {isClickable && (
+            <p className="mt-1 text-xs text-white/30 italic">
+              点击查看详情
+            </p>
+          )}
         </div>
       </div>
 
       {/* 进度条 */}
-      {duration > 0 && (
+      {effectiveDuration > 0 && (
         <motion.div
           className={cn(
             'absolute bottom-0 left-0 h-0.5 rounded-b-xl',
@@ -100,7 +118,7 @@ function ToastItem({ id, type, title, message, duration = 4000, onClose }: Toast
           )}
           initial={{ width: '100%' }}
           animate={{ width: '0%' }}
-          transition={{ duration: duration / 1000, ease: 'linear' }}
+          transition={{ duration: effectiveDuration / 1000, ease: 'linear' }}
         />
       )}
     </motion.div>
@@ -123,6 +141,8 @@ export function ToastContainer() {
             message={toast.message}
             duration={toast.duration}
             onClose={removeToast}
+            onClick={toast.onClick}
+            persistent={toast.persistent}
           />
         ))}
       </AnimatePresence>

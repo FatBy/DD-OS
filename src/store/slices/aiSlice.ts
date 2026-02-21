@@ -81,6 +81,7 @@ export interface AiSlice {
   clearChat: () => void
   abortChat: () => void
   setChatContext: (view: ViewType) => void
+  addNexusActivationMessage: (nexusName: string, nexusDescription?: string) => void
 
   // AI 执行
   executionStatuses: Record<string, ExecutionStatus>
@@ -252,6 +253,12 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
           executionSteps: [],
         })
 
+        // 2.5. 启动 Nexus 执行状态 (如果有激活的 Nexus)
+        const activeNexusId = fullState.activeNexusId
+        if (activeNexusId) {
+          fullState.startNexusExecution?.(activeNexusId)
+        }
+
         // 3. 直接调用 ReAct 循环
         try {
           const result = await localClawService.sendMessage(
@@ -289,6 +296,27 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
           })
           persistChatState(get().chatMessages, get().executionStatuses)
 
+          // 5. 完成 Nexus 执行状态 + 发送 Toast 通知
+          const executingNexusId = fullState.executingNexusId
+          if (executingNexusId) {
+            fullState.completeNexusExecution?.(executingNexusId, {
+              status: 'success',
+              output: result.slice(0, 200), // 截断避免过长
+            })
+            // 成功 Toast 通知，点击打开 Nexus 面板
+            const nexus = fullState.nexuses?.get(executingNexusId)
+            fullState.addToast?.({
+              type: 'success',
+              title: `${nexus?.label || 'Nexus'} 执行完成`,
+              message: '任务已成功完成',
+              duration: 6000,
+              onClick: () => {
+                fullState.selectNexus?.(executingNexusId)
+                fullState.openNexusPanel?.()
+              },
+            })
+          }
+
         } catch (err: any) {
           const execDuration = Date.now() - execStartTime
           set((s) => ({
@@ -310,6 +338,27 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
             executionDuration: execDuration,
           })
           persistChatState(get().chatMessages, get().executionStatuses)
+
+          // 完成 Nexus 执行状态 + 发送错误 Toast 通知
+          const executingNexusId = fullState.executingNexusId
+          if (executingNexusId) {
+            fullState.completeNexusExecution?.(executingNexusId, {
+              status: 'error',
+              error: err.message,
+            })
+            const nexus = fullState.nexuses?.get(executingNexusId)
+            fullState.addToast?.({
+              type: 'error',
+              title: `${nexus?.label || 'Nexus'} 执行失败`,
+              message: err.message.slice(0, 80),
+              duration: 8000,
+              persistent: true,
+              onClick: () => {
+                fullState.selectNexus?.(executingNexusId)
+                fullState.openNexusPanel?.()
+              },
+            })
+          }
         }
 
         // Observer 集成：记录用户行为，异步分析会自动触发
@@ -524,6 +573,18 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
   },
 
   setChatContext: (view) => set({ chatContext: view }),
+
+  addNexusActivationMessage: (nexusName, nexusDescription) => {
+    const systemMsg: ChatMessage = {
+      id: `nexus-activate-${Date.now()}`,
+      role: 'assistant',
+      content: `🌟 **Nexus "${nexusName}" 已激活**\n\n${nexusDescription ? `> ${nexusDescription}\n\n` : ''}请输入你想要执行的任务，我会按照这个 Nexus 的 SOP 来协助你完成。`,
+      timestamp: Date.now(),
+    }
+    set((state) => ({
+      chatMessages: [...state.chatMessages, systemMsg],
+    }))
+  },
 
   updateExecutionStatus: (id, updates) => {
     set((state) => {

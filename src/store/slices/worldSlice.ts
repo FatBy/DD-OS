@@ -16,7 +16,7 @@ const TILE_WIDTH = 128
 const TILE_HEIGHT = 64
 
 // 简易同步哈希 -> VisualDNA (不依赖 crypto.subtle)
-function simpleVisualDNA(id: string, archetype: NexusArchetype): VisualDNA {
+export function simpleVisualDNA(id: string, archetype: NexusArchetype): VisualDNA {
   let hash = 0
   for (let i = 0; i < id.length; i++) {
     hash = ((hash << 5) - hash + id.charCodeAt(i)) | 0
@@ -34,28 +34,37 @@ function simpleVisualDNA(id: string, archetype: NexusArchetype): VisualDNA {
   }
 }
 
-// 初始演示建筑
+// 初始状态: 空世界，等待 Observer 涌现
 function createDemoNexuses(): Map<string, NexusEntity> {
-  const map = new Map<string, NexusEntity>()
-  const demos: Array<{ id: string; arch: NexusArchetype; gx: number; gy: number; lv: number; xp: number }> = [
-    { id: 'demo-monolith', arch: 'MONOLITH', gx: 0, gy: 0, lv: 3, xp: 120 },
-    { id: 'demo-spire', arch: 'SPIRE', gx: 5, gy: 2, lv: 2, xp: 40 },
-    { id: 'demo-reactor', arch: 'REACTOR', gx: -4, gy: 4, lv: 4, xp: 600 },
-    { id: 'demo-vault', arch: 'VAULT', gx: 2, gy: -4, lv: 1, xp: 5 },
+  return new Map<string, NexusEntity>()
+}
+
+// 用于从服务器数据自动分配 grid 位置
+let nextGridSlot = 0
+function assignGridPosition(): GridPosition {
+  const positions: GridPosition[] = [
+    { gridX: 3, gridY: -2 },
+    { gridX: -2, gridY: 3 },
+    { gridX: 4, gridY: 1 },
+    { gridX: -1, gridY: -3 },
+    { gridX: 0, gridY: 4 },
+    { gridX: 5, gridY: -1 },
+    { gridX: -3, gridY: 0 },
+    { gridX: 2, gridY: 5 },
   ]
-  for (const d of demos) {
-    map.set(d.id, {
-      id: d.id,
-      archetype: d.arch,
-      position: { gridX: d.gx, gridY: d.gy },
-      level: d.lv,
-      xp: d.xp,
-      visualDNA: simpleVisualDNA(d.id, d.arch),
-      constructionProgress: 1,
-      createdAt: Date.now(),
-    })
-  }
-  return map
+  const pos = positions[nextGridSlot % positions.length]
+  nextGridSlot++
+  return pos
+}
+
+// 执行结果类型
+export interface NexusExecutionResult {
+  nexusId: string
+  nexusName: string
+  status: 'success' | 'error'
+  output?: string
+  error?: string
+  timestamp: number
 }
 
 export interface WorldSlice {
@@ -63,7 +72,12 @@ export interface WorldSlice {
   nexuses: Map<string, NexusEntity>
   camera: CameraState
   selectedNexusId: string | null
+  activeNexusId: string | null
   renderSettings: RenderSettings
+  // 执行状态追踪
+  executingNexusId: string | null
+  executionStartTime: number | null
+  lastExecutionResult: NexusExecutionResult | null
 
   // Nexus Actions
   addNexus: (nexus: NexusEntity) => void
@@ -71,6 +85,8 @@ export interface WorldSlice {
   updateNexusXP: (id: string, xp: number) => void
   updateNexusPosition: (id: string, position: GridPosition) => void
   selectNexus: (id: string | null) => void
+  setActiveNexus: (id: string | null) => void
+  setNexusesFromServer: (nexuses: Array<Partial<NexusEntity> & { id: string; name?: string; description?: string; sopContent?: string }>) => void
   tickConstructionAnimations: (deltaMs: number) => void
 
   // Camera Actions
@@ -81,6 +97,10 @@ export interface WorldSlice {
 
   // Settings
   setRenderSettings: (settings: Partial<RenderSettings>) => void
+
+  // Execution Actions
+  startNexusExecution: (nexusId: string) => void
+  completeNexusExecution: (nexusId: string, result: Omit<NexusExecutionResult, 'nexusId' | 'nexusName' | 'timestamp'>) => void
 }
 
 export const createWorldSlice: StateCreator<WorldSlice> = (set, get) => ({
@@ -88,12 +108,17 @@ export const createWorldSlice: StateCreator<WorldSlice> = (set, get) => ({
   nexuses: createDemoNexuses(),
   camera: { x: 0, y: 0, zoom: 1 },
   selectedNexusId: null,
+  activeNexusId: null,
   renderSettings: {
     showGrid: true,
     showParticles: true,
     showLabels: true,
     enableGlow: true,
   },
+  // 执行状态初始值
+  executingNexusId: null,
+  executionStartTime: null,
+  lastExecutionResult: null,
 
   // ---- Nexus Actions ----
 
@@ -109,6 +134,7 @@ export const createWorldSlice: StateCreator<WorldSlice> = (set, get) => ({
     return {
       nexuses: next,
       selectedNexusId: state.selectedNexusId === id ? null : state.selectedNexusId,
+      activeNexusId: state.activeNexusId === id ? null : state.activeNexusId,
     }
   }),
 
@@ -130,6 +156,65 @@ export const createWorldSlice: StateCreator<WorldSlice> = (set, get) => ({
   }),
 
   selectNexus: (id) => set({ selectedNexusId: id }),
+
+  setActiveNexus: (id) => set({ activeNexusId: id }),
+
+  setNexusesFromServer: (nexuses) => set((state) => {
+    const next = new Map(state.nexuses)
+    for (const serverNexus of nexuses) {
+      const existing = next.get(serverNexus.id)
+      const archetype = (serverNexus.archetype || 'REACTOR') as NexusArchetype
+      const xp = serverNexus.xp || 0
+
+      // 构建 VisualDNA：优先使用服务器提供的 visual_dna，否则从 ID 生成
+      let visualDNA: VisualDNA
+      const serverVDNA = serverNexus.visualDNA
+      if (serverVDNA && typeof serverVDNA === 'object' && 'primaryHue' in serverVDNA) {
+        visualDNA = {
+          primaryHue: serverVDNA.primaryHue ?? 180,
+          primarySaturation: serverVDNA.primarySaturation ?? 70,
+          primaryLightness: serverVDNA.primaryLightness ?? 50,
+          accentHue: serverVDNA.accentHue ?? 240,
+          archetype,
+          textureMode: serverVDNA.textureMode ?? 'solid',
+          glowIntensity: serverVDNA.glowIntensity ?? 0.7,
+          geometryVariant: serverVDNA.geometryVariant ?? 0,
+        }
+      } else {
+        visualDNA = existing?.visualDNA || simpleVisualDNA(serverNexus.id, archetype)
+      }
+
+      next.set(serverNexus.id, {
+        // 保留前端已有的状态 (position, constructionProgress 等)
+        ...existing,
+        // 从服务器合并的数据
+        id: serverNexus.id,
+        archetype,
+        position: existing?.position || assignGridPosition(),
+        level: xpToLevel(xp),
+        xp,
+        visualDNA,
+        label: serverNexus.label || serverNexus.name || serverNexus.id,
+        constructionProgress: existing?.constructionProgress ?? 1,
+        createdAt: existing?.createdAt || Date.now(),
+        // 映射 skillDependencies 到 boundSkillIds
+        boundSkillIds: serverNexus.skillDependencies || serverNexus.boundSkillIds || [],
+        flavorText: serverNexus.flavorText || serverNexus.description || '',
+        // Phase 4: File-based Nexus fields
+        sopContent: serverNexus.sopContent,
+        skillDependencies: serverNexus.skillDependencies,
+        triggers: serverNexus.triggers,
+        version: serverNexus.version,
+        location: serverNexus.location,
+        path: serverNexus.path,
+        // Phase 5: 目标函数驱动 (Objective-Driven Execution)
+        objective: serverNexus.objective,
+        metrics: serverNexus.metrics,
+        strategy: serverNexus.strategy,
+      })
+    }
+    return { nexuses: next }
+  }),
 
   tickConstructionAnimations: (deltaMs) => set((state) => {
     let changed = false
@@ -181,4 +266,29 @@ export const createWorldSlice: StateCreator<WorldSlice> = (set, get) => ({
   setRenderSettings: (settings) => set((state) => ({
     renderSettings: { ...state.renderSettings, ...settings },
   })),
+
+  // ---- Execution Actions ----
+
+  startNexusExecution: (nexusId) => set({
+    executingNexusId: nexusId,
+    executionStartTime: Date.now(),
+  }),
+
+  completeNexusExecution: (nexusId, result) => set((state) => {
+    // 仅当完成的是当前正在执行的 Nexus 时才更新
+    if (state.executingNexusId !== nexusId) return state
+    const nexus = state.nexuses.get(nexusId)
+    return {
+      executingNexusId: null,
+      executionStartTime: null,
+      lastExecutionResult: {
+        nexusId,
+        nexusName: nexus?.label || nexusId,
+        status: result.status,
+        output: result.output,
+        error: result.error,
+        timestamp: Date.now(),
+      },
+    }
+  }),
 })

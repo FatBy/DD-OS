@@ -15,6 +15,10 @@ export function WorldView() {
   const selectNexus = useStore((s) => s.selectNexus)
   const openNexusPanel = useStore((s) => s.openNexusPanel)
 
+  // 执行状态追踪
+  const executingNexusId = useStore((s) => s.executingNexusId)
+  const executionStartTime = useStore((s) => s.executionStartTime)
+
   // 新增：Soul 数据订阅
   const soulIdentity = useStore((s) => s.soulIdentity)
   const soulCoreTruths = useStore((s) => s.soulCoreTruths)
@@ -74,8 +78,10 @@ export function WorldView() {
     engineRef.current?.updateState({
       nexuses, camera, selectedNexusId, renderSettings,
       energyCore: energyCoreState,
+      executingNexusId,
+      executionStartTime,
     })
-  }, [nexuses, camera, selectedNexusId, renderSettings, energyCoreState])
+  }, [nexuses, camera, selectedNexusId, renderSettings, energyCoreState, executingNexusId, executionStartTime])
 
   // ---- 鼠标交互 ----
 
