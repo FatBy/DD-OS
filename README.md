@@ -1,108 +1,112 @@
 <div align="center">
 
-🌌 DD-OS — Digital Dimension Operating System
+# <img width="50" height="50" alt="Gemini_Generated_Image_yuphzayuphzayuph(1)" src="https://github.com/user-attachments/assets/89ec1d77-3614-4ff8-bd06-162bad8210c6" />  DD-OS
 
-Build your LLM-driven world.
+### Digital Dimension Operating System
+
+*Build your LLM-driven world. Shatter the chatbox.*
+
+[Website](https://github.com/FatBy/dd-os) • [Docs](https://github.com/FatBy/dd-os/wiki) • [World View](https://github.com/FatBy/dd-os/wiki/WorldView) • [Skills Hub](https://github.com/FatBy/dd-os/tree/main/skills) • [Discord](https://discord.gg/ddos)
 
 </div>
 
-"LLMs are the emergence of data intelligence, while Agents are the emergence of tool intelligence."
+> **"LLMs are the emergence of data intelligence, while Agents are the emergence of tool intelligence."**
 
-INITIALIZE! IMMERSE!
+**DD-OS** is a personal, spatial AI operating system that runs entirely on your local devices. It moves beyond the traditional 2D chatbot interface, rendering a live, interconnected **WorldView** canvas. By leveraging the native **Model Context Protocol (MCP)** and a Turing-complete **Prose Workflow Engine**, DD-OS seamlessly connects LLMs to your actual file system, browser, and enterprise apps (Slack, Notion, GitHub).
 
-If GPT and Claude compressed humanity's vast data into sparks of intelligence, then the mission of DD-OS is to weave the scattered tools in your system into a fully automated execution network.
+If you want an AI assistant that doesn't just "talk" but actively "executes" complex, multi-step workflows on your local machine—this is it.
 
-DD-OS is a next-generation spatial Agent Operating System running on your local device. It is not satisfied with being just a "brain" spitting out text in a chat box. Through the native MCP (Model Context Protocol) and the Turing-complete Prose Workflow Engine, it allows AI to truly take over your file system, browser, enterprise collaboration software, and development environment—bridging the gap from "conversation" to "execution."
+## ✨ Highlights
 
-Website · Docs · World View · Wiki · Getting Started · Skills Hub · FAQ
+* **Local-First Gateway** — A single control plane (`ddos-local-server.py`) managing all WebSocket sessions, LLM routing, and MCP tool execution safely on your loopback address.
 
-🔮 The Nexus: Spatial Entities of Intelligence
+* **The Spatial Nexus** — No more "files" or "folders". Every asset, agent, and background task is an interconnected node (Nexus) inside an immersive React-based spatial canvas.
 
-DD-OS completely discards the "file-folder" tree metaphor that has persisted since Windows 95. Here, all digital assets, Agents, and executing tasks are represented as visual Nexus (Hub Nodes) within the immersive WorldView canvas.
+* **Prose Workflow Engine (`.prose`)** — Eliminate LLM hallucinations on complex tasks. Abstract multi-step logic (e.g., *Parallel PR Reviews*, *Recursive Self-Refinement*) into traceable, code-level pipelines.
 
-From "New Folder" to "Build Proposal": When you want to launch a new project (e.g., "Draft a deep business strategy analysis" or "Develop a frontend component"), you don't create a file in a cold system. Instead, you instantiate a new Nexus on the digital canvas via the BuildProposalModal.
+* **Native MCP Skills Matrix** — Out-of-the-box integration with the tools you already use. Mount capabilities on demand:
 
-Holographic Control Panel: Every Nexus is a living entity. Click into it, and it can be an execution container mounting a specific .prose workflow, or a daemon listening to external events (like Feishu/GitHub).
+  * **Workspace**: Notion, Obsidian, Local File Systems.
 
-Topology & Neural Links: Memory, Skills, and Tasks orbit the core Nexus, establishing connections between them. The flow of data is rendered in real-time before your eyes through Matrix Rain (MatrixRain) and dynamic Radar Charts (RadarChart).
+  * **DevOps**: Code Search, GitHub Issues/PRs, Tmux, Code Runner.
 
-Your desktop is no longer a dead plane storing shortcuts, but a dynamically evolving neural network resembling a star map.
+  * **Automation**: Headless Browser Control, Apple Script, 1Password.
 
-⚡ Core Evolution: Tool Emergence & Order Reconstruction
+## 🕹️ Quick Start (TL;DR)
 
-1. 🛠️ The Gateway of Tool Emergence: MCP Skills Matrix
+**Prerequisites**: `Node.js ≥ 20`, `Python ≥ 3.10`.
 
-In the skills/ directory, we have built-in and standardized massive capabilities. The Agent is no longer isolated; it can mount these tools on demand at any time:
+DD-OS runs with a decoupled frontend (React) and backend (Python gateway).
 
-Dev Environments: Code Search (cross-file semantic retrieval), Tmux terminal control, GitHub Issues/PRs deep integration.
+### 1. Start the Local Control Plane (Frontend)
 
-Enterprise Collaboration: Feishu (Docs/Wiki/Drive deep integration), Slack, Discord communication.
-
-Information Throughput: Browser Automation (headless browser), 1Password credential management, local file-level native read/write.
-
-2. 📝 The Order Builder: Prose Workflow Engine
-
-To ensure "tool emergence" is controllable and stable, DD-OS invented the .prose script engine (located in skills/prose/). It allows you to abstract complex business logic into reusable pipelines:
-
-Concurrent Execution: 16-parallel-reviews.prose (Multi-Agent parallel code review).
-
-Recursive Self-Correction: 40-rlm-self-refine.prose (Result filtering and self-iteration).
-
-Full-Chain Orchestration: From cross-platform data retrieval and cleaning, to cross-validation, to final text generation. No black boxes; every execution step is traceable.
-
-🚀 Quick Start
-
-Dependencies: Node.js ≥ 20, Python ≥ 3.10
-
-DD-OS adopts a frontend-backend separated architecture: the frontend provides holographic visual interaction, while the backend provides a secure sandbox environment and system-level permissions.
-
-1. Launch the Local Control Plane Frontend (Vite + React)
-
+```bash
 git clone [https://github.com/FatBy/dd-os.git](https://github.com/FatBy/dd-os.git)
 cd dd-os
-npm install  # or pnpm install
+
+npm install
 npm run dev
+```
 
+### 2. Ignite the Core Engine (Backend)
 
-2. Launch the Core Engine & MCP Gateway (Local Server)
+Open a new terminal session. We strongly recommend using a virtual Python environment.
 
-# Running in a virtual environment is recommended
+```bash
+cd dd-os
+
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
 pip install -r requirements.txt
 python ddos-local-server.py
+```
 
+*Access `http://localhost:5173` in your browser to enter the dimension.*
 
-Now, visit http://localhost:5173, and you will enter an immersive digital dimension featuring Soul Orbs (SoulOrb) and dynamic waveforms (WaveformBar).
+## 🛡️ Security Defaults (Important)
 
-🛡️ Local-First & Security Sandbox
+DD-OS connects to your real file system and enterprise surfaces. **Treat all external inbound prompts as untrusted input.**
 
-Because the Agent has the ability to touch real physical tools, security is DD-OS's top priority.
+* **Strict Approval Gate**: Any destructive or system-level tool calls (e.g., executing bash commands, deleting files) are intercepted by the `ApprovalModal` on the frontend, requiring explicit human consent.
 
-Interception & Authorization: All tool calls involving underlying system modifications (like file deletion or command execution) will trigger an ApprovalModal interception on the frontend, waiting for human explicit approval.
+* **Environment Isolation**: All API keys and tokens must be stored in your local `.env` file. The local server binds to `127.0.0.1` by default and refuses public ingress unless explicitly configured via reverse proxy.
 
-Data Isolation: All keys and Tokens are strictly stored in local .env files. The gateway engine runs on local loopback, refusing unauthorized public network penetration.
+* **Health Check**: Run `python ddos-local-server.py --doctor` to surface any risky or misconfigured workspace policies.
 
-Run python ddos-local-server.py --doctor to perform a one-click audit of running environment permissions and security risks.
+## 🗺️ How it works (Architecture)
 
-📖 Documentation & Wiki
+```text
+  GitHub / Slack / Notion / Chrome / Local Bash
+               │
+               ▼  (Mapped via MCP Standard Protocol)
+┌───────────────────────────────┐
+│     Local Server Manager      │  <-- Tool Emergence Layer (Executor)
+│      (Python / MCP Host)      │
+└──────────────┬────────────────┘
+               │  (Zustand State & Websocket)
+┌──────────────┴────────────────┐
+│      Prose Workflow Engine    │  <-- Order Builder Layer (Orchestrator)
+│   (Pipelines & Error Retries) │
+└──────────────┬────────────────┘
+               │
+      [DeepSeek / Local Models] <-- Data Emergence Layer (The Brain)
+```
 
-For a deeper dive into the system architecture, how to write your own .prose workflows, and managing your SoulHouse personas, please visit our GitHub Wiki.
+## 📖 Deep Dives & Documentation
 
-Understanding Prose Workflows
+Use these guides when you're past the onboarding flow and want to deeply customize your dimension:
 
-Creating Custom MCP Skills
+* [**Platform Architecture**](https://github.com/FatBy/dd-os/wiki/Architecture) — Understand the Gateway WebSocket network and WorldView topologies.
 
-WorldView & Nexus Architecture
+* [**Writing Prose Workflows**](https://github.com/FatBy/dd-os/tree/main/skills/prose/lib) — How to write `.prose` files to orchestrate parallel agents.
 
-🤝 Contributing (Join the Dimension)
+* [**Creating Custom MCP Skills**](https://github.com/FatBy/dd-os/tree/main/skills/skill-creator) — A guide to wrapping your own Python/Node scripts into DD-OS skills.
 
-This LLM-driven world has just completed its initialization.
+* [**The Soul & Memory Houses**](https://github.com/FatBy/dd-os/wiki/Houses) — How to configure long-term memory and distinct personas for your agents.
 
-DD-OS is by no means a closed system. We look forward to more developers, creators, researchers, and explorers joining us. Whether it's writing a brand new MCP skill, sharing a brilliant .prose workflow you've refined, or optimizing the holographic rendering of WorldView, you are warmly welcome.
+## 🤝 Community & Contributing
 
-Please read our CONTRIBUTING.md for details on our code of conduct, and the process for submitting pull requests to us.
+DD-OS is built for those who want to shatter the chatbox and build real automated workflows. We welcome all AI/vibe-coded PRs! 🤖
 
-Feel free to submit PRs or share your inspirations in our Discord. Let's perfect this emerging new dimension together.
-
-<div align="center">
-<i>Built with 🌌 by the DD-OS Community</i>
-</div>
+See [**CONTRIBUTING.md**](https://github.com/FatBy/dd-os/blob/main/CONTRIBUTING.md) for guidelines on code style, UI standards (Tailwind/MatrixRain effects), and how to submit pull requests.
