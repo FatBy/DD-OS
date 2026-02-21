@@ -235,7 +235,7 @@ export function SoulOrb({ identity, skills = [], complexity = 50, activity = 0.5
               </h2>
               <div className="flex items-center justify-center gap-3 mt-2 opacity-70">
                 <span className="h-[1px] w-8 bg-cyan-400"></span>
-                <p className="text-[10px] font-mono text-cyan-200 uppercase tracking-widest">
+                <p className="text-[13px] font-mono text-cyan-200 uppercase tracking-widest">
                   Soul Core Active
                 </p>
                 <span className="h-[1px] w-8 bg-cyan-400"></span>

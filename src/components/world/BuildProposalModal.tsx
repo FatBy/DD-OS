@@ -151,7 +151,7 @@ export function BuildProposalModal() {
               
               {/* 触发证据 */}
               <div className="mb-6 p-3 bg-white/5 rounded-lg border border-white/5">
-                <p className="text-[10px] font-mono text-white/40 mb-2">检测依据：</p>
+                <p className="text-[13px] font-mono text-white/40 mb-2">检测依据：</p>
                 <div className="space-y-1">
                   {currentProposal.triggerPattern.evidence.slice(0, 3).map((ev, i) => (
                     <p key={i} className="text-xs font-mono text-white/60 truncate">
@@ -159,7 +159,7 @@ export function BuildProposalModal() {
                     </p>
                   ))}
                 </div>
-                <p className="text-[10px] font-mono text-white/30 mt-2">
+                <p className="text-[13px] font-mono text-white/30 mt-2">
                   置信度: {Math.round(currentProposal.triggerPattern.confidence * 100)}%
                 </p>
               </div>

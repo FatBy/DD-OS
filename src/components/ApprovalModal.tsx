@@ -2,12 +2,14 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { AlertTriangle, X, ShieldAlert, ShieldCheck, Terminal } from 'lucide-react'
 import { useStore } from '@/store'
 import { cn } from '@/utils/cn'
+import { useT } from '@/i18n'
 
 /**
  * P3: 危险操作审批弹窗
  * 当 Agent 尝试执行危险命令时，暂停执行并让用户确认
  */
 export function ApprovalModal() {
+  const t = useT()
   const pendingApproval = useStore((s) => s.pendingApproval)
   const respondToApproval = useStore((s) => s.respondToApproval)
 
@@ -53,12 +55,11 @@ export function ApprovalModal() {
                 : 'border border-amber-500/30'
             )}
           >
-            {/* 头部 - 脉冲边框效果 */}
+            {/* 头部 */}
             <div className={cn(
               'relative flex items-center justify-between p-4 border-b',
               isCritical ? 'border-red-500/30 bg-red-500/10' : 'border-amber-500/20 bg-amber-500/5'
             )}>
-              {/* 脉冲动画 */}
               <motion.div
                 animate={{ opacity: [0.3, 0.6, 0.3] }}
                 transition={{ duration: 2, repeat: Infinity }}
@@ -78,7 +79,7 @@ export function ApprovalModal() {
                   'font-mono text-sm font-semibold',
                   isCritical ? 'text-red-400' : 'text-amber-400'
                 )}>
-                  {isCritical ? '危险操作警告' : '操作确认'}
+                  {isCritical ? t('approval.critical') : t('approval.normal')}
                 </span>
               </div>
 
@@ -92,7 +93,6 @@ export function ApprovalModal() {
 
             {/* 内容 */}
             <div className="p-6 space-y-4">
-              {/* 风险说明 */}
               <div className="flex items-start gap-3">
                 <div className={cn(
                   'p-2 rounded-lg',
@@ -105,7 +105,7 @@ export function ApprovalModal() {
                 </div>
                 <div className="flex-1">
                   <p className="text-sm text-white/90 font-medium">
-                    Agent 请求执行以下操作：
+                    {t('approval.request')}
                   </p>
                   <p className={cn(
                     'text-xs mt-1',
@@ -124,9 +124,9 @@ export function ApprovalModal() {
                   : 'bg-amber-950/30 border border-amber-500/20'
               )}>
                 <div className="flex items-center gap-2 mb-2 text-white/50">
-                  <span className="text-[10px] uppercase tracking-wider">工具</span>
+                  <span className="text-[13px] uppercase tracking-wider">{t('approval.tool')}</span>
                   <span className={cn(
-                    'px-1.5 py-0.5 rounded text-[10px]',
+                    'px-1.5 py-0.5 rounded text-[13px]',
                     isCritical ? 'bg-red-500/20 text-red-400' : 'bg-amber-500/20 text-amber-400'
                   )}>
                     {pendingApproval.toolName}
@@ -137,9 +137,9 @@ export function ApprovalModal() {
                 </pre>
               </div>
 
-              {/* 风险等级标签 */}
+              {/* 风险等级 */}
               <div className="flex items-center gap-2">
-                <span className="text-xs text-white/40">风险等级：</span>
+                <span className="text-xs text-white/40">{t('approval.risk')}</span>
                 <span className={cn(
                   'px-2 py-1 rounded text-xs font-mono',
                   isCritical 
@@ -148,8 +148,8 @@ export function ApprovalModal() {
                 )}>
                   {isCritical ? 'CRITICAL' : 'HIGH'}
                 </span>
-                <span className="text-[10px] text-white/30 ml-auto">
-                  60秒后自动拒绝
+                <span className="text-[13px] text-white/30 ml-auto">
+                  {t('approval.auto_reject')}
                 </span>
               </div>
             </div>
@@ -163,7 +163,7 @@ export function ApprovalModal() {
                          transition-colors flex items-center justify-center gap-2"
               >
                 <X className="w-4 h-4" />
-                拒绝
+                {t('approval.reject')}
               </button>
               <button
                 onClick={() => respondToApproval(true)}
@@ -176,7 +176,7 @@ export function ApprovalModal() {
                 )}
               >
                 <ShieldCheck className="w-4 h-4" />
-                批准执行
+                {t('approval.approve')}
               </button>
             </div>
           </motion.div>

@@ -14,16 +14,16 @@ import { chat, getLLMConfig } from '@/services/llmService'
 // ============================================
 
 const BEHAVIOR_WINDOW_SIZE = 50        // 保留最近 N 条行为记录
-const ANALYSIS_COOLDOWN_MS = 30000     // 分析冷却 (30秒)
-const CONFIDENCE_THRESHOLD = 0.6       // 触发置信度阈值
+const ANALYSIS_COOLDOWN_MS = 20000     // 分析冷却 (20秒，原 30秒)
+const CONFIDENCE_THRESHOLD = 0.5       // 触发置信度阈值 (原 0.6)
 
 // 规则引擎阈值
 const RULE_ENGINE = {
-  FREQUENCY_THRESHOLD: 5,         // 同一工具调用 5+ 次触发
-  FREQUENCY_DAYS: 3,              // 在 3 天内
-  COMPLEXITY_TURNS: 10,           // 单次执行超过 10 轮视为复杂
-  DEPENDENCY_MIN_OCCURRENCES: 3,  // 工具链出现 3+ 次
-  MIN_TRACES_FOR_ANALYSIS: 5,     // 至少 5 条执行记录才分析
+  FREQUENCY_THRESHOLD: 3,         // 同一工具调用 3+ 次触发 (原 5)
+  FREQUENCY_DAYS: 7,              // 在 7 天内 (原 3)
+  COMPLEXITY_TURNS: 8,            // 单次执行超过 8 轮视为复杂 (原 10)
+  DEPENDENCY_MIN_OCCURRENCES: 2,  // 工具链出现 2+ 次 (原 3)
+  MIN_TRACES_FOR_ANALYSIS: 3,     // 至少 3 条执行记录才分析 (原 5)
 }
 
 // 后端 API

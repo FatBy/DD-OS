@@ -29,7 +29,7 @@ export class ChatErrorBoundary extends Component<Props, State> {
         <div className="flex flex-col items-center justify-center h-full p-6 text-center">
           <AlertCircle className="w-8 h-8 text-red-400/50 mb-3" />
           <p className="text-xs font-mono text-red-400/70 mb-2">渲染出错</p>
-          <p className="text-[10px] font-mono text-white/30 mb-4 max-w-[200px] break-all">
+          <p className="text-[13px] font-mono text-white/30 mb-4 max-w-[200px] break-all">
             {this.state.error}
           </p>
           <button

@@ -14,6 +14,7 @@ export function WorldView() {
   const setZoom = useStore((s) => s.setZoom)
   const selectNexus = useStore((s) => s.selectNexus)
   const openNexusPanel = useStore((s) => s.openNexusPanel)
+  const tickConstructionAnimations = useStore((s) => s.tickConstructionAnimations)
 
   // 执行状态追踪
   const executingNexusId = useStore((s) => s.executingNexusId)
@@ -105,6 +106,22 @@ export function WorldView() {
   useEffect(() => {
     engineRef.current?.setWorldTheme(worldTheme)
   }, [worldTheme])
+
+  // 建造动画 tick (持续推进 constructionProgress)
+  useEffect(() => {
+    let lastTime = performance.now()
+    let animId: number
+    
+    const tick = (now: number) => {
+      const deltaMs = now - lastTime
+      lastTime = now
+      tickConstructionAnimations(deltaMs)
+      animId = requestAnimationFrame(tick)
+    }
+    
+    animId = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(animId)
+  }, [tickConstructionAnimations])
 
   // ---- 鼠标交互 ----
 

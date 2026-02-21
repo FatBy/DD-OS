@@ -9,6 +9,8 @@ import { useStore } from '@/store'
 import { cn } from '@/utils/cn'
 import { openClawService } from '@/services/OpenClawService'
 import { localClawService } from '@/services/LocalClawService'
+import { useT } from '@/i18n'
+import type { TranslationKey } from '@/i18n/locales/zh'
 
 // 存储 keys
 const TOKEN_STORAGE_KEY = 'openclaw_auth_token'
@@ -17,45 +19,52 @@ const MODE_STORAGE_KEY = 'ddos_connection_mode'
 
 type ConnectionMode = 'native' | 'openclaw'
 
-const statusConfig = {
+const statusConfig: Record<string, {
+  color: string
+  textColor: string
+  icon: typeof Wifi
+  labelKey: TranslationKey
+  pulse: boolean
+}> = {
   disconnected: {
     color: 'bg-slate-400',
     textColor: 'text-slate-400',
     icon: WifiOff,
-    label: '未连接',
+    labelKey: 'conn.disconnected',
     pulse: false,
   },
   connecting: {
     color: 'bg-cyan-400',
     textColor: 'text-cyan-400',
     icon: Wifi,
-    label: '连接中...',
+    labelKey: 'conn.connecting',
     pulse: true,
   },
   connected: {
     color: 'bg-emerald-400',
     textColor: 'text-emerald-400',
     icon: Wifi,
-    label: '已连接',
+    labelKey: 'conn.connected',
     pulse: true,
   },
   reconnecting: {
     color: 'bg-amber-400',
     textColor: 'text-amber-400',
     icon: RefreshCw,
-    label: '重连中',
+    labelKey: 'conn.reconnecting',
     pulse: true,
   },
   error: {
     color: 'bg-red-400',
     textColor: 'text-red-400',
     icon: AlertCircle,
-    label: '连接失败',
+    labelKey: 'conn.error',
     pulse: false,
   },
 }
 
 export function ConnectionPanel() {
+  const t = useT()
   const [isExpanded, setIsExpanded] = useState(false)
   const [token, setToken] = useState('')
   const [gatewayUrl, setGatewayUrl] = useState('')
@@ -87,14 +96,12 @@ export function ConnectionPanel() {
     useStore.getState().setConnectionMode(mode)
     
     if (mode === 'native') {
-      // Native 模式：连接本地 Python 服务器
       useStore.getState().setConnectionStatus('connecting')
       const success = await localClawService.connect()
       if (!success) {
         useStore.getState().setConnectionStatus('error')
       }
     } else {
-      // OpenClaw 模式：连接远程 Gateway
       if (token) localStorage.setItem(TOKEN_STORAGE_KEY, token)
       if (gatewayUrl) localStorage.setItem(GATEWAY_STORAGE_KEY, gatewayUrl)
       openClawService.setGatewayUrl(gatewayUrl)
@@ -163,12 +170,12 @@ export function ConnectionPanel() {
 
         {/* 状态文字 */}
         <span className={cn('text-xs font-mono', config.textColor)}>
-          {config.label}
+          {t(config.labelKey)}
           {status === 'reconnecting' && reconnectAttempt > 0 && (
             <span className="ml-1 opacity-70">({reconnectAttempt}/10)</span>
           )}
           {status === 'reconnecting' && reconnectCountdown !== null && (
-            <span className="ml-1 opacity-70">{reconnectCountdown}s</span>
+            <span className="ml-1 opacity-70">{reconnectCountdown}{t('conn.seconds')}</span>
           )}
         </span>
 
@@ -193,11 +200,11 @@ export function ConnectionPanel() {
             className="overflow-hidden"
           >
             <div className="w-80 bg-slate-900/80 backdrop-blur-xl rounded-b-xl border border-t-0 border-white/10 p-4 space-y-4">
-              {/* 🌟 模式切换 */}
+              {/* 模式切换 */}
               {!isConnected && (
                 <div className="space-y-2">
                   <h4 className="text-xs font-mono text-white/50 uppercase tracking-wider">
-                    运行模式
+                    {t('conn.mode')}
                   </h4>
                   <div className="flex gap-2">
                     <button
@@ -210,7 +217,7 @@ export function ConnectionPanel() {
                       )}
                     >
                       <Monitor className="w-3.5 h-3.5" />
-                      Native
+                      {t('conn.native')}
                     </button>
                     <button
                       onClick={() => setMode('openclaw')}
@@ -222,13 +229,13 @@ export function ConnectionPanel() {
                       )}
                     >
                       <Cloud className="w-3.5 h-3.5" />
-                      OpenClaw
+                      {t('conn.openclaw')}
                     </button>
                   </div>
-                  <p className="text-[9px] text-white/30 font-mono">
+                  <p className="text-[12px] text-white/30 font-mono">
                     {mode === 'native' 
-                      ? 'Native: 本地运行，直接控制电脑，无需 Token' 
-                      : 'OpenClaw: 远程 Gateway，需要 Token 认证'}
+                      ? t('conn.native_desc')
+                      : t('conn.openclaw_desc')}
                   </p>
                 </div>
               )}
@@ -237,17 +244,17 @@ export function ConnectionPanel() {
               {!isConnected && mode === 'openclaw' && (
                 <div className="space-y-2">
                   <h4 className="text-xs font-mono text-white/50 uppercase tracking-wider flex items-center gap-1">
-                    <Globe className="w-3 h-3" /> Gateway 地址 (可选)
+                    <Globe className="w-3 h-3" /> {t('conn.gateway')}
                   </h4>
                   <input
                     type="text"
                     value={gatewayUrl}
                     onChange={(e) => setGatewayUrl(e.target.value)}
-                    placeholder="留空使用代理，或填 IP:18789 直连"
+                    placeholder={t('conn.gateway_placeholder')}
                     className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs font-mono text-white/80 placeholder:text-white/30 focus:outline-none focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/20 transition-all"
                   />
-                  <p className="text-[9px] text-white/30 font-mono">
-                    留空 = 通过 Vite/nginx 代理；填写 = 浏览器直连
+                  <p className="text-[12px] text-white/30 font-mono">
+                    {t('conn.gateway_hint')}
                   </p>
                 </div>
               )}
@@ -256,14 +263,14 @@ export function ConnectionPanel() {
               {!isConnected && mode === 'openclaw' && (
                 <div className="space-y-2">
                   <h4 className="text-xs font-mono text-white/50 uppercase tracking-wider flex items-center gap-1">
-                    <Key className="w-3 h-3" /> 认证令牌
+                    <Key className="w-3 h-3" /> {t('conn.token')}
                   </h4>
                   <div className="relative">
                     <input
                       type={showToken ? 'text' : 'password'}
                       value={token}
                       onChange={(e) => setToken(e.target.value)}
-                      placeholder="输入 OpenClaw Token..."
+                      placeholder={t('conn.token_placeholder')}
                       className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 pr-10 text-xs font-mono text-white/80 placeholder:text-white/30 focus:outline-none focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/20 transition-all"
                     />
                     <button
@@ -274,8 +281,8 @@ export function ConnectionPanel() {
                       {showToken ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
                     </button>
                   </div>
-                  <p className="text-[9px] text-white/30 font-mono">
-                    运行 <code className="text-cyan-400/70">openclaw auth token</code> 获取令牌
+                  <p className="text-[12px] text-white/30 font-mono">
+                    {t('conn.token_hint')}
                   </p>
                 </div>
               )}
@@ -283,7 +290,7 @@ export function ConnectionPanel() {
               {/* 连接控制 */}
               <div className="space-y-3">
                 <h4 className="text-xs font-mono text-white/50 uppercase tracking-wider">
-                  连接控制
+                  {t('conn.control')}
                 </h4>
                 
                 <div className="flex gap-2">
@@ -293,7 +300,7 @@ export function ConnectionPanel() {
                       className="flex-1 flex items-center justify-center gap-2 px-3 py-2 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400 rounded-lg border border-emerald-500/30 transition-colors text-xs font-mono"
                     >
                       <Power className="w-3.5 h-3.5" />
-                      连接
+                      {t('conn.connect')}
                     </button>
                   )}
                   
@@ -303,7 +310,7 @@ export function ConnectionPanel() {
                       className="flex-1 flex items-center justify-center gap-2 px-3 py-2 bg-red-500/20 hover:bg-red-500/30 text-red-400 rounded-lg border border-red-500/30 transition-colors text-xs font-mono"
                     >
                       <PowerOff className="w-3.5 h-3.5" />
-                      断开
+                      {t('conn.disconnect')}
                     </button>
                   )}
 
@@ -313,7 +320,7 @@ export function ConnectionPanel() {
                       className="flex-1 flex items-center justify-center gap-2 px-3 py-2 bg-amber-500/20 hover:bg-amber-500/30 text-amber-400 rounded-lg border border-amber-500/30 transition-colors text-xs font-mono"
                     >
                       <PowerOff className="w-3.5 h-3.5" />
-                      取消
+                      {t('common.cancel')}
                     </button>
                   )}
 
@@ -323,7 +330,7 @@ export function ConnectionPanel() {
                       className="flex-1 flex items-center justify-center gap-2 px-3 py-2 bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-400 rounded-lg border border-cyan-500/30 transition-colors text-xs font-mono"
                     >
                       <RefreshCw className="w-3.5 h-3.5" />
-                      重试
+                      {t('conn.retry')}
                     </button>
                   )}
                 </div>
@@ -331,7 +338,7 @@ export function ConnectionPanel() {
                 {/* 错误信息 */}
                 {connectionError && (
                   <div className="p-2 bg-red-500/10 rounded-lg border border-red-500/20">
-                    <p className="text-[10px] font-mono text-red-400">{connectionError}</p>
+                    <p className="text-[13px] font-mono text-red-400">{connectionError}</p>
                   </div>
                 )}
               </div>
@@ -340,7 +347,7 @@ export function ConnectionPanel() {
               {isConnected && (
                 <div className="space-y-2">
                   <h4 className="text-xs font-mono text-white/50 uppercase tracking-wider">
-                    Agent 状态
+                    {t('settings.agent_status')}
                   </h4>
                   <div className="flex items-center gap-2 p-2 bg-white/5 rounded-lg">
                     <Activity className={cn(
@@ -351,10 +358,10 @@ export function ConnectionPanel() {
                       agentStatus === 'error' && 'text-red-400'
                     )} />
                     <span className="text-xs font-mono text-white/70 capitalize">
-                      {agentStatus === 'idle' && '空闲'}
-                      {agentStatus === 'thinking' && '思考中...'}
-                      {agentStatus === 'executing' && '执行中...'}
-                      {agentStatus === 'error' && '错误'}
+                      {agentStatus === 'idle' && t('settings.agent_idle')}
+                      {agentStatus === 'thinking' && t('settings.agent_thinking') + '...'}
+                      {agentStatus === 'executing' && t('settings.agent_executing') + '...'}
+                      {agentStatus === 'error' && t('chat.error')}
                     </span>
                   </div>
                 </div>
@@ -363,14 +370,14 @@ export function ConnectionPanel() {
               {/* 连接信息 */}
               <div className="space-y-2">
                 <h4 className="text-xs font-mono text-white/50 uppercase tracking-wider">
-                  连接信息
+                  {t('settings.connection_mode')}
                 </h4>
-                <div className="space-y-1.5 text-[10px] font-mono">
+                <div className="space-y-1.5 text-[13px] font-mono">
                   {mode === 'native' ? (
                     <>
                       <div className="flex justify-between text-white/40">
                         <span className="flex items-center gap-1">
-                          <Monitor className="w-3 h-3" /> 服务器
+                          <Monitor className="w-3 h-3" /> Server
                         </span>
                         <span className="text-emerald-400/80 truncate max-w-[140px]">
                           localhost:3001
@@ -378,7 +385,7 @@ export function ConnectionPanel() {
                       </div>
                       <div className="flex justify-between text-white/40">
                         <span className="flex items-center gap-1">
-                          <Activity className="w-3 h-3" /> 引擎
+                          <Activity className="w-3 h-3" /> Engine
                         </span>
                         <span className="text-white/60">ReAct Loop</span>
                       </div>
@@ -386,7 +393,7 @@ export function ConnectionPanel() {
                         <span className="flex items-center gap-1">
                           <Key className="w-3 h-3" /> Token
                         </span>
-                        <span className="text-emerald-400/60">不需要</span>
+                        <span className="text-emerald-400/60">N/A</span>
                       </div>
                     </>
                   ) : (
@@ -401,15 +408,15 @@ export function ConnectionPanel() {
                       </div>
                       <div className="flex justify-between text-white/40">
                         <span className="flex items-center gap-1">
-                          <Clock className="w-3 h-3" /> 心跳
+                          <Clock className="w-3 h-3" /> Heartbeat
                         </span>
-                        <span className="text-white/60">15s / 30s 超时</span>
+                        <span className="text-white/60">15s / 30s timeout</span>
                       </div>
                       <div className="flex justify-between text-white/40">
                         <span className="flex items-center gap-1">
-                          <RefreshCw className="w-3 h-3" /> 重连
+                          <RefreshCw className="w-3 h-3" /> Reconnect
                         </span>
-                        <span className="text-white/60">指数退避 (最多10次)</span>
+                        <span className="text-white/60">Exp. backoff (max 10)</span>
                       </div>
                     </>
                   )}
@@ -420,7 +427,7 @@ export function ConnectionPanel() {
               {recentLogs.length > 0 && (
                 <div className="space-y-2">
                   <h4 className="text-xs font-mono text-white/50 uppercase tracking-wider">
-                    最近日志
+                    Logs
                   </h4>
                   <div className="space-y-1 max-h-24 overflow-y-auto">
                     {recentLogs.map((log, index) => {
@@ -431,7 +438,7 @@ export function ConnectionPanel() {
                         <div
                           key={`${log.id}-${index}`}
                           className={cn(
-                            'text-[9px] font-mono p-1.5 rounded bg-white/5 truncate',
+                            'text-[12px] font-mono p-1.5 rounded bg-white/5 truncate',
                             log.level === 'error' && 'text-red-400',
                             log.level === 'warn' && 'text-amber-400',
                             log.level === 'info' && 'text-white/50'

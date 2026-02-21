@@ -36,7 +36,7 @@ import subprocess
 import shlex
 import shutil
 from pathlib import Path
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import unquote, urlparse, parse_qs
 from datetime import datetime, timedelta
 
@@ -2275,7 +2275,7 @@ You are DD-OS, a local AI operating system running directly on the user's comput
     ClawdDataHandler.clawd_path = clawd_path
     ClawdDataHandler.registry = registry
     
-    server = HTTPServer((args.host, args.port), ClawdDataHandler)
+    server = ThreadingHTTPServer((args.host, args.port), ClawdDataHandler)
     
     tool_names = [t['name'] for t in registry.list_all()]
     plugin_count = len(registry.plugin_tools)

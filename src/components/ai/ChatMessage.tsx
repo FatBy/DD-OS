@@ -240,7 +240,7 @@ function ExecutionCard({ execution, content }: { execution: ExecutionStatus; con
           <span className="text-xs font-mono text-purple-400 font-medium">
             任务建议
           </span>
-          <span className="text-[10px] font-mono text-white/30 ml-auto">
+          <span className="text-[13px] font-mono text-white/30 ml-auto">
             本地服务未启动
           </span>
         </div>
@@ -394,7 +394,7 @@ export function ChatMessage({ message }: ChatMessageProps) {
             {isError && (
               <div className="flex items-center gap-1 mb-1 text-red-400">
                 <AlertCircle className="w-3 h-3" />
-                <span className="text-[10px]">错误</span>
+                <span className="text-[13px]">错误</span>
               </div>
             )}
             <div className="whitespace-pre-wrap break-words">{message.content}</div>

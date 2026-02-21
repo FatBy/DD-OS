@@ -152,7 +152,7 @@ export function RadarChart({
           x={p.x}
           y={p.y - 10}
           textAnchor="middle"
-          className="fill-white/40 text-[9px] font-mono"
+          className="fill-white/40 text-[12px] font-mono"
         >
           {dimensions[i].value}
         </text>

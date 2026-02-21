@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import { 
-  Monitor, Info, Check, Sparkles, Eye, EyeOff, Type, Wifi, WifiOff, Palette, Globe
+  Monitor, Info, Check, Sparkles, Eye, EyeOff, Type, Wifi, WifiOff, Palette, Globe, Languages
 } from 'lucide-react'
 import { GlassCard } from '@/components/GlassCard'
 import { staggerContainer, staggerItem } from '@/utils/animations'
@@ -9,36 +9,35 @@ import { useStore } from '@/store'
 import { testConnection } from '@/services/llmService'
 import { cn } from '@/utils/cn'
 import { themes } from '@/themes'
+import { useT } from '@/i18n'
+import type { TranslationKey } from '@/i18n/locales/zh'
 import type { ThemeName } from '@/types/theme'
 import type { WorldTheme } from '@/rendering/types'
 
 const WORLD_THEME_OPTIONS: Array<{
   id: WorldTheme
-  label: string
-  description: string
+  labelKey: TranslationKey
+  descKey: TranslationKey
   color: string
 }> = [
-  { id: 'cosmos', label: '宇宙', description: '深空星球', color: 'rgb(56, 189, 248)' },
-  { id: 'cityscape', label: '城市', description: '赛博建筑', color: 'rgb(251, 191, 36)' },
-  { id: 'wildlife', label: '生态', description: '自然生物', color: 'rgb(52, 211, 153)' },
+  { id: 'cosmos', labelKey: 'settings.world_cosmos', descKey: 'settings.world_cosmos_desc', color: 'rgb(56, 189, 248)' },
+  { id: 'cityscape', labelKey: 'settings.world_cityscape', descKey: 'settings.world_cityscape_desc', color: 'rgb(251, 191, 36)' },
+  { id: 'wildlife', labelKey: 'settings.world_wildlife', descKey: 'settings.world_wildlife_desc', color: 'rgb(52, 211, 153)' },
 ]
 
-const settingsData = [
-  {
-    id: 'particles',
-    label: '粒子动画',
-    description: '世界背景中的浮动粒子效果',
-    enabled: true,
-  },
-  {
-    id: 'glow',
-    label: '发光特效',
-    description: '节点和连线的发光效果',
-    enabled: true,
-  },
+const settingsData: Array<{
+  id: string
+  labelKey: TranslationKey
+  descKey: TranslationKey
+  enabled: boolean
+}> = [
+  { id: 'particles', labelKey: 'settings.particles', descKey: 'settings.particles_desc', enabled: true },
+  { id: 'glow', labelKey: 'settings.glow', descKey: 'settings.glow_desc', enabled: true },
 ]
 
 export function SettingsHouse() {
+  const t = useT()
+
   // Store 状态
   const connectionStatus = useStore((s) => s.connectionStatus)
   const connectionMode = useStore((s) => s.connectionMode)
@@ -70,6 +69,10 @@ export function SettingsHouse() {
   // 世界主题
   const worldTheme = useStore((s) => s.worldTheme)
   const setWorldTheme = useStore((s) => s.setWorldTheme)
+
+  // 语言设置
+  const locale = useStore((s) => s.locale)
+  const setLocale = useStore((s) => s.setLocale)
   
   useEffect(() => {
     document.documentElement.style.setProperty('--font-scale', String(fontScale))
@@ -116,36 +119,36 @@ export function SettingsHouse() {
             <WifiOff className="w-4 h-4 text-white/30" />
           )}
           <h3 className="font-mono text-sm text-slate-300 tracking-wider">
-            系统状态
+            {t('settings.system_status')}
           </h3>
         </div>
 
         <GlassCard className="p-4">
           <div className="space-y-2 font-mono text-xs">
             <div className="flex justify-between">
-              <span className="text-white/50">连接模式</span>
+              <span className="text-white/50">{t('settings.connection_mode')}</span>
               <span className={cn(
                 isConnected ? 'text-emerald-400' : 'text-white/30'
               )}>
-                {connectionMode === 'native' ? 'Native' : 'OpenClaw'} · {isConnected ? '已连接' : '未连接'}
+                {connectionMode === 'native' ? 'Native' : 'OpenClaw'} · {isConnected ? t('settings.connected') : t('settings.disconnected')}
               </span>
             </div>
             <div className="flex justify-between">
-              <span className="text-white/50">Agent 状态</span>
+              <span className="text-white/50">{t('settings.agent_status')}</span>
               <span className={cn(
                 agentStatus === 'idle' ? 'text-white/40' :
                 agentStatus === 'thinking' ? 'text-cyan-400' :
                 agentStatus === 'executing' ? 'text-amber-400' :
                 'text-red-400'
               )}>
-                {agentStatus === 'idle' ? '空闲' :
-                 agentStatus === 'thinking' ? '思考中' :
-                 agentStatus === 'executing' ? '执行中' :
+                {agentStatus === 'idle' ? t('settings.agent_idle') :
+                 agentStatus === 'thinking' ? t('settings.agent_thinking') :
+                 agentStatus === 'executing' ? t('settings.agent_executing') :
                  agentStatus}
               </span>
             </div>
             <div className="flex justify-between">
-              <span className="text-white/50">已加载数据</span>
+              <span className="text-white/50">{t('settings.loaded_data')}</span>
               <span className="text-white/60">
                 Soul {soulCoreTruths.length > 0 ? '✓' : '–'} · 
                 Skills {skills.length} · 
@@ -154,8 +157,8 @@ export function SettingsHouse() {
             </div>
           </div>
           {isConnected && (
-            <p className="text-[10px] text-white/20 font-mono mt-3 border-t border-white/5 pt-2">
-              数据在连接时自动从后端同步，无需手动加载
+            <p className="text-[13px] text-white/20 font-mono mt-3 border-t border-white/5 pt-2">
+              {t('settings.auto_sync_hint')}
             </p>
           )}
         </GlassCard>
@@ -166,13 +169,13 @@ export function SettingsHouse() {
         <div className="flex items-center gap-2 mb-4">
           <Sparkles className="w-4 h-4 text-amber-400" />
           <h3 className="font-mono text-sm text-amber-300 tracking-wider">
-            AI 能力配置
+            {t('settings.ai_config')}
           </h3>
         </div>
         
         <GlassCard className="p-4 space-y-3">
           <div>
-            <label className="text-xs font-mono text-white/50 mb-1 block">API Base URL</label>
+            <label className="text-xs font-mono text-white/50 mb-1 block">{t('settings.api_base_url')}</label>
             <input
               type="text"
               value={llmBaseUrl}
@@ -186,7 +189,7 @@ export function SettingsHouse() {
           </div>
           
           <div>
-            <label className="text-xs font-mono text-white/50 mb-1 block">API Key</label>
+            <label className="text-xs font-mono text-white/50 mb-1 block">{t('settings.api_key')}</label>
             <div className="flex gap-2">
               <div className="flex-1 relative">
                 <input
@@ -210,7 +213,7 @@ export function SettingsHouse() {
           </div>
           
           <div>
-            <label className="text-xs font-mono text-white/50 mb-1 block">Model</label>
+            <label className="text-xs font-mono text-white/50 mb-1 block">{t('settings.model')}</label>
             <input
               type="text"
               value={llmModel}
@@ -240,20 +243,20 @@ export function SettingsHouse() {
                   : 'bg-amber-500/20 border border-amber-500/30 text-amber-400 hover:bg-amber-500/30'
               )}
             >
-              {llmTestStatus === 'testing' ? '测试中...' : 
-               llmTestStatus === 'success' ? '连接成功' : 
-               llmTestStatus === 'error' ? '连接失败' : '测试连接'}
+              {llmTestStatus === 'testing' ? t('settings.testing') : 
+               llmTestStatus === 'success' ? t('settings.test_success') : 
+               llmTestStatus === 'error' ? t('settings.test_failed') : t('settings.test_connection')}
             </button>
             
             {llmTestStatus === 'success' && (
-              <span className="text-[10px] text-emerald-400 font-mono flex items-center gap-1">
-                <Check className="w-3 h-3" /> AI 已就绪
+              <span className="text-[13px] text-emerald-400 font-mono flex items-center gap-1">
+                <Check className="w-3 h-3" /> {t('settings.ai_ready')}
               </span>
             )}
           </div>
           
-          <p className="text-[10px] text-white/30 font-mono">
-            支持所有兼容 OpenAI 格式的 API（DeepSeek、GPT-4、Claude 代理等）
+          <p className="text-[13px] text-white/30 font-mono">
+            {t('settings.api_compat_hint')}
           </p>
         </GlassCard>
       </div>
@@ -267,7 +270,7 @@ export function SettingsHouse() {
         <div className="flex items-center gap-2 mb-4">
           <Monitor className="w-4 h-4 text-slate-400" />
           <h3 className="font-mono text-sm text-slate-300 tracking-wider">
-            视觉设置
+            {t('settings.visual')}
           </h3>
         </div>
 
@@ -277,10 +280,10 @@ export function SettingsHouse() {
               <GlassCard className="p-4 flex items-center justify-between">
                 <div>
                   <h4 className="text-sm font-mono text-white/80">
-                    {setting.label}
+                    {t(setting.labelKey)}
                   </h4>
                   <p className="text-xs text-white/40 mt-0.5">
-                    {setting.description}
+                    {t(setting.descKey)}
                   </p>
                 </div>
                 <div className="w-10 h-5 bg-white/10 rounded-full relative cursor-pointer border border-white/10">
@@ -301,7 +304,7 @@ export function SettingsHouse() {
             <GlassCard className="p-4">
               <div className="flex items-center gap-2 mb-3">
                 <Type className="w-4 h-4 text-cyan-400" />
-                <h4 className="text-sm font-mono text-white/80">字体大小</h4>
+                <h4 className="text-sm font-mono text-white/80">{t('settings.font_size')}</h4>
                 <span className="ml-auto text-xs font-mono text-cyan-400">
                   {Math.round(fontScale * 100)}%
                 </span>
@@ -322,7 +325,7 @@ export function SettingsHouse() {
                            [&::-webkit-slider-thumb]:shadow-[0_0_6px_rgba(34,211,238,0.5)]
                            [&::-webkit-slider-thumb]:cursor-pointer"
               />
-              <div className="flex justify-between text-[10px] font-mono text-white/30 mt-1">
+              <div className="flex justify-between text-[13px] font-mono text-white/30 mt-1">
                 <span>80%</span>
                 <span>100%</span>
                 <span>150%</span>
@@ -335,7 +338,7 @@ export function SettingsHouse() {
             <GlassCard className="p-4">
               <div className="flex items-center gap-2 mb-3">
                 <Palette className="w-4 h-4 text-skin-accent-purple" />
-                <h4 className="text-sm font-mono text-skin-text-secondary">界面主题</h4>
+                <h4 className="text-sm font-mono text-skin-text-secondary">{t('settings.ui_theme')}</h4>
               </div>
               <div className="grid grid-cols-3 gap-2">
                 {(Object.keys(themes) as ThemeName[]).map((themeName) => {
@@ -368,7 +371,7 @@ export function SettingsHouse() {
                         />
                       </div>
                       <span className={cn(
-                        'text-[10px] font-mono block text-center',
+                        'text-[13px] font-mono block text-center',
                         isActive ? 'text-skin-accent-cyan' : 'text-skin-text-tertiary'
                       )}>
                         {theme.label}
@@ -382,8 +385,8 @@ export function SettingsHouse() {
                   )
                 })}
               </div>
-              <p className="text-[10px] text-skin-text-tertiary font-mono mt-3">
-                切换主题会立即应用到所有界面元素
+              <p className="text-[13px] text-skin-text-tertiary font-mono mt-3">
+                {t('settings.theme_apply_hint')}
               </p>
             </GlassCard>
           </motion.div>
@@ -393,7 +396,7 @@ export function SettingsHouse() {
             <GlassCard className="p-4">
               <div className="flex items-center gap-2 mb-3">
                 <Globe className="w-4 h-4 text-skin-accent-cyan" />
-                <h4 className="text-sm font-mono text-skin-text-secondary">世界主题</h4>
+                <h4 className="text-sm font-mono text-skin-text-secondary">{t('settings.world_theme')}</h4>
               </div>
               <div className="grid grid-cols-3 gap-2">
                 {WORLD_THEME_OPTIONS.map((option) => {
@@ -416,13 +419,13 @@ export function SettingsHouse() {
                         style={{ backgroundColor: option.color }}
                       />
                       <span className={cn(
-                        'text-[10px] font-mono block text-center',
+                        'text-[13px] font-mono block text-center',
                         isActive ? 'text-skin-accent-cyan' : 'text-skin-text-tertiary'
                       )}>
-                        {option.label}
+                        {t(option.labelKey)}
                       </span>
-                      <span className="text-[8px] font-mono block text-center text-skin-text-tertiary mt-0.5">
-                        {isAvailable ? option.description : '开发中'}
+                      <span className="text-[11px] font-mono block text-center text-skin-text-tertiary mt-0.5">
+                        {isAvailable ? t(option.descKey) : t('settings.world_dev')}
                       </span>
                       {isActive && (
                         <div className="absolute top-1 right-1">
@@ -433,8 +436,65 @@ export function SettingsHouse() {
                   )
                 })}
               </div>
-              <p className="text-[10px] text-skin-text-tertiary font-mono mt-3">
-                世界主题决定 Nexus 节点的视觉风格
+              <p className="text-[13px] text-skin-text-tertiary font-mono mt-3">
+                {t('settings.world_theme_hint')}
+              </p>
+            </GlassCard>
+          </motion.div>
+
+          {/* 语言切换 */}
+          <motion.div variants={staggerItem}>
+            <GlassCard className="p-4">
+              <div className="flex items-center gap-2 mb-3">
+                <Languages className="w-4 h-4 text-skin-accent-cyan" />
+                <h4 className="text-sm font-mono text-skin-text-secondary">{t('settings.language')}</h4>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  onClick={() => setLocale('zh')}
+                  className={cn(
+                    'relative p-3 rounded-lg border transition-all',
+                    locale === 'zh'
+                      ? 'border-skin-accent-cyan bg-skin-accent-cyan/10'
+                      : 'border-skin-border/20 hover:border-skin-border/40 bg-skin-bg-secondary/20'
+                  )}
+                >
+                  <span className={cn(
+                    'text-[13px] font-mono block text-center',
+                    locale === 'zh' ? 'text-skin-accent-cyan' : 'text-skin-text-tertiary'
+                  )}>
+                    中文
+                  </span>
+                  {locale === 'zh' && (
+                    <div className="absolute top-1 right-1">
+                      <Check className="w-3 h-3 text-skin-accent-cyan" />
+                    </div>
+                  )}
+                </button>
+                <button
+                  onClick={() => setLocale('en')}
+                  className={cn(
+                    'relative p-3 rounded-lg border transition-all',
+                    locale === 'en'
+                      ? 'border-skin-accent-cyan bg-skin-accent-cyan/10'
+                      : 'border-skin-border/20 hover:border-skin-border/40 bg-skin-bg-secondary/20'
+                  )}
+                >
+                  <span className={cn(
+                    'text-[13px] font-mono block text-center',
+                    locale === 'en' ? 'text-skin-accent-cyan' : 'text-skin-text-tertiary'
+                  )}>
+                    English
+                  </span>
+                  {locale === 'en' && (
+                    <div className="absolute top-1 right-1">
+                      <Check className="w-3 h-3 text-skin-accent-cyan" />
+                    </div>
+                  )}
+                </button>
+              </div>
+              <p className="text-[13px] text-skin-text-tertiary font-mono mt-3">
+                {t('settings.language_hint')}
               </p>
             </GlassCard>
           </motion.div>
@@ -446,19 +506,19 @@ export function SettingsHouse() {
         <div className="flex items-center gap-2 mb-4">
           <Info className="w-4 h-4 text-slate-400" />
           <h3 className="font-mono text-sm text-slate-300 tracking-wider">
-            关于
+            {t('settings.about')}
           </h3>
         </div>
         <GlassCard className="p-4">
           <div className="space-y-2 font-mono text-xs text-white/50">
             <div className="flex justify-between">
-              <span>版本</span>
+              <span>{t('settings.version')}</span>
               <span className="text-white/70">DD-OS v1.0.0</span>
             </div>
             <div className="flex justify-between">
-              <span>运行模式</span>
+              <span>{t('settings.run_mode')}</span>
               <span className="text-cyan-400">
-                {connectionMode === 'native' ? 'Native (本地)' : 'OpenClaw (网络)'}
+                {connectionMode === 'native' ? t('settings.native_local') : t('settings.openclaw_network')}
               </span>
             </div>
           </div>

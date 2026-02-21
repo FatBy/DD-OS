@@ -9,8 +9,10 @@ import { isLLMConfigured } from '@/services/llmService'
 import { getQuickCommands } from '@/services/contextBuilder'
 import { ChatMessage, StreamingMessage } from './ChatMessage'
 import { ChatErrorBoundary } from './ChatErrorBoundary'
+import { useT } from '@/i18n'
 
 export function AIChatPanel() {
+  const t = useT()
   const isOpen = useStore((s) => s.isChatOpen)
   const setIsOpen = useStore((s) => s.setChatOpen)
   const [input, setInput] = useState('')
@@ -33,19 +35,16 @@ export function AIChatPanel() {
   const configured = isLLMConfigured()
   const quickCommands = getQuickCommands(currentView)
 
-  // 自动滚动到底部
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [chatMessages, chatStreamContent])
 
-  // 打开面板时聚焦输入框
   useEffect(() => {
     if (isOpen) {
       setTimeout(() => textareaRef.current?.focus(), 300)
     }
   }, [isOpen])
 
-  // 自动调整 textarea 高度
   useEffect(() => {
     const textarea = textareaRef.current
     if (textarea) {
@@ -58,7 +57,6 @@ export function AIChatPanel() {
     const msg = input.trim()
     if ((!msg && attachments.length === 0) || chatStreaming) return
     
-    // 构建消息，包含附件信息
     let fullMessage = msg
     if (attachments.length > 0) {
       const attachmentInfo = attachments.map(a => `[附件: ${a.type}/${a.name}]`).join(' ')
@@ -71,14 +69,12 @@ export function AIChatPanel() {
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    // Shift+Enter 换行, Enter 发送
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       handleSend()
     }
   }
 
-  // 处理图片上传
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files
     if (!files) return
@@ -96,10 +92,9 @@ export function AIChatPanel() {
         reader.readAsDataURL(file)
       }
     })
-    e.target.value = '' // 重置以便再次选择同一文件
+    e.target.value = ''
   }
 
-  // 处理文件上传
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files
     if (!files) return
@@ -113,9 +108,8 @@ export function AIChatPanel() {
     e.target.value = ''
   }
 
-  // 添加 SKILL 附件
   const handleAddSkill = () => {
-    const skillName = prompt('请输入要附加的技能名称:')
+    const skillName = prompt('Skill name:')
     if (skillName?.trim()) {
       setAttachments(prev => [...prev, {
         type: 'skill',
@@ -124,9 +118,8 @@ export function AIChatPanel() {
     }
   }
 
-  // 添加 MCP 附件
   const handleAddMCP = () => {
-    const mcpServer = prompt('请输入 MCP 服务器名称:')
+    const mcpServer = prompt('MCP server:')
     if (mcpServer?.trim()) {
       setAttachments(prev => [...prev, {
         type: 'mcp',
@@ -135,7 +128,6 @@ export function AIChatPanel() {
     }
   }
 
-  // 移除附件
   const removeAttachment = (index: number) => {
     setAttachments(prev => prev.filter((_, i) => i !== index))
   }
@@ -164,7 +156,7 @@ export function AIChatPanel() {
             <MessageSquare className="w-5 h-5 text-skin-accent-amber" />
             {chatMessages.length > 0 && (
               <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-skin-accent-amber 
-                             text-[9px] text-skin-bg-primary flex items-center justify-center font-bold">
+                             text-[12px] text-skin-bg-primary flex items-center justify-center font-bold">
                 {chatMessages.filter(m => m.role !== 'system').length}
               </span>
             )}
@@ -172,7 +164,7 @@ export function AIChatPanel() {
         )}
       </AnimatePresence>
 
-      {/* 聊天面板 - flex 布局子元素，推挤主内容区域 */}
+      {/* 聊天面板 */}
       <AnimatePresence>
         {isOpen && (
           <motion.div
@@ -192,18 +184,18 @@ export function AIChatPanel() {
             <div className="flex items-center justify-between px-4 py-3 border-b border-skin-border/10">
               <div className="flex items-center gap-2">
                 <Sparkles className="w-4 h-4 text-skin-accent-amber" />
-                <span className="text-sm font-mono text-skin-accent-amber">AI 助手</span>
-                <span className="text-[10px] font-mono text-skin-text-tertiary px-1.5 py-0.5 bg-skin-bg-secondary/30 rounded">
+                <span className="text-sm font-mono text-skin-accent-amber">AI</span>
+                <span className="text-[13px] font-mono text-skin-text-tertiary px-1.5 py-0.5 bg-skin-bg-secondary/30 rounded">
                   {currentView}
                 </span>
                 {agentStatus === 'thinking' && (
-                  <span className="text-[10px] font-mono text-skin-accent-cyan animate-pulse flex items-center gap-1 ml-1">
-                    <Loader2 className="w-3 h-3 animate-spin" /> 思考中
+                  <span className="text-[13px] font-mono text-skin-accent-cyan animate-pulse flex items-center gap-1 ml-1">
+                    <Loader2 className="w-3 h-3 animate-spin" /> {t('task.agent_thinking')}
                   </span>
                 )}
                 {agentStatus === 'executing' && (
-                  <span className="text-[10px] font-mono text-skin-accent-amber animate-pulse flex items-center gap-1 ml-1">
-                    <Zap className="w-3 h-3" /> 执行中
+                  <span className="text-[13px] font-mono text-skin-accent-amber animate-pulse flex items-center gap-1 ml-1">
+                    <Zap className="w-3 h-3" /> {t('task.agent_executing')}
                   </span>
                 )}
               </div>
@@ -211,7 +203,7 @@ export function AIChatPanel() {
                 <button
                   onClick={clearChat}
                   className="p-1.5 text-skin-text-tertiary hover:text-red-400 transition-colors"
-                  title="清空对话"
+                  title={t('chat.clear')}
                 >
                   <Trash2 className="w-3.5 h-3.5" />
                 </button>
@@ -230,18 +222,17 @@ export function AIChatPanel() {
               {!configured ? (
                 <div className="flex flex-col items-center justify-center h-full text-center">
                   <Sparkles className="w-10 h-10 text-skin-accent-amber/30 mb-3" />
-                  <p className="text-sm font-mono text-skin-text-tertiary mb-2">AI 未配置</p>
+                  <p className="text-sm font-mono text-skin-text-tertiary mb-2">{t('chat.not_configured')}</p>
                   <p className="text-xs font-mono text-skin-text-tertiary/60">
-                    前往设置页面配置 LLM API Key 和 Base URL
+                    {t('chat.configure_prompt')}
                   </p>
                 </div>
               ) : chatMessages.length === 0 && !chatStreaming ? (
                 <div className="flex flex-col items-center justify-center h-full text-center">
                   <MessageSquare className="w-10 h-10 text-skin-text-primary/10 mb-3" />
                   <p className="text-sm font-mono text-skin-text-tertiary mb-4">
-                    开始对话或使用快捷指令
+                    {t('chat.input_placeholder')}
                   </p>
-                  {/* 快捷指令 */}
                   {quickCommands.length > 0 && (
                     <div className="flex flex-wrap gap-2 justify-center">
                       {quickCommands.map((cmd) => (
@@ -277,7 +268,7 @@ export function AIChatPanel() {
               </ChatErrorBoundary>
             </div>
 
-            {/* Quick Commands Bar (when in conversation) */}
+            {/* Quick Commands Bar */}
             {configured && chatMessages.length > 0 && quickCommands.length > 0 && (
               <div className="px-3 py-2 border-t border-skin-border/5 flex gap-1.5 overflow-x-auto">
                 {quickCommands.map((cmd) => (
@@ -285,7 +276,7 @@ export function AIChatPanel() {
                     key={cmd.label}
                     onClick={() => handleQuickCommand(cmd.prompt)}
                     disabled={chatStreaming}
-                    className="flex-shrink-0 px-2 py-1 text-[10px] font-mono bg-skin-bg-secondary/30 border border-skin-border/10 
+                    className="flex-shrink-0 px-2 py-1 text-[13px] font-mono bg-skin-bg-secondary/30 border border-skin-border/10 
                                rounded text-skin-text-tertiary hover:text-skin-accent-amber hover:border-skin-accent-amber/30 
                                transition-colors disabled:opacity-50"
                   >
@@ -305,7 +296,7 @@ export function AIChatPanel() {
                       <div
                         key={idx}
                         className="flex items-center gap-1 px-2 py-1 bg-skin-bg-secondary/30 border border-skin-border/10 
-                                   rounded text-[10px] font-mono text-skin-text-secondary"
+                                   rounded text-[13px] font-mono text-skin-text-secondary"
                       >
                         {att.type === 'image' && <Image className="w-3 h-3 text-skin-accent-emerald" />}
                         {att.type === 'file' && <Paperclip className="w-3 h-3 text-skin-accent-cyan" />}
@@ -345,7 +336,7 @@ export function AIChatPanel() {
                     disabled={chatStreaming}
                     className="p-1.5 text-skin-text-tertiary hover:text-skin-accent-emerald hover:bg-skin-bg-secondary/30 
                                rounded transition-colors disabled:opacity-50"
-                    title="上传图片"
+                    title="Image"
                   >
                     <Image className="w-4 h-4" />
                   </button>
@@ -354,7 +345,7 @@ export function AIChatPanel() {
                     disabled={chatStreaming}
                     className="p-1.5 text-skin-text-tertiary hover:text-skin-accent-cyan hover:bg-skin-bg-secondary/30 
                                rounded transition-colors disabled:opacity-50"
-                    title="上传文件"
+                    title="File"
                   >
                     <Paperclip className="w-4 h-4" />
                   </button>
@@ -363,7 +354,7 @@ export function AIChatPanel() {
                     disabled={chatStreaming}
                     className="p-1.5 text-skin-text-tertiary hover:text-skin-accent-amber hover:bg-skin-bg-secondary/30 
                                rounded transition-colors disabled:opacity-50"
-                    title="附加 SKILL"
+                    title="SKILL"
                   >
                     <Puzzle className="w-4 h-4" />
                   </button>
@@ -372,12 +363,12 @@ export function AIChatPanel() {
                     disabled={chatStreaming}
                     className="p-1.5 text-skin-text-tertiary hover:text-skin-accent-purple hover:bg-skin-bg-secondary/30 
                                rounded transition-colors disabled:opacity-50"
-                    title="附加 MCP 服务"
+                    title="MCP"
                   >
                     <Server className="w-4 h-4" />
                   </button>
-                  <span className="text-[9px] font-mono text-skin-text-tertiary/60 ml-auto">
-                    Shift+Enter 换行
+                  <span className="text-[12px] font-mono text-skin-text-tertiary/60 ml-auto">
+                    Shift+Enter
                   </span>
                 </div>
                 
@@ -388,7 +379,7 @@ export function AIChatPanel() {
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
                     onKeyDown={handleKeyDown}
-                    placeholder="输入消息... (Shift+Enter 换行)"
+                    placeholder={t('chat.input_placeholder')}
                     disabled={chatStreaming}
                     rows={1}
                     className="flex-1 px-3 py-2 bg-skin-bg-secondary/30 border border-skin-border/10 rounded-lg 

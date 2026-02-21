@@ -1,15 +1,17 @@
 // ============================================
-// DD-OS 主题状态管理
+// DD-OS 主题 & 语言状态管理
 // ============================================
 
 import type { StateCreator } from 'zustand'
 import type { ThemeName } from '@/types/theme'
+import type { Locale } from '@/i18n'
 import { themes, getTheme } from '@/themes'
 import { applyThemeToDOM, getCanvasPalette } from '@/utils/themeUtils'
 import type { CanvasPalette } from '@/types/theme'
 
 // LocalStorage 键名
 const THEME_STORAGE_KEY = 'ddos_theme'
+const LOCALE_STORAGE_KEY = 'ddos_locale'
 
 // 从 localStorage 读取主题
 function loadTheme(): ThemeName {
@@ -33,15 +35,39 @@ function saveTheme(name: ThemeName): void {
   }
 }
 
+// 从 localStorage 读取语言
+function loadLocale(): Locale {
+  try {
+    const saved = localStorage.getItem(LOCALE_STORAGE_KEY)
+    if (saved === 'zh' || saved === 'en') {
+      return saved
+    }
+  } catch (e) {
+    console.warn('[Theme] Failed to load locale from localStorage:', e)
+  }
+  return 'zh'
+}
+
+// 保存语言到 localStorage
+function saveLocale(locale: Locale): void {
+  try {
+    localStorage.setItem(LOCALE_STORAGE_KEY, locale)
+  } catch (e) {
+    console.warn('[Theme] Failed to save locale to localStorage:', e)
+  }
+}
+
 export interface ThemeSlice {
   // 状态
   currentTheme: ThemeName
+  locale: Locale
   
   // 计算属性
   canvasPalette: CanvasPalette
   
   // Actions
   setTheme: (name: ThemeName) => void
+  setLocale: (locale: Locale) => void
   initTheme: () => void
 }
 
@@ -52,22 +78,22 @@ export const createThemeSlice: StateCreator<ThemeSlice> = (set, get) => {
   
   return {
     currentTheme: initialTheme,
+    locale: loadLocale(),
     canvasPalette: initialPalette,
     
     setTheme: (name) => {
       const theme = getTheme(name)
-      
-      // 应用到 DOM
       applyThemeToDOM(theme)
-      
-      // 保存到 localStorage
       saveTheme(name)
-      
-      // 更新状态
       set({
         currentTheme: name,
         canvasPalette: getCanvasPalette(theme),
       })
+    },
+
+    setLocale: (locale) => {
+      saveLocale(locale)
+      set({ locale })
     },
     
     initTheme: () => {

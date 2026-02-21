@@ -10,6 +10,8 @@ import { GlassCard } from '@/components/GlassCard'
 import { AISummaryCard } from '@/components/ai/AISummaryCard'
 import { useStore } from '@/store'
 import { cn } from '@/utils/cn'
+import { useT } from '@/i18n'
+import type { TranslationKey } from '@/i18n/locales/zh'
 import type { TaskItem, ExecutionStep } from '@/types'
 
 // 默认任务（根据模式显示不同内容）
@@ -25,35 +27,60 @@ const defaultTasksOpenClaw: TaskItem[] = [
   { id: '3', title: '开始对话', description: '通过消息平台与 Agent 交流', status: 'pending', priority: 'low', timestamp: new Date().toISOString() },
 ]
 
+const statusLabelKeys: Record<string, TranslationKey> = {
+  pending: 'task.pending',
+  executing: 'task.executing',
+  done: 'task.done',
+}
+
 const statusConfig = {
-  pending: { icon: Clock, color: 'amber', label: '待处理' },
-  executing: { icon: Play, color: 'cyan', label: '进行中' },
-  done: { icon: CheckCircle2, color: 'emerald', label: '已完成' },
+  pending: { icon: Clock, color: 'amber' },
+  executing: { icon: Play, color: 'cyan' },
+  done: { icon: CheckCircle2, color: 'emerald' },
+}
+
+const priorityLabelKeys: Record<string, TranslationKey> = {
+  high: 'task.priority_high',
+  medium: 'task.priority_medium',
+  low: 'task.priority_low',
 }
 
 const priorityConfig = {
-  high: { color: 'red', label: '高' },
-  medium: { color: 'amber', label: '中' },
-  low: { color: 'slate', label: '低' },
+  high: { color: 'red' },
+  medium: { color: 'amber' },
+  low: { color: 'slate' },
 }
 
 function EmptyColumn({ status }: { status: TaskItem['status'] }) {
-  const config = statusConfig[status]
+  const t = useT()
+  const emptyKeys: Record<string, TranslationKey> = {
+    pending: 'task.empty_pending',
+    executing: 'task.empty_executing',
+    done: 'task.empty_done',
+  }
   return (
     <div className="flex flex-col items-center justify-center py-8 text-white/20">
       <Inbox className="w-8 h-8 mb-2" />
-      <span className="text-xs font-mono">暂无{config.label}任务</span>
+      <span className="text-xs font-mono">{t(emptyKeys[status])}</span>
     </div>
   )
 }
 
 // 执行步骤图标映射
+const stepTypeLabelKeys: Record<string, TranslationKey> = {
+  thinking: 'task.thinking',
+  tool_call: 'task.tool_call',
+  tool_result: 'task.tool_result',
+  output: 'task.output',
+  error: 'task.error',
+}
+
 const stepTypeConfig = {
-  thinking: { icon: Brain, color: 'purple', label: '思考' },
-  tool_call: { icon: Wrench, color: 'cyan', label: '调用工具' },
-  tool_result: { icon: Terminal, color: 'emerald', label: '工具结果' },
-  output: { icon: MessageSquare, color: 'amber', label: '输出' },
-  error: { icon: AlertCircle, color: 'red', label: '错误' },
+  thinking: { icon: Brain, color: 'purple' },
+  tool_call: { icon: Wrench, color: 'cyan' },
+  tool_result: { icon: Terminal, color: 'emerald' },
+  output: { icon: MessageSquare, color: 'amber' },
+  error: { icon: AlertCircle, color: 'red' },
 }
 
 // 执行步骤详情面板
@@ -63,12 +90,13 @@ function ExecutionStepsViewer({ steps, output, error, duration }: {
   error?: string
   duration?: number
 }) {
+  const t = useT()
   const [stepsExpanded, setStepsExpanded] = useState(false)
   
   if (!steps?.length && !output && !error) {
     return (
       <div className="mt-2 p-3 bg-white/5 rounded-lg border border-white/10">
-        <p className="text-xs text-white/40 font-mono">暂无执行记录</p>
+        <p className="text-xs text-white/40 font-mono">{t('task.no_record')}</p>
       </div>
     )
   }
@@ -80,9 +108,9 @@ function ExecutionStepsViewer({ steps, output, error, duration }: {
         <div className="p-3 bg-emerald-500/5 rounded-lg border border-emerald-500/15">
           <div className="flex items-center gap-1.5 mb-1.5">
             <CheckCircle2 className="w-3 h-3 text-emerald-400" />
-            <span className="text-[10px] font-mono text-emerald-400 font-medium">执行结果</span>
+            <span className="text-[13px] font-mono text-emerald-400 font-medium">{t('task.exec_result')}</span>
             {duration !== undefined && (
-              <span className="text-[9px] font-mono text-white/30 ml-auto">{(duration / 1000).toFixed(1)}s</span>
+              <span className="text-[12px] font-mono text-white/30 ml-auto">{(duration / 1000).toFixed(1)}s</span>
             )}
           </div>
           <pre className="text-xs text-white/70 whitespace-pre-wrap leading-relaxed max-h-60 overflow-y-auto font-mono">
@@ -95,7 +123,7 @@ function ExecutionStepsViewer({ steps, output, error, duration }: {
         <div className="p-3 bg-red-500/5 rounded-lg border border-red-500/15">
           <div className="flex items-center gap-1.5 mb-1.5">
             <AlertCircle className="w-3 h-3 text-red-400" />
-            <span className="text-[10px] font-mono text-red-400 font-medium">执行失败</span>
+            <span className="text-[13px] font-mono text-red-400 font-medium">{t('task.exec_failed')}</span>
           </div>
           <p className="text-xs text-red-300/80 font-mono">{error}</p>
         </div>
@@ -109,8 +137,8 @@ function ExecutionStepsViewer({ steps, output, error, duration }: {
             className="w-full flex items-center gap-2 px-3 py-2 bg-white/5 hover:bg-white/8 transition-colors"
           >
             <Activity className="w-3 h-3 text-white/40" />
-            <span className="text-[10px] font-mono text-white/50">
-              执行过程 ({steps.length} 步)
+            <span className="text-[13px] font-mono text-white/50">
+              {t('task.exec_steps')} ({steps.length})
             </span>
             <motion.div 
               animate={{ rotate: stepsExpanded ? 180 : 0 }}
@@ -132,8 +160,9 @@ function ExecutionStepsViewer({ steps, output, error, duration }: {
               >
                 <div className="max-h-80 overflow-y-auto">
                   {steps.map((step, i) => {
-                    const stepConfig = stepTypeConfig[step.type] || stepTypeConfig.output
-                    const StepIcon = stepConfig.icon
+                    const sConfig = stepTypeConfig[step.type] || stepTypeConfig.output
+                    const StepIcon = sConfig.icon
+                    const labelKey = stepTypeLabelKeys[step.type] || 'task.output'
                     return (
                       <div 
                         key={step.id || i}
@@ -141,22 +170,22 @@ function ExecutionStepsViewer({ steps, output, error, duration }: {
                       >
                         <div className={cn(
                           'w-5 h-5 rounded flex items-center justify-center flex-shrink-0 mt-0.5',
-                          `bg-${stepConfig.color}-500/15`
+                          `bg-${sConfig.color}-500/15`
                         )}>
-                          <StepIcon className={cn('w-3 h-3', `text-${stepConfig.color}-400`)} />
+                          <StepIcon className={cn('w-3 h-3', `text-${sConfig.color}-400`)} />
                         </div>
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2">
-                            <span className={cn('text-[9px] font-mono font-medium', `text-${stepConfig.color}-400`)}>
-                              {stepConfig.label}
+                            <span className={cn('text-[12px] font-mono font-medium', `text-${sConfig.color}-400`)}>
+                              {t(labelKey)}
                             </span>
                             {step.toolName && (
-                              <span className="text-[9px] font-mono text-white/30 bg-white/5 px-1 rounded">
+                              <span className="text-[12px] font-mono text-white/30 bg-white/5 px-1 rounded">
                                 {step.toolName}
                               </span>
                             )}
                             {step.duration !== undefined && (
-                              <span className="text-[8px] font-mono text-white/20 ml-auto">
+                              <span className="text-[11px] font-mono text-white/20 ml-auto">
                                 {step.duration}ms
                               </span>
                             )}
@@ -184,6 +213,7 @@ function TaskCard({ task, index, isExpanded, onToggle }: {
   isExpanded: boolean
   onToggle: () => void
 }) {
+  const t = useT()
   const config = statusConfig[task.status]
   const priority = priorityConfig[task.priority]
   const Icon = config.icon
@@ -212,10 +242,10 @@ function TaskCard({ task, index, isExpanded, onToggle }: {
                 {task.title}
               </h4>
               <span className={cn(
-                'text-[9px] font-mono px-1.5 py-0.5 rounded flex-shrink-0',
+                'text-[12px] font-mono px-1.5 py-0.5 rounded flex-shrink-0',
                 `bg-${priority.color}-500/20 text-${priority.color}-400`
               )}>
-                {priority.label}
+                {t(priorityLabelKeys[task.priority])}
               </span>
             </div>
             
@@ -239,7 +269,7 @@ function TaskCard({ task, index, isExpanded, onToggle }: {
                   {/* 完整描述 */}
                   <div className="mt-2 p-2.5 bg-white/5 rounded-lg border border-white/10">
                     <p className="text-xs text-white/70 whitespace-pre-wrap leading-relaxed">
-                      {task.description || '暂无详细描述'}
+                      {task.description || '—'}
                     </p>
                   </div>
 
@@ -254,7 +284,7 @@ function TaskCard({ task, index, isExpanded, onToggle }: {
                   )}
 
                   {/* 元数据 */}
-                  <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[9px] font-mono text-white/40">
+                  <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[12px] font-mono text-white/40">
                     <span className="flex items-center gap-1">
                       <Calendar className="w-3 h-3" />
                       {new Date(task.timestamp).toLocaleString('zh-CN')}
@@ -262,13 +292,13 @@ function TaskCard({ task, index, isExpanded, onToggle }: {
                     {task.messageCount !== undefined && (
                       <span className="flex items-center gap-1">
                         <MessageSquare className="w-3 h-3" />
-                        {task.messageCount} 条消息
+                        {task.messageCount} {t('task.messages')}
                       </span>
                     )}
                     {task.executionSteps && task.executionSteps.length > 0 && (
                       <span className="flex items-center gap-1">
                         <Activity className="w-3 h-3" />
-                        {task.executionSteps.length} 步
+                        {task.executionSteps.length}
                       </span>
                     )}
                     {task.sessionKey && (
@@ -284,11 +314,11 @@ function TaskCard({ task, index, isExpanded, onToggle }: {
 
             {/* 折叠时的简要元数据 */}
             {!isExpanded && (
-              <div className="flex items-center gap-3 mt-2 text-[9px] font-mono text-white/30">
+              <div className="flex items-center gap-3 mt-2 text-[12px] font-mono text-white/30">
                 {task.executionSteps && task.executionSteps.length > 0 && (
                   <span className="flex items-center gap-1 text-cyan-400/50">
                     <Activity className="w-3 h-3" />
-                    {task.executionSteps.length} 步
+                    {task.executionSteps.length}
                   </span>
                 )}
                 {task.messageCount !== undefined && (
@@ -329,6 +359,8 @@ function SystemInbox({
   expandedTaskId: string | null
   onToggleTask: (id: string) => void
 }) {
+  const t = useT()
+
   if (tasks.length === 0) return null
 
   return (
@@ -338,9 +370,9 @@ function SystemInbox({
         className="flex items-center gap-2 p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg cursor-pointer hover:bg-amber-500/15 transition-colors"
       >
         <Inbox className="w-4 h-4 text-amber-400" />
-        <h3 className="text-sm font-mono text-amber-200">System Inbox</h3>
-        <span className="text-[10px] font-mono text-white/40 ml-1">来自 IM / 系统</span>
-        <span className="bg-amber-500/20 text-amber-300 text-[10px] font-mono px-2 py-0.5 rounded-full ml-auto">
+        <h3 className="text-sm font-mono text-amber-200">{t('task.inbox')}</h3>
+        <span className="text-[13px] font-mono text-white/40 ml-1">{t('task.inbox_from')}</span>
+        <span className="bg-amber-500/20 text-amber-300 text-[13px] font-mono px-2 py-0.5 rounded-full ml-auto">
           {tasks.length}
         </span>
         <ChevronRight className={cn(
@@ -377,6 +409,7 @@ function SystemInbox({
 }
 
 export function TaskHouse() {
+  const t = useT()
   const storeTasks = useStore((s) => s.tasks)
   const activeExecutions = useStore((s) => s.activeExecutions)
   const loading = useStore((s) => s.sessionsLoading)
@@ -388,8 +421,6 @@ export function TaskHouse() {
   
   const isConnected = connectionStatus === 'connected'
   const defaultTasks = connectionMode === 'native' ? defaultTasksNative : defaultTasksOpenClaw
-  // 合并: 实时执行任务 (activeExecutions，含历史) + 会话派生任务 (storeTasks)
-  // 即使未连接，只要有历史任务就显示
   const hasHistory = activeExecutions.length > 0
   const tasks = (isConnected && storeTasks.length > 0) || hasHistory
     ? [...activeExecutions, ...storeTasks]
@@ -404,8 +435,6 @@ export function TaskHouse() {
     setExpandedTaskId(prev => prev === id ? null : id)
   }
 
-  // 分类：Pending → System Inbox，Executing/Done → OS Workspace
-  // 按时间降序排列，最新任务显示在最上方
   const sortDesc = (a: TaskItem, b: TaskItem) => 
     new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
 
@@ -424,17 +453,17 @@ export function TaskHouse() {
   const renderColumn = (
     columnTasks: TaskItem[], 
     status: TaskItem['status'],
-    config: typeof statusConfig[keyof typeof statusConfig]
   ) => {
+    const config = statusConfig[status]
     const Icon = config.icon
     return (
       <div className="flex-1 flex flex-col min-w-0">
         <div className="flex items-center gap-2 mb-4">
           <Icon className={cn('w-4 h-4', `text-${config.color}-400`)} />
           <h3 className={cn('font-mono text-sm tracking-wider', `text-${config.color}-300`)}>
-            {config.label}
+            {t(statusLabelKeys[status])}
           </h3>
-          <span className="text-[10px] font-mono text-white/40 bg-white/5 px-2 py-0.5 rounded ml-auto">
+          <span className="text-[13px] font-mono text-white/40 bg-white/5 px-2 py-0.5 rounded ml-auto">
             {columnTasks.length}
           </span>
         </div>
@@ -461,7 +490,7 @@ export function TaskHouse() {
     <div className="flex flex-col h-full p-6">
       <AISummaryCard view="task" />
 
-      {/* Agent 活跃任务横幅 (Native 模式 Agent 状态广播) */}
+      {/* Agent 活跃任务横幅 */}
       <AnimatePresence>
         {agentStatus !== 'idle' && currentTaskDescription && (
           <motion.div
@@ -483,7 +512,7 @@ export function TaskHouse() {
                   agentStatus === 'thinking' ? 'text-cyan-400 animate-pulse' : 'text-amber-400 animate-pulse'
                 )} />
                 <span className="text-xs font-mono text-white/70">
-                  Agent {agentStatus === 'thinking' ? '思考中' : '执行中'}
+                  Agent {agentStatus === 'thinking' ? t('task.agent_thinking') : t('task.agent_executing')}
                 </span>
                 <span className="text-xs font-mono text-white/40 truncate flex-1">
                   {currentTaskDescription}
@@ -494,7 +523,7 @@ export function TaskHouse() {
         )}
       </AnimatePresence>
 
-      {/* System Inbox: 折叠式待处理任务 */}
+      {/* System Inbox */}
       <SystemInbox
         tasks={pendingTasks}
         isExpanded={isInboxExpanded}
@@ -510,18 +539,18 @@ export function TaskHouse() {
         {hasHistory && (
           <button
             onClick={() => { if (window.confirm('确定清除所有任务历史？')) clearTaskHistory() }}
-            className="ml-auto flex items-center gap-1 px-2 py-0.5 rounded text-[9px] font-mono text-white/30 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+            className="ml-auto flex items-center gap-1 px-2 py-0.5 rounded text-[12px] font-mono text-white/30 hover:text-red-400 hover:bg-red-500/10 transition-colors"
           >
             <Trash2 className="w-3 h-3" />
-            清除历史
+            {t('common.delete')}
           </button>
         )}
       </div>
 
-      {/* 主工作区: 进行中 & 已完成 */}
+      {/* 主工作区 */}
       <div className="flex flex-1 gap-4 min-h-0">
-        {renderColumn(executingTasks, 'executing', statusConfig.executing)}
-        {renderColumn(doneTasks, 'done', statusConfig.done)}
+        {renderColumn(executingTasks, 'executing')}
+        {renderColumn(doneTasks, 'done')}
       </div>
     </div>
   )

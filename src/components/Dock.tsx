@@ -3,6 +3,17 @@ import { useStore } from '@/store'
 import { houseRegistry } from '@/houses/registry'
 import { dockIconVariants } from '@/utils/animations'
 import { cn } from '@/utils/cn'
+import { useT } from '@/i18n'
+import type { TranslationKey } from '@/i18n/locales/zh'
+
+const dockNameKeys: Record<string, TranslationKey> = {
+  world: 'app.menu.world',
+  task: 'app.menu.task',
+  skill: 'app.menu.skill',
+  memory: 'app.menu.memory',
+  soul: 'app.menu.soul',
+  settings: 'app.menu.settings',
+}
 
 const themeColorMap: Record<string, string> = {
   cyan: 'text-cyan-400',
@@ -30,6 +41,7 @@ const dotColorMap: Record<string, string> = {
 
 export function Dock() {
   const { currentView, setView } = useStore()
+  const t = useT()
 
   return (
     <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-40">
@@ -50,7 +62,7 @@ export function Dock() {
             <div key={house.id} className="relative group">
               {/* Tooltip */}
               <div className="absolute -top-10 left-1/2 -translate-x-1/2 px-3 py-1 bg-black/80 backdrop-blur-md rounded-lg text-xs font-mono text-white whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none border border-white/10">
-                {house.name}
+                {dockNameKeys[house.id] ? t(dockNameKeys[house.id]) : house.name}
               </div>
 
               <motion.button

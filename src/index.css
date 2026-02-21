@@ -58,7 +58,7 @@ body,
   overflow: hidden;
   background-color: rgb(var(--color-bg-primary));
   color: rgb(var(--color-text-primary));
-  font-size: calc(16px * var(--font-scale));
+  font-size: calc(17px * var(--font-scale));
 }
 
 /* ============================================

@@ -5,11 +5,42 @@ import type { WorldTheme } from '@/rendering/types'
 // XP 等级阈值
 const XP_THRESHOLDS = [0, 20, 100, 500] as const
 
+// localStorage key for Nexus persistence
+const NEXUS_STORAGE_KEY = 'ddos_nexuses'
+
 export function xpToLevel(xp: number): number {
   for (let i = XP_THRESHOLDS.length - 1; i >= 0; i--) {
     if (xp >= XP_THRESHOLDS[i]) return i + 1
   }
   return 1
+}
+
+// ---- localStorage 持久化 ----
+
+function saveNexusesToStorage(nexuses: Map<string, NexusEntity>): void {
+  try {
+    const arr = Array.from(nexuses.values())
+    localStorage.setItem(NEXUS_STORAGE_KEY, JSON.stringify(arr))
+  } catch (e) {
+    console.warn('[WorldSlice] Failed to save nexuses to localStorage:', e)
+  }
+}
+
+function loadNexusesFromStorage(): Map<string, NexusEntity> {
+  try {
+    const saved = localStorage.getItem(NEXUS_STORAGE_KEY)
+    if (saved) {
+      const arr: NexusEntity[] = JSON.parse(saved)
+      const map = new Map<string, NexusEntity>()
+      for (const nexus of arr) {
+        map.set(nexus.id, nexus)
+      }
+      return map
+    }
+  } catch (e) {
+    console.warn('[WorldSlice] Failed to load nexuses from localStorage:', e)
+  }
+  return new Map<string, NexusEntity>()
 }
 
 // ISO 投影常量
@@ -35,9 +66,9 @@ export function simpleVisualDNA(id: string, archetype: NexusArchetype): VisualDN
   }
 }
 
-// 初始状态: 空世界，等待 Observer 涌现
+// 初始状态: 从 localStorage 加载或空世界
 function createDemoNexuses(): Map<string, NexusEntity> {
-  return new Map<string, NexusEntity>()
+  return loadNexusesFromStorage()
 }
 
 // 用于从服务器数据自动分配 grid 位置
@@ -129,12 +160,14 @@ export const createWorldSlice: StateCreator<WorldSlice> = (set, get) => ({
   addNexus: (nexus) => set((state) => {
     const next = new Map(state.nexuses)
     next.set(nexus.id, nexus)
+    saveNexusesToStorage(next)
     return { nexuses: next }
   }),
 
   removeNexus: (id) => set((state) => {
     const next = new Map(state.nexuses)
     next.delete(id)
+    saveNexusesToStorage(next)
     return {
       nexuses: next,
       selectedNexusId: state.selectedNexusId === id ? null : state.selectedNexusId,
@@ -148,6 +181,7 @@ export const createWorldSlice: StateCreator<WorldSlice> = (set, get) => ({
     const next = new Map(state.nexuses)
     const newLevel = xpToLevel(xp)
     next.set(id, { ...nexus, xp, level: newLevel })
+    saveNexusesToStorage(next)
     return { nexuses: next }
   }),
 
@@ -156,6 +190,7 @@ export const createWorldSlice: StateCreator<WorldSlice> = (set, get) => ({
     if (!nexus) return state
     const next = new Map(state.nexuses)
     next.set(id, { ...nexus, position })
+    saveNexusesToStorage(next)
     return { nexuses: next }
   }),
 
@@ -217,18 +252,25 @@ export const createWorldSlice: StateCreator<WorldSlice> = (set, get) => ({
         strategy: serverNexus.strategy,
       })
     }
+    saveNexusesToStorage(next)
     return { nexuses: next }
   }),
 
   tickConstructionAnimations: (deltaMs) => set((state) => {
     let changed = false
+    let anyCompleted = false
     const next = new Map(state.nexuses)
     for (const [id, nexus] of next) {
       if (nexus.constructionProgress < 1) {
         changed = true
         const progress = Math.min(1, nexus.constructionProgress + deltaMs / 3000)
         next.set(id, { ...nexus, constructionProgress: progress })
+        if (progress >= 1) anyCompleted = true
       }
+    }
+    // 仅在有建造完成时保存到 localStorage（避免频繁写入）
+    if (anyCompleted) {
+      saveNexusesToStorage(next)
     }
     return changed ? { nexuses: next } : state
   }),

@@ -3,11 +3,15 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { 
   X, Play, Trash2, Star, Clock, Globe2, 
   ChevronDown, ChevronRight, Puzzle, Cpu,
-  BookOpen, Zap, CheckCircle2, XCircle
+  BookOpen, Zap, CheckCircle2, XCircle, Timer
 } from 'lucide-react'
 import { useStore } from '@/store'
 import { cn } from '@/utils/cn'
+import { useT } from '@/i18n'
 import type { NexusArchetype, NexusExperience } from '@/types'
+
+// 建造总时长（与 worldSlice tickConstructionAnimations 中的 3000ms 一致）
+const CONSTRUCTION_DURATION_MS = 3000
 
 // Archetype config
 const ARCHETYPE_CONFIG: Record<NexusArchetype, { 
@@ -107,6 +111,7 @@ function PlanetPreview({ hue, accentHue, level }: { hue: number; accentHue: numb
 }
 
 export function NexusDetailPanel() {
+  const t = useT()
   const nexusPanelOpen = useStore((s) => s.nexusPanelOpen)
   const selectedNexusForPanel = useStore((s) => s.selectedNexusForPanel)
   const closeNexusPanel = useStore((s) => s.closeNexusPanel)
@@ -303,17 +308,17 @@ export function NexusDetailPanel() {
                   {/* 进度文字 */}
                   <div className="text-center space-y-2">
                     <p className={cn('text-lg font-mono font-semibold', archConfig.textClass)}>
-                      星球建造中
+                      {t('nexus.constructing')}
                     </p>
                     <p className="text-sm font-mono text-white/40">
-                      物质正在凝聚...
+                      {t('nexus.constructing_matter')}
                     </p>
                   </div>
                   
                   {/* 进度条 */}
                   <div className="w-48">
                     <div className="flex justify-between text-xs font-mono text-white/40 mb-1">
-                      <span>建造进度</span>
+                      <span>{t('nexus.constructing_progress')}</span>
                       <span>{Math.round(nexus.constructionProgress * 100)}%</span>
                     </div>
                     <div className="h-2 bg-white/5 rounded-full overflow-hidden">
@@ -324,11 +329,22 @@ export function NexusDetailPanel() {
                         className={cn('h-full rounded-full', archConfig.bgClass)}
                       />
                     </div>
+                    {/* 预估剩余时间 */}
+                    <div className="flex items-center justify-center gap-1.5 mt-2">
+                      <Timer className="w-3 h-3 text-white/30" />
+                      <span className="text-xs font-mono text-white/40">
+                        {t('nexus.constructing_eta')}{' '}
+                        <span className={archConfig.textClass}>
+                          {Math.max(0, Math.ceil((1 - nexus.constructionProgress) * CONSTRUCTION_DURATION_MS / 1000))}
+                        </span>
+                        {t('nexus.constructing_eta_seconds')}
+                      </span>
+                    </div>
                   </div>
                   
                   <p className="text-xs font-mono text-white/30 text-center max-w-xs">
-                    Nexus 正在从虚空中凝聚，请稍候...
-                    <br />建造完成后即可使用
+                    {t('nexus.constructing_hint')}
+                    <br />{t('nexus.constructing_done_hint')}
                   </p>
                 </motion.div>
               )}
@@ -419,7 +435,7 @@ export function NexusDetailPanel() {
                         <div className="flex items-center justify-between mb-1">
                           <span className="text-sm font-mono text-white/80 font-medium">{skill.name}</span>
                           <span className={cn(
-                            'text-[10px] font-mono px-2 py-0.5 rounded-full',
+                            'text-[13px] font-mono px-2 py-0.5 rounded-full',
                             skill.status === 'active' 
                               ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/20'
                               : 'bg-white/5 text-white/40 border border-white/10'
@@ -451,7 +467,7 @@ export function NexusDetailPanel() {
                   </div>
                   <button
                     onClick={handleDeactivate}
-                    className="text-[10px] font-mono px-3 py-1 rounded bg-white/5 text-white/40 hover:text-white/60 border border-white/10 transition-colors"
+                    className="text-[13px] font-mono px-3 py-1 rounded bg-white/5 text-white/40 hover:text-white/60 border border-white/10 transition-colors"
                   >
                     Deactivate
                   </button>
@@ -525,7 +541,7 @@ export function NexusDetailPanel() {
                             {exp.title}
                           </p>
                           {exp.content && (
-                            <p className="text-[10px] font-mono text-white/25 truncate mt-0.5">
+                            <p className="text-[13px] font-mono text-white/25 truncate mt-0.5">
                               {exp.content.split('\n')[0]}
                             </p>
                           )}
@@ -575,7 +591,7 @@ export function NexusDetailPanel() {
                     >
                       <div className="mt-3 pt-3 border-t border-white/5 space-y-3">
                         <div>
-                          <label className="text-[10px] font-mono text-white/30 uppercase mb-1 block">Base URL</label>
+                          <label className="text-[13px] font-mono text-white/30 uppercase mb-1 block">Base URL</label>
                           <input
                             type="text"
                             value={customBaseUrl}
@@ -585,7 +601,7 @@ export function NexusDetailPanel() {
                           />
                         </div>
                         <div>
-                          <label className="text-[10px] font-mono text-white/30 uppercase mb-1 block">Model</label>
+                          <label className="text-[13px] font-mono text-white/30 uppercase mb-1 block">Model</label>
                           <input
                             type="text"
                             value={customModel}
@@ -595,7 +611,7 @@ export function NexusDetailPanel() {
                           />
                         </div>
                         <div>
-                          <label className="text-[10px] font-mono text-white/30 uppercase mb-1 block">API Key (optional, uses global if empty)</label>
+                          <label className="text-[13px] font-mono text-white/30 uppercase mb-1 block">API Key (optional, uses global if empty)</label>
                           <input
                             type="password"
                             value={customApiKey}

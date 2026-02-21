@@ -9,6 +9,7 @@ import { GlassCard } from '@/components/GlassCard'
 import { useStore } from '@/store'
 import { cn } from '@/utils/cn'
 import { isLLMConfigured } from '@/services/llmService'
+import { useT } from '@/i18n'
 import type { MemoryEntry, JournalEntry, JournalMood } from '@/types'
 
 // ============================================
@@ -18,10 +19,10 @@ import type { MemoryEntry, JournalEntry, JournalMood } from '@/types'
 const moodConfig: Record<JournalMood, {
   icon: typeof Zap
   label: string
-  color: string        // Tailwind text color
-  bgColor: string      // Tailwind bg color  
-  borderColor: string  // Tailwind border color
-  glowColor: string    // GlassCard theme
+  color: string
+  bgColor: string
+  borderColor: string
+  glowColor: string
   emoji: string
 }> = {
   productive: {
@@ -104,7 +105,6 @@ function getDisplayDate(dateStr: string): string {
   if (dateStr === todayStr) return '今天'
   if (dateStr === yesterdayStr) return '昨天'
   
-  // 更友好的日期格式
   try {
     const d = new Date(dateStr + 'T00:00:00')
     if (isNaN(d.getTime())) return dateStr
@@ -129,6 +129,7 @@ function JournalHeroCard({
   onToggle: () => void
   index: number
 }) {
+  const t = useT()
   const mood = moodConfig[entry.mood]
   const MoodIcon = mood.icon
 
@@ -162,7 +163,7 @@ function JournalHeroCard({
             <div className="flex items-center gap-2">
               <span className="text-lg">{mood.emoji}</span>
               <div>
-                <p className="text-[10px] font-mono text-white/40 uppercase tracking-wider">
+                <p className="text-[13px] font-mono text-white/40 uppercase tracking-wider">
                   {getDisplayDate(entry.date)}
                 </p>
                 <h3 className="text-base font-medium text-white/90 leading-tight">
@@ -172,7 +173,7 @@ function JournalHeroCard({
             </div>
             <div className="flex items-center gap-2">
               <span className={cn(
-                'px-2 py-1 rounded-full text-[10px] font-mono flex items-center gap-1',
+                'px-2 py-1 rounded-full text-[13px] font-mono flex items-center gap-1',
                 mood.bgColor, mood.color
               )}>
                 <MoodIcon className="w-3 h-3" />
@@ -208,7 +209,7 @@ function JournalHeroCard({
                       <span
                         key={i}
                         className={cn(
-                          'px-2.5 py-1 rounded-full text-[10px] font-mono',
+                          'px-2.5 py-1 rounded-full text-[13px] font-mono',
                           'bg-white/5 text-white/50 border border-white/10',
                           'flex items-center gap-1'
                         )}
@@ -222,11 +223,11 @@ function JournalHeroCard({
 
                 {/* 底部信息 */}
                 <div className="flex items-center justify-between pt-3 border-t border-white/5">
-                  <div className="flex items-center gap-1 text-[10px] font-mono text-white/30">
+                  <div className="flex items-center gap-1 text-[13px] font-mono text-white/30">
                     <MessageSquare className="w-3 h-3" />
-                    <span>{entry.memoryCount} 条对话</span>
+                    <span>{entry.memoryCount} {t('memory.conversations')}</span>
                   </div>
-                  <span className="text-[9px] font-mono text-white/20">
+                  <span className="text-[12px] font-mono text-white/20">
                     {entry.date}
                   </span>
                 </div>
@@ -248,6 +249,7 @@ function JournalHeroCard({
 // ============================================
 
 function RawMemoryPanel({ memories }: { memories: MemoryEntry[] }) {
+  const t = useT()
   const [isOpen, setIsOpen] = useState(false)
 
   if (memories.length === 0) return null
@@ -256,12 +258,12 @@ function RawMemoryPanel({ memories }: { memories: MemoryEntry[] }) {
     <div className="mt-4">
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-2 text-[10px] font-mono text-white/30 hover:text-white/50 transition-colors"
+        className="flex items-center gap-2 text-[13px] font-mono text-white/30 hover:text-white/50 transition-colors"
       >
         <motion.div animate={{ rotate: isOpen ? 180 : 0 }} transition={{ duration: 0.2 }}>
           <ChevronDown className="w-3 h-3" />
         </motion.div>
-        原始记忆数据 ({memories.length} 条)
+        {t('memory.raw_data')} ({memories.length})
       </button>
 
       <AnimatePresence>
@@ -281,22 +283,22 @@ function RawMemoryPanel({ memories }: { memories: MemoryEntry[] }) {
                 >
                   <div className="flex items-center gap-2 mb-0.5">
                     <span className={cn(
-                      'text-[9px] px-1.5 py-0.5 rounded font-mono',
+                      'text-[12px] px-1.5 py-0.5 rounded font-mono',
                       mem.type === 'short-term' 
                         ? 'bg-amber-500/15 text-amber-400/70' 
                         : 'bg-emerald-500/15 text-emerald-400/70'
                     )}>
-                      {mem.type === 'short-term' ? '短期' : '长期'}
+                      {mem.type === 'short-term' ? t('memory.short_term') : t('memory.long_term')}
                     </span>
                     {mem.role && (
                       <span className={cn(
-                        'text-[9px] px-1 rounded font-mono',
+                        'text-[12px] px-1 rounded font-mono',
                         mem.role === 'user' ? 'text-cyan-400/60' : 'text-purple-400/60'
                       )}>
-                        {mem.role === 'user' ? '用户' : 'AI'}
+                        {mem.role === 'user' ? t('memory.user') : t('memory.ai')}
                       </span>
                     )}
-                    <span className="text-[9px] font-mono text-white/25 ml-auto">
+                    <span className="text-[12px] font-mono text-white/25 ml-auto">
                       {(() => {
                         try {
                           const d = new Date(mem.timestamp)
@@ -335,6 +337,8 @@ function JournalStats({
   isGenerating: boolean
   llmReady: boolean
 }) {
+  const t = useT()
+
   // Mood 分布统计
   const moodCounts = useMemo(() => {
     const counts: Record<JournalMood, number> = { productive: 0, learning: 0, casual: 0, challenging: 0 }
@@ -350,7 +354,7 @@ function JournalStats({
     <div className="w-48 border-l border-white/10 p-4 space-y-4 flex flex-col">
       <div className="flex items-center gap-2 mb-2">
         <BookOpen className="w-4 h-4 text-emerald-400" />
-        <h4 className="font-mono text-xs text-emerald-300 uppercase">冒险统计</h4>
+        <h4 className="font-mono text-xs text-emerald-300 uppercase">{t('memory.stats')}</h4>
       </div>
 
       {/* 核心运行按钮 */}
@@ -377,7 +381,7 @@ function JournalStats({
         {isGenerating ? (
           <>
             <Loader2 className="w-4 h-4 animate-spin" />
-            <span>编写中...</span>
+            <span>{t('memory.generating')}</span>
           </>
         ) : (
           <>
@@ -389,32 +393,32 @@ function JournalStats({
             )}>
               <Play className="w-3.5 h-3.5 ml-0.5" />
             </div>
-            <span>生成日志</span>
+            <span>{t('memory.generate')}</span>
           </>
         )}
       </button>
 
       {!llmReady && (
-        <p className="text-[9px] font-mono text-amber-400/50 leading-relaxed">
-          需要在设置中配置 LLM API 才能生成日志
+        <p className="text-[12px] font-mono text-amber-400/50 leading-relaxed">
+          {t('memory.llm_hint')}
         </p>
       )}
 
       <div className="space-y-3">
         <div className="p-3 bg-white/5 rounded-lg">
-          <p className="text-[10px] font-mono text-white/40 uppercase">冒险天数</p>
+          <p className="text-[13px] font-mono text-white/40 uppercase">{t('memory.adventure_days')}</p>
           <p className="text-2xl font-bold text-emerald-400">{totalDays}</p>
         </div>
 
         <div className="p-3 bg-white/5 rounded-lg">
-          <p className="text-[10px] font-mono text-white/40 uppercase">总记忆</p>
+          <p className="text-[13px] font-mono text-white/40 uppercase">{t('memory.total_memories')}</p>
           <p className="text-2xl font-bold text-cyan-400">{totalMemories}</p>
         </div>
 
         {/* Mood 分布 */}
         {totalDays > 0 && (
           <div className="p-3 bg-white/5 rounded-lg space-y-2">
-            <p className="text-[10px] font-mono text-white/40 uppercase">氛围分布</p>
+            <p className="text-[13px] font-mono text-white/40 uppercase">{t('memory.mood_distribution')}</p>
             {(Object.entries(moodCounts) as [JournalMood, number][])
               .filter(([, count]) => count > 0)
               .sort(([, a], [, b]) => b - a)
@@ -439,7 +443,7 @@ function JournalStats({
                         />
                       </div>
                     </div>
-                    <span className="text-[10px] font-mono text-white/40 w-4 text-right">{count}</span>
+                    <span className="text-[13px] font-mono text-white/40 w-4 text-right">{count}</span>
                   </div>
                 )
               })
@@ -449,8 +453,8 @@ function JournalStats({
       </div>
 
       <div className="pt-4 border-t border-white/10 mt-auto">
-        <p className="text-[9px] font-mono text-white/30 leading-relaxed">
-          点击「生成日志」将对话转化为冒险故事，点击卡片查看完整内容。
+        <p className="text-[12px] font-mono text-white/30 leading-relaxed">
+          {t('memory.instructions')}
         </p>
       </div>
     </div>
@@ -462,6 +466,7 @@ function JournalStats({
 // ============================================
 
 export function MemoryHouse() {
+  const t = useT()
   const storeMemories = useStore((s) => s.memories)
   const journalEntries = useStore((s) => s.journalEntries)
   const journalLoading = useStore((s) => s.journalLoading)
@@ -497,7 +502,6 @@ export function MemoryHouse() {
   // 手动刷新
   const handleRefresh = () => {
     if (llmReady && memories.length > 0 && !journalLoading) {
-      // 清除缓存并重新生成
       try { localStorage.removeItem('ddos_journal_entries') } catch {}
       useStore.getState().setJournalEntries([])
       generateJournal(memories)
@@ -519,7 +523,7 @@ export function MemoryHouse() {
         <div className="mx-4 mt-4 px-4 py-3 bg-white/5 border border-white/10 rounded-lg">
           <div className="flex items-center gap-2 text-xs font-mono text-white/40">
             <Sparkles className="w-3.5 h-3.5" />
-            <span>AI 未配置 - 前往设置配置 LLM API 以启用冒险日志自动生成</span>
+            <span>{t('memory.llm_not_configured')}</span>
           </div>
         </div>
       )}
@@ -531,13 +535,13 @@ export function MemoryHouse() {
           <div className="flex items-center gap-2 mb-6">
             <BookOpen className="w-5 h-5 text-emerald-400" />
             <h3 className="font-mono text-sm text-emerald-300 tracking-wider">
-              冒险日志
+              {t('memory.title')}
             </h3>
             <span className="ml-auto flex items-center gap-2">
               {journalLoading && (
-                <span className="flex items-center gap-1 text-[10px] font-mono text-amber-400/60">
+                <span className="flex items-center gap-1 text-[13px] font-mono text-amber-400/60">
                   <Loader2 className="w-3 h-3 animate-spin" />
-                  正在编写日志...
+                  {t('memory.generating')}
                 </span>
               )}
               {llmReady && (
@@ -545,13 +549,13 @@ export function MemoryHouse() {
                   onClick={handleRefresh}
                   disabled={journalLoading}
                   className="p-1 text-white/30 hover:text-emerald-400 transition-colors disabled:opacity-30"
-                  title="重新生成日志"
+                  title={t('memory.regenerate')}
                 >
                   <RefreshCw className={cn('w-3.5 h-3.5', journalLoading && 'animate-spin')} />
                 </button>
               )}
-              <span className="text-[10px] font-mono text-white/40">
-                {sortedJournals.length} 篇日志
+              <span className="text-[13px] font-mono text-white/40">
+                {sortedJournals.length} {t('memory.entries_count')}
               </span>
             </span>
           </div>
@@ -575,12 +579,12 @@ export function MemoryHouse() {
             <div className="flex flex-col items-center justify-center h-48 text-center">
               <Inbox className="w-16 h-16 text-white/10 mb-4" />
               <p className="text-sm font-mono text-white/40">
-                {isConnected ? '暂无冒险日志' : '未连接'}
+                {isConnected ? t('memory.no_entries') : t('memory.not_connected')}
               </p>
               <p className="text-xs font-mono text-white/25 mt-1">
                 {isConnected
-                  ? '对话开始后，AI 将自动编写你的冒险故事'
-                  : '请先在左下角连接面板中连接'}
+                  ? t('memory.no_entries_desc')
+                  : t('memory.connect_prompt')}
               </p>
             </div>
           )}
