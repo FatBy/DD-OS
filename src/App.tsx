@@ -15,6 +15,7 @@ import { getHouseById } from '@/houses/registry'
 import { openClawService } from '@/services/OpenClawService'
 import { localClawService } from '@/services/LocalClawService'
 import { getLocalSoulData, getLocalSkills, getLocalMemories } from '@/utils/localDataProvider'
+import { simpleVisualDNA } from '@/store/slices/worldSlice'
 
 /**
  * 从 localStorage 缓存立即恢复数据到 store
@@ -121,6 +122,13 @@ function App() {
       
       // P3: 危险操作审批
       requestApproval: useStore.getState().requestApproval,
+      
+      // P4: Nexus 数据注入
+      setNexusesFromServer: useStore.getState().setNexusesFromServer,
+      setActiveNexus: useStore.getState().setActiveNexus,
+      updateNexusXP: useStore.getState().updateNexusXP,
+      get activeNexusId() { return useStore.getState().activeNexusId },
+      get nexuses() { return useStore.getState().nexuses },
     }
 
     // 注入到 OpenClaw 服务 (兼容模式)
@@ -138,6 +146,32 @@ function App() {
       console.log('[App] LLM config restored from localStorage')
       useStore.getState().setLlmConnected(true) // 标记为已配置
     }
+
+    // 种子 Nexus: 仅在后端未加载 Nexus 时作为 fallback
+    // Phase 4: 实际 Nexus 数据将从 /nexuses API 加载
+    // 延迟 3 秒检查，给后端加载留出时间
+    setTimeout(() => {
+      const state = useStore.getState()
+      // 如果后端已经加载了 nexuses (通过 loadAllDataToStore)，则跳过
+      if (state.nexuses.size === 0) {
+        const seedNexusId = 'skill-scout'
+        useStore.getState().addNexus({
+          id: seedNexusId,
+          archetype: 'REACTOR',
+          position: { gridX: 3, gridY: -2 },
+          level: 2,
+          xp: 80,
+          visualDNA: simpleVisualDNA(seedNexusId, 'REACTOR'),
+          label: 'Skill Scout',
+          constructionProgress: 1,
+          createdAt: Date.now(),
+          boundSkillId: 'skill-scout',
+          boundSkillIds: ['skill-scout', 'skill-generator'],
+          flavorText: '持续扫描全球 SKILL 社区，发现并安装新能力',
+        })
+        console.log('[App] Fallback: Seeded Nexus (backend not available)')
+      }
+    }, 3000)
 
     if (savedMode) {
       useStore.getState().setConnectionMode(savedMode as 'native' | 'openclaw')
@@ -186,6 +220,12 @@ function App() {
   }, [])
 
   const isChatOpen = useStore((s) => s.isChatOpen)
+  const initTheme = useStore((s) => s.initTheme)
+
+  // 初始化主题
+  useEffect(() => {
+    initTheme()
+  }, [initTheme])
 
   // 聊天面板开关时触发 resize，让 Canvas 重新计算尺寸
   useEffect(() => {
@@ -197,7 +237,7 @@ function App() {
   }, [isChatOpen])
 
   return (
-    <div className="flex w-screen h-screen overflow-hidden bg-slate-950 text-white select-none">
+    <div className="flex w-screen h-screen overflow-hidden bg-skin-bg-primary text-skin-text-primary">
       {/* Main content area */}
       <div className="relative flex-1 min-w-0 h-full overflow-hidden">
       {/* Background layer: always present */}

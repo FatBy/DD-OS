@@ -1,13 +1,27 @@
 import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import { 
-  Monitor, Info, Check, Sparkles, Eye, EyeOff, Type, Wifi, WifiOff
+  Monitor, Info, Check, Sparkles, Eye, EyeOff, Type, Wifi, WifiOff, Palette, Globe
 } from 'lucide-react'
 import { GlassCard } from '@/components/GlassCard'
 import { staggerContainer, staggerItem } from '@/utils/animations'
 import { useStore } from '@/store'
 import { testConnection } from '@/services/llmService'
 import { cn } from '@/utils/cn'
+import { themes } from '@/themes'
+import type { ThemeName } from '@/types/theme'
+import type { WorldTheme } from '@/rendering/types'
+
+const WORLD_THEME_OPTIONS: Array<{
+  id: WorldTheme
+  label: string
+  description: string
+  color: string
+}> = [
+  { id: 'cosmos', label: '宇宙', description: '深空星球', color: 'rgb(56, 189, 248)' },
+  { id: 'cityscape', label: '城市', description: '赛博建筑', color: 'rgb(251, 191, 36)' },
+  { id: 'wildlife', label: '生态', description: '自然生物', color: 'rgb(52, 211, 153)' },
+]
 
 const settingsData = [
   {
@@ -48,6 +62,14 @@ export function SettingsHouse() {
     const saved = localStorage.getItem('ddos_font_scale')
     return saved ? parseFloat(saved) : 1
   })
+  
+  // 主题设置
+  const currentTheme = useStore((s) => s.currentTheme)
+  const setTheme = useStore((s) => s.setTheme)
+  
+  // 世界主题
+  const worldTheme = useStore((s) => s.worldTheme)
+  const setWorldTheme = useStore((s) => s.setWorldTheme)
   
   useEffect(() => {
     document.documentElement.style.setProperty('--font-scale', String(fontScale))
@@ -305,6 +327,115 @@ export function SettingsHouse() {
                 <span>100%</span>
                 <span>150%</span>
               </div>
+            </GlassCard>
+          </motion.div>
+
+          {/* 主题切换 */}
+          <motion.div variants={staggerItem}>
+            <GlassCard className="p-4">
+              <div className="flex items-center gap-2 mb-3">
+                <Palette className="w-4 h-4 text-skin-accent-purple" />
+                <h4 className="text-sm font-mono text-skin-text-secondary">界面主题</h4>
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                {(Object.keys(themes) as ThemeName[]).map((themeName) => {
+                  const theme = themes[themeName]
+                  const isActive = currentTheme === themeName
+                  return (
+                    <button
+                      key={themeName}
+                      onClick={() => setTheme(themeName)}
+                      className={cn(
+                        'relative p-3 rounded-lg border transition-all',
+                        isActive
+                          ? 'border-skin-accent-cyan bg-skin-accent-cyan/10'
+                          : 'border-skin-border/20 hover:border-skin-border/40 bg-skin-bg-secondary/20'
+                      )}
+                    >
+                      {/* 主题预览色块 */}
+                      <div className="flex gap-1 mb-2 justify-center">
+                        <div 
+                          className="w-3 h-3 rounded-full"
+                          style={{ backgroundColor: `rgb(${theme.colors.accentCyan})` }}
+                        />
+                        <div 
+                          className="w-3 h-3 rounded-full"
+                          style={{ backgroundColor: `rgb(${theme.colors.accentAmber})` }}
+                        />
+                        <div 
+                          className="w-3 h-3 rounded-full"
+                          style={{ backgroundColor: `rgb(${theme.colors.accentPurple})` }}
+                        />
+                      </div>
+                      <span className={cn(
+                        'text-[10px] font-mono block text-center',
+                        isActive ? 'text-skin-accent-cyan' : 'text-skin-text-tertiary'
+                      )}>
+                        {theme.label}
+                      </span>
+                      {isActive && (
+                        <div className="absolute top-1 right-1">
+                          <Check className="w-3 h-3 text-skin-accent-cyan" />
+                        </div>
+                      )}
+                    </button>
+                  )
+                })}
+              </div>
+              <p className="text-[10px] text-skin-text-tertiary font-mono mt-3">
+                切换主题会立即应用到所有界面元素
+              </p>
+            </GlassCard>
+          </motion.div>
+
+          {/* 世界主题 */}
+          <motion.div variants={staggerItem}>
+            <GlassCard className="p-4">
+              <div className="flex items-center gap-2 mb-3">
+                <Globe className="w-4 h-4 text-skin-accent-cyan" />
+                <h4 className="text-sm font-mono text-skin-text-secondary">世界主题</h4>
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                {WORLD_THEME_OPTIONS.map((option) => {
+                  const isActive = worldTheme === option.id
+                  const isAvailable = option.id === 'cosmos'
+                  return (
+                    <button
+                      key={option.id}
+                      onClick={() => isAvailable && setWorldTheme(option.id)}
+                      className={cn(
+                        'relative p-3 rounded-lg border transition-all',
+                        !isAvailable && 'opacity-40 cursor-not-allowed',
+                        isActive
+                          ? 'border-skin-accent-cyan bg-skin-accent-cyan/10'
+                          : 'border-skin-border/20 hover:border-skin-border/40 bg-skin-bg-secondary/20'
+                      )}
+                    >
+                      <div 
+                        className="w-4 h-4 rounded-full mx-auto mb-2"
+                        style={{ backgroundColor: option.color }}
+                      />
+                      <span className={cn(
+                        'text-[10px] font-mono block text-center',
+                        isActive ? 'text-skin-accent-cyan' : 'text-skin-text-tertiary'
+                      )}>
+                        {option.label}
+                      </span>
+                      <span className="text-[8px] font-mono block text-center text-skin-text-tertiary mt-0.5">
+                        {isAvailable ? option.description : '开发中'}
+                      </span>
+                      {isActive && (
+                        <div className="absolute top-1 right-1">
+                          <Check className="w-3 h-3 text-skin-accent-cyan" />
+                        </div>
+                      )}
+                    </button>
+                  )
+                })}
+              </div>
+              <p className="text-[10px] text-skin-text-tertiary font-mono mt-3">
+                世界主题决定 Nexus 节点的视觉风格
+              </p>
             </GlassCard>
           </motion.div>
         </div>

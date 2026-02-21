@@ -145,6 +145,42 @@ function inferArchetypeFromTools(topTools: string[]): NexusArchetype {
     .sort(([, a], [, b]) => b - a)[0][0] as NexusArchetype
 }
 
+/**
+ * 根据触发类型和证据生成功能目标概述
+ */
+function generatePurposeSummary(trigger: TriggerPattern, archetype: NexusArchetype): string {
+  // LLM 分析的第一条 evidence 通常是 summary，直接使用
+  if (trigger.type === 'frequency' || trigger.type === 'complexity' || trigger.type === 'dependency') {
+    // 从 evidence 中提取关键工具名
+    const toolMatch = trigger.evidence[0]?.match(/工具\s*"?(\w+)"?/)
+    const toolName = toolMatch?.[1]
+
+    const archetypePurpose: Record<NexusArchetype, string> = {
+      MONOLITH: toolName
+        ? `将您频繁使用的 ${toolName} 等信息检索能力整合为专用知识采集节点，减少重复搜索、自动沉淀关键信息。`
+        : '将分散的知识获取行为整合为统一的信息中枢，自动积累和结构化您的知识资产。',
+      SPIRE: '将反复出现的复杂多步骤推理封装为可复用模板，降低每次执行的规划开销。',
+      REACTOR: toolName
+        ? `将高频使用的 ${toolName} 等执行工具封装为自动化流程，减少手动操作步骤。`
+        : '将重复性执行操作固化为一键自动化流程，提升日常任务处理效率。',
+      VAULT: '将频繁访问的数据和记忆整合为快速检索中心，缩短信息查找路径。',
+    }
+    return archetypePurpose[archetype]
+  }
+
+  if (trigger.type === 'periodic') {
+    return '将周期性重复任务固化为自动触发的执行节点，实现定时自动化。'
+  }
+
+  // fallback: LLM 分析可能在 evidence[0] 有 summary
+  const llmSummary = trigger.evidence[0]
+  if (llmSummary && !llmSummary.startsWith('建议名称:')) {
+    return llmSummary
+  }
+
+  return '将检测到的行为模式固化为可复用的执行节点，提升操作效率。'
+}
+
 // ============================================
 // LLM 模式分析提示词 (语义引擎)
 // ============================================
@@ -497,6 +533,9 @@ ${summaryData.recentTasks.map((t, i) =>
       const timestamp = new Date().toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
       suggestedName = `${baseLabel}-${timestamp}`
     }
+
+    // 生成功能目标概述
+    const purposeSummary = generatePurposeSummary(trigger, archetype)
     
     const proposal: BuildProposal = {
       id: proposalId,
@@ -504,6 +543,7 @@ ${summaryData.recentTasks.map((t, i) =>
       suggestedName,
       suggestedArchetype: archetype,
       previewVisualDNA: generateVisualDNA(proposalId, archetype),
+      purposeSummary,
       status: 'pending',
       createdAt: Date.now(),
     }

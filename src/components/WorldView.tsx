@@ -19,6 +19,12 @@ export function WorldView() {
   const executingNexusId = useStore((s) => s.executingNexusId)
   const executionStartTime = useStore((s) => s.executionStartTime)
 
+  // 主题调色板
+  const canvasPalette = useStore((s) => s.canvasPalette)
+  
+  // 世界主题
+  const worldTheme = useStore((s) => s.worldTheme)
+
   // 新增：Soul 数据订阅
   const soulIdentity = useStore((s) => s.soulIdentity)
   const soulCoreTruths = useStore((s) => s.soulCoreTruths)
@@ -29,6 +35,10 @@ export function WorldView() {
   const engineRef = useRef<GameCanvas | null>(null)
   const isDragging = useRef(false)
   const lastMouse = useRef({ x: 0, y: 0 })
+  const canvasPaletteRef = useRef(canvasPalette)
+  
+  // 保持 ref 同步
+  canvasPaletteRef.current = canvasPalette
 
   const isHouseOpen = currentView !== 'world'
 
@@ -59,6 +69,9 @@ export function WorldView() {
     try {
       const engine = new GameCanvas(canvas)
       engineRef.current = engine
+      
+      // 立即设置当前主题的调色板
+      engine.setPalette(canvasPaletteRef.current)
 
       const handleResize = () => engine.resize()
       window.addEventListener('resize', handleResize)
@@ -82,6 +95,16 @@ export function WorldView() {
       executionStartTime,
     })
   }, [nexuses, camera, selectedNexusId, renderSettings, energyCoreState, executingNexusId, executionStartTime])
+
+  // 同步主题调色板到渲染引擎
+  useEffect(() => {
+    engineRef.current?.setPalette(canvasPalette)
+  }, [canvasPalette])
+
+  // 同步世界主题到渲染引擎
+  useEffect(() => {
+    engineRef.current?.setWorldTheme(worldTheme)
+  }, [worldTheme])
 
   // ---- 鼠标交互 ----
 
@@ -156,7 +179,7 @@ export function WorldView() {
   }, [camera, nexuses, selectNexus, openNexusPanel])
 
   return (
-    <div className="absolute inset-0 overflow-hidden bg-black">
+    <div className="absolute inset-0 overflow-hidden bg-skin-bg-primary">
       {/* Layer 0: 装饰性网格 (增加空间感，与 SoulOrb 风格统一) */}
       <div 
         className="absolute inset-0 z-0 pointer-events-none opacity-[0.06]"

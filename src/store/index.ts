@@ -8,6 +8,7 @@ import { createDevicesSlice, type DevicesSlice } from './slices/devicesSlice'
 import { createAiSlice, type AiSlice } from './slices/aiSlice'
 import { createWorldSlice, type WorldSlice } from './slices/worldSlice'
 import { createObserverSlice, type ObserverSlice } from './slices/observerSlice'
+import { createThemeSlice, type ThemeSlice } from './slices/themeSlice'
 
 // ============================================
 // 视图状态
@@ -20,7 +21,7 @@ interface ViewSlice {
 // ============================================
 // 合并后的 Store 类型
 // ============================================
-export type AppStore = ViewSlice & ConnectionSlice & SessionsSlice & ChannelsSlice & AgentSlice & DevicesSlice & AiSlice & WorldSlice & ObserverSlice
+export type AppStore = ViewSlice & ConnectionSlice & SessionsSlice & ChannelsSlice & AgentSlice & DevicesSlice & AiSlice & WorldSlice & ObserverSlice & ThemeSlice
 
 // ============================================
 // 创建 Store
@@ -39,6 +40,7 @@ export const useStore = create<AppStore>()((...args) => ({
   ...createAiSlice(...args),
   ...createWorldSlice(...args),
   ...createObserverSlice(...args),
+  ...createThemeSlice(...args),
 }))
 
 // ============================================
@@ -79,6 +81,10 @@ export const selectRenderSettings = (state: AppStore) => state.renderSettings
 export const selectCurrentProposal = (state: AppStore) => state.currentProposal
 export const selectNexusPanelOpen = (state: AppStore) => state.nexusPanelOpen
 export const selectSelectedNexusForPanel = (state: AppStore) => state.selectedNexusForPanel
+
+// Theme 选择器
+export const selectCurrentTheme = (state: AppStore) => state.currentTheme
+export const selectCanvasPalette = (state: AppStore) => state.canvasPalette
 
 // ============================================
 // 开发调试：暴露 store 到 window

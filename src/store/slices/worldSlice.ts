@@ -1,5 +1,6 @@
 import type { StateCreator } from 'zustand'
 import type { NexusEntity, CameraState, GridPosition, RenderSettings, NexusArchetype, VisualDNA } from '@/types'
+import type { WorldTheme } from '@/rendering/types'
 
 // XP 等级阈值
 const XP_THRESHOLDS = [0, 20, 100, 500] as const
@@ -74,6 +75,7 @@ export interface WorldSlice {
   selectedNexusId: string | null
   activeNexusId: string | null
   renderSettings: RenderSettings
+  worldTheme: WorldTheme
   // 执行状态追踪
   executingNexusId: string | null
   executionStartTime: number | null
@@ -97,6 +99,7 @@ export interface WorldSlice {
 
   // Settings
   setRenderSettings: (settings: Partial<RenderSettings>) => void
+  setWorldTheme: (theme: WorldTheme) => void
 
   // Execution Actions
   startNexusExecution: (nexusId: string) => void
@@ -115,6 +118,7 @@ export const createWorldSlice: StateCreator<WorldSlice> = (set, get) => ({
     showLabels: true,
     enableGlow: true,
   },
+  worldTheme: 'cosmos' as WorldTheme,
   // 执行状态初始值
   executingNexusId: null,
   executionStartTime: null,
@@ -266,6 +270,8 @@ export const createWorldSlice: StateCreator<WorldSlice> = (set, get) => ({
   setRenderSettings: (settings) => set((state) => ({
     renderSettings: { ...state.renderSettings, ...settings },
   })),
+
+  setWorldTheme: (theme) => set({ worldTheme: theme }),
 
   // ---- Execution Actions ----
 

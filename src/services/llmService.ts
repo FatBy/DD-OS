@@ -45,6 +45,8 @@ export interface LLMStreamResult {
   content: string
   toolCalls: FCToolCall[]
   finishReason: string | null
+  // DeepSeek 思维模式的推理内容
+  reasoningContent?: string
 }
 
 // ============================================
@@ -65,6 +67,8 @@ export type SimpleChatMessage = {
   tool_call_id?: string
   // tool 消息可选的 name
   name?: string
+  // DeepSeek 思维模式的推理内容 (reasoning_content)
+  reasoning_content?: string
 }
 
 // localStorage keys
@@ -208,6 +212,8 @@ export async function streamChat(
       ...(m.tool_calls ? { tool_calls: m.tool_calls } : {}),
       ...(m.tool_call_id ? { tool_call_id: m.tool_call_id } : {}),
       ...(m.name ? { name: m.name } : {}),
+      // DeepSeek 思维模式: 必须传递 reasoning_content
+      ...(m.reasoning_content ? { reasoning_content: m.reasoning_content } : {}),
     })),
     stream: true,
   }
@@ -237,6 +243,7 @@ export async function streamChat(
 
   // 累积结果
   let fullContent = ''
+  let fullReasoningContent = ''  // DeepSeek 思维模式推理内容
   let finishReason: string | null = null
   // tool_calls 累积器: index → { id, name, arguments }
   const toolCallAccumulator: Map<number, { id: string; name: string; arguments: string }> = new Map()
@@ -265,7 +272,12 @@ export async function streamChat(
               function: { name: acc.name, arguments: acc.arguments },
             })
           }
-          return { content: fullContent, toolCalls, finishReason }
+          return { 
+            content: fullContent, 
+            toolCalls, 
+            finishReason,
+            reasoningContent: fullReasoningContent || undefined,
+          }
         }
 
         try {
@@ -284,6 +296,11 @@ export async function streamChat(
           if (delta.content) {
             fullContent += delta.content
             onChunk(delta.content)
+          }
+
+          // DeepSeek 思维模式: 累积 reasoning_content
+          if (delta.reasoning_content) {
+            fullReasoningContent += delta.reasoning_content
           }
 
           // 累积 tool_calls delta
@@ -316,7 +333,12 @@ export async function streamChat(
       function: { name: acc.name, arguments: acc.arguments },
     })
   }
-  return { content: fullContent, toolCalls, finishReason }
+  return { 
+    content: fullContent, 
+    toolCalls, 
+    finishReason,
+    reasoningContent: fullReasoningContent || undefined,
+  }
 }
 
 /**

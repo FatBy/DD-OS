@@ -118,15 +118,15 @@ export function BuildProposalModal() {
               </p>
               
               {/* Archetype 预览 */}
-              <div className="flex items-center gap-6 mb-6">
+              <div className="flex items-center gap-6 mb-4">
                 <div className={cn(
-                  'w-24 h-24 rounded-lg flex items-center justify-center',
+                  'w-24 h-24 rounded-lg flex items-center justify-center flex-shrink-0',
                   `bg-${archInfo.color}-500/10 border border-${archInfo.color}-500/30`
                 )}>
                   <span className="text-4xl">{archInfo.icon}</span>
                 </div>
                 
-                <div className="flex-1">
+                <div className="flex-1 min-w-0">
                   <h3 className="font-mono text-lg text-white/90 mb-1">
                     {currentProposal.suggestedName}
                   </h3>
@@ -137,6 +137,16 @@ export function BuildProposalModal() {
                     {archInfo.description}
                   </p>
                 </div>
+              </div>
+              
+              {/* 功能目标概述 */}
+              <div className={cn(
+                'mb-6 p-3 rounded-lg border-l-2',
+                `border-${archInfo.color}-400/50 bg-${archInfo.color}-500/5`
+              )}>
+                <p className="text-xs text-white/70 leading-relaxed">
+                  {currentProposal.purposeSummary}
+                </p>
               </div>
               
               {/* 触发证据 */}

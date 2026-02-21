@@ -38,7 +38,7 @@ import shutil
 from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import unquote, urlparse, parse_qs
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # PyYAML (skill-executor/parser.py 已依赖)
 try:
@@ -108,6 +108,98 @@ def parse_skill_frontmatter(skill_md_path: Path) -> dict:
 def skill_name_to_tool_name(name: str) -> str:
     """将 skill 名称标准化为工具名 (kebab-case -> snake_case)"""
     return name.replace('-', '_').replace(' ', '_').lower()
+
+
+# ============================================
+# 🌌 NEXUS.md 解析
+# ============================================
+
+def parse_nexus_frontmatter(nexus_md_path: Path) -> dict:
+    """从 NEXUS.md 提取 YAML frontmatter 元数据"""
+    try:
+        content = nexus_md_path.read_text(encoding='utf-8')
+    except Exception:
+        return {}
+
+    match = re.match(r'^---\s*\n(.*?)\n---\s*\n', content, re.DOTALL)
+    if not match:
+        return {}
+
+    if HAS_YAML:
+        try:
+            return yaml.safe_load(match.group(1)) or {}
+        except Exception:
+            return {}
+    else:
+        result = {}
+        for line in match.group(1).split('\n'):
+            m = re.match(r'^(\w+)\s*:\s*(.+)$', line.strip())
+            if m:
+                key, val = m.group(1), m.group(2).strip()
+                if val.startswith('[') and val.endswith(']'):
+                    val = [v.strip().strip('"\'') for v in val[1:-1].split(',') if v.strip()]
+                result[key] = val
+        return result
+
+
+def extract_nexus_body(nexus_md_path: Path) -> str:
+    """从 NEXUS.md 提取 Markdown 正文 (跳过 frontmatter)"""
+    try:
+        content = nexus_md_path.read_text(encoding='utf-8')
+    except Exception:
+        return ''
+
+    # 去掉 frontmatter
+    match = re.match(r'^---\s*\n.*?\n---\s*\n', content, re.DOTALL)
+    if match:
+        return content[match.end():].strip()
+    return content.strip()
+
+
+def update_nexus_frontmatter(nexus_md_path: Path, updates: dict):
+    """更新 NEXUS.md 的 frontmatter 字段 (保留 body 不变)"""
+    body = extract_nexus_body(nexus_md_path)
+    frontmatter = parse_nexus_frontmatter(nexus_md_path)
+    frontmatter.update(updates)
+
+    # 重建 YAML frontmatter
+    lines = ['---']
+    for key, val in frontmatter.items():
+        if isinstance(val, list):
+            lines.append(f'{key}:')
+            for item in val:
+                lines.append(f'  - {item}')
+        elif isinstance(val, dict):
+            lines.append(f'{key}:')
+            for k, v in val.items():
+                lines.append(f'  {k}: {v}')
+        else:
+            lines.append(f'{key}: {val}')
+    lines.append('---')
+    lines.append('')
+    lines.append(body)
+
+    nexus_md_path.write_text('\n'.join(lines), encoding='utf-8')
+
+
+def count_experience_entries(exp_dir: Path) -> int:
+    """统计经验目录中的条目数，用于 XP 计算"""
+    xp = 0
+    successes = exp_dir / 'successes.md'
+    failures = exp_dir / 'failures.md'
+    if successes.exists():
+        try:
+            lines = successes.read_text(encoding='utf-8').split('\n')
+            xp += sum(1 for l in lines if l.startswith('### ')) * 10
+        except Exception:
+            pass
+    if failures.exists():
+        try:
+            lines = failures.read_text(encoding='utf-8').split('\n')
+            xp += sum(1 for l in lines if l.startswith('### ')) * 5
+        except Exception:
+            pass
+    return xp
 
 
 # ============================================
@@ -277,9 +369,27 @@ class ToolRegistry:
 
     def list_all(self) -> list:
         """返回所有已注册工具（内置+插件+指令型+MCP）"""
+        # 内置工具元数据 (为有特殊参数的工具提供描述)
+        BUILTIN_META = {
+            'nexusBindSkill': {
+                'description': '为当前 Nexus 绑定新技能依赖',
+                'inputs': {
+                    'nexusId': {'type': 'string', 'description': 'Nexus ID', 'required': True},
+                    'skillId': {'type': 'string', 'description': '要绑定的技能 ID', 'required': True},
+                },
+            },
+            'nexusUnbindSkill': {
+                'description': '从当前 Nexus 移除技能依赖',
+                'inputs': {
+                    'nexusId': {'type': 'string', 'description': 'Nexus ID', 'required': True},
+                    'skillId': {'type': 'string', 'description': '要移除的技能 ID', 'required': True},
+                },
+            },
+        }
         tools = []
         for name in self.builtin_tools:
-            tools.append({'name': name, 'type': 'builtin'})
+            meta = BUILTIN_META.get(name, {})
+            tools.append({'name': name, 'type': 'builtin', **meta})
         for name, spec in self.plugin_tools.items():
             tools.append({
                 'name': name,
@@ -357,6 +467,7 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
             '/status': self.handle_status,
             '/files': self.handle_files,
             '/skills': self.handle_skills,
+            '/nexuses': self.handle_nexuses,
             '/memories': self.handle_memories,
             '/tools': self.handle_tools_list,
             '/all': self.handle_all,
@@ -368,12 +479,17 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
             routes[path]()
         elif path.startswith('/file/'):
             self.handle_file(path[6:])
+        elif path.startswith('/nexuses/') and '/experience' not in path:
+            nexus_name = path[9:]  # strip '/nexuses/'
+            self.handle_nexus_detail(nexus_name)
         elif path.startswith('/task/status/'):
             task_id = path[13:]
             offset = int(query.get('offset', ['0'])[0])
             self.handle_task_status(task_id, offset)
         elif path == '/api/traces/search':
             self.handle_trace_search(query)
+        elif path == '/api/traces/recent':
+            self.handle_trace_recent(query)
         elif path == '/mcp/servers':
             self.handle_mcp_servers_list()
         else:
@@ -408,6 +524,12 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
             self.handle_skill_install(data)
         elif path == '/skills/uninstall':
             self.handle_skill_uninstall(data)
+        elif path.startswith('/nexuses/') and path.endswith('/skills'):
+            nexus_name = path[9:-7]  # strip '/nexuses/' and '/skills'
+            self.handle_nexus_update_skills(nexus_name, data)
+        elif path.startswith('/nexuses/') and path.endswith('/experience'):
+            nexus_name = path[9:-11]  # strip '/nexuses/' and '/experience'
+            self.handle_add_experience(nexus_name, data)
         elif path == '/task/execute':
             self.handle_task_execute(data)
         else:
@@ -459,6 +581,8 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
                     'webFetch': self._tool_web_fetch,
                     'saveMemory': self._tool_save_memory,
                     'searchMemory': self._tool_search_memory,
+                    'nexusBindSkill': self._tool_nexus_bind_skill,
+                    'nexusUnbindSkill': self._tool_nexus_unbind_skill,
                 }
                 handler = builtin_handlers.get(tool_name)
                 if handler:
@@ -941,6 +1065,56 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
         else:
             return f"未找到与 '{query}' 相关的记忆。"
     
+    def _tool_nexus_bind_skill(self, args: dict) -> str:
+        """为 Nexus 绑定新技能"""
+        nexus_id = args.get('nexusId', '')
+        skill_id = args.get('skillId', '')
+        if not nexus_id or not skill_id:
+            raise ValueError('Missing nexusId or skillId')
+
+        nexus_md = self.clawd_path / 'nexuses' / nexus_id / 'NEXUS.md'
+        if not nexus_md.exists():
+            raise ValueError(f"Nexus '{nexus_id}' not found")
+
+        # 验证技能存在 (skills/ 目录中有对应目录)
+        skill_dir = self.clawd_path / 'skills' / skill_id
+        if not skill_dir.exists():
+            raise ValueError(f"Skill '{skill_id}' not found in skills/")
+
+        frontmatter = parse_nexus_frontmatter(nexus_md)
+        deps = list(frontmatter.get('skill_dependencies', []))
+
+        if skill_id in deps:
+            return f"Skill '{skill_id}' already bound to Nexus '{nexus_id}'"
+
+        deps.append(skill_id)
+        update_nexus_frontmatter(nexus_md, {'skill_dependencies': deps})
+        return f"Skill '{skill_id}' bound to Nexus '{nexus_id}'. Dependencies: {deps}"
+
+    def _tool_nexus_unbind_skill(self, args: dict) -> str:
+        """从 Nexus 解绑技能"""
+        nexus_id = args.get('nexusId', '')
+        skill_id = args.get('skillId', '')
+        if not nexus_id or not skill_id:
+            raise ValueError('Missing nexusId or skillId')
+
+        nexus_md = self.clawd_path / 'nexuses' / nexus_id / 'NEXUS.md'
+        if not nexus_md.exists():
+            raise ValueError(f"Nexus '{nexus_id}' not found")
+
+        frontmatter = parse_nexus_frontmatter(nexus_md)
+        deps = list(frontmatter.get('skill_dependencies', []))
+
+        if skill_id not in deps:
+            return f"Skill '{skill_id}' not bound to Nexus '{nexus_id}'"
+
+        if len(deps) <= 1:
+            return f"Cannot remove last skill from Nexus '{nexus_id}'. At least 1 skill required."
+
+        deps.remove(skill_id)
+        update_nexus_frontmatter(nexus_md, {'skill_dependencies': deps})
+        return f"Skill '{skill_id}' unbound from Nexus '{nexus_id}'. Remaining: {deps}"
+
     # ============================================
     # 原有处理器 (保持兼容)
     # ============================================
@@ -1151,6 +1325,208 @@ curl -X POST http://localhost:3001/api/tools/execute \\
             skill_data['toolNames'] = [tool_name]
             if frontmatter.get('inputs'):
                 skill_data['inputs'] = frontmatter['inputs']
+
+    # ============================================
+    # 🌌 Nexus 管理
+    # ============================================
+
+    def handle_nexuses(self):
+        """GET /nexuses - 扫描 nexuses/ 目录，返回所有 Nexus 列表"""
+        nexuses = []
+        nexuses_dir = self.clawd_path / 'nexuses'
+
+        if not nexuses_dir.exists():
+            nexuses_dir.mkdir(parents=True, exist_ok=True)
+            self.send_json([])
+            return
+
+        seen = set()
+
+        for nexus_md in nexuses_dir.rglob('NEXUS.md'):
+            nexus_dir = nexus_md.parent
+            dir_key = str(nexus_dir.resolve())
+            if dir_key in seen:
+                continue
+            seen.add(dir_key)
+
+            frontmatter = parse_nexus_frontmatter(nexus_md)
+            if not frontmatter or not frontmatter.get('name'):
+                continue
+
+            sop_content = extract_nexus_body(nexus_md)
+            exp_dir = nexus_dir / 'experience'
+            xp = count_experience_entries(exp_dir) if exp_dir.exists() else 0
+
+            visual_dna = frontmatter.get('visual_dna', {})
+
+            nexus_data = {
+                'id': frontmatter.get('name', nexus_dir.name),
+                'name': frontmatter.get('name', nexus_dir.name),
+                'description': frontmatter.get('description', ''),
+                'archetype': frontmatter.get('archetype', 'REACTOR'),
+                'version': frontmatter.get('version', '1.0.0'),
+                'skillDependencies': frontmatter.get('skill_dependencies', []),
+                'tags': frontmatter.get('tags', []),
+                'triggers': frontmatter.get('triggers', []),
+                'visualDNA': visual_dna,
+                'sopContent': sop_content,
+                'xp': xp,
+                'location': 'local',
+                'path': str(nexus_dir),
+                'status': 'active',
+                # 目标函数驱动字段 (Objective-Driven Execution)
+                'objective': frontmatter.get('objective', ''),
+                'metrics': frontmatter.get('metrics', []),
+                'strategy': frontmatter.get('strategy', ''),
+            }
+            nexuses.append(nexus_data)
+
+        self.send_json(nexuses)
+
+    def handle_nexus_detail(self, nexus_name: str):
+        """GET /nexuses/{name} - 获取单个 Nexus 完整信息"""
+        nexuses_dir = self.clawd_path / 'nexuses'
+        nexus_dir = nexuses_dir / nexus_name
+        nexus_md = nexus_dir / 'NEXUS.md'
+
+        if not nexus_md.exists():
+            self.send_error_json(f"Nexus '{nexus_name}' not found", 404)
+            return
+
+        frontmatter = parse_nexus_frontmatter(nexus_md)
+        sop_content = extract_nexus_body(nexus_md)
+        exp_dir = nexus_dir / 'experience'
+        xp = count_experience_entries(exp_dir) if exp_dir.exists() else 0
+
+        # 加载最近经验条目
+        recent_experiences = []
+        for exp_file in ['successes.md', 'failures.md']:
+            exp_path = exp_dir / exp_file
+            if not exp_path.exists():
+                continue
+            try:
+                content = exp_path.read_text(encoding='utf-8')
+                outcome = 'success' if 'success' in exp_file else 'failure'
+                entries = content.split('\n### ')
+                for entry in entries[1:]:  # skip header
+                    entry = entry.strip()
+                    if not entry:
+                        continue
+                    lines = entry.split('\n')
+                    title = lines[0].strip() if lines else ''
+                    recent_experiences.append({
+                        'title': title,
+                        'outcome': outcome,
+                        'content': '\n'.join(lines[1:]).strip(),
+                    })
+            except Exception:
+                pass
+
+        # 按时间倒序（标题通常包含日期）
+        recent_experiences = recent_experiences[-10:][::-1]
+
+        visual_dna = frontmatter.get('visual_dna', {})
+
+        response = {
+            'id': frontmatter.get('name', nexus_name),
+            'name': frontmatter.get('name', nexus_name),
+            'description': frontmatter.get('description', ''),
+            'archetype': frontmatter.get('archetype', 'REACTOR'),
+            'version': frontmatter.get('version', '1.0.0'),
+            'skillDependencies': frontmatter.get('skill_dependencies', []),
+            'tags': frontmatter.get('tags', []),
+            'triggers': frontmatter.get('triggers', []),
+            'visualDNA': visual_dna,
+            'sopContent': sop_content,
+            'xp': xp,
+            'recentExperiences': recent_experiences,
+            'location': 'local',
+            'path': str(nexus_dir),
+            'status': 'active',
+            # 目标函数驱动字段 (Objective-Driven Execution)
+            'objective': frontmatter.get('objective', ''),
+            'metrics': frontmatter.get('metrics', []),
+            'strategy': frontmatter.get('strategy', ''),
+        }
+        self.send_json(response)
+
+    def handle_nexus_update_skills(self, nexus_name: str, data: dict):
+        """POST /nexuses/{name}/skills - 更新 Nexus 技能依赖"""
+        action = data.get('action', '')  # 'add' or 'remove'
+        skill_id = data.get('skillId', '')
+
+        if action not in ('add', 'remove') or not skill_id:
+            self.send_error_json('Invalid: need action (add/remove) and skillId', 400)
+            return
+
+        nexus_dir = self.clawd_path / 'nexuses' / nexus_name
+        nexus_md = nexus_dir / 'NEXUS.md'
+        if not nexus_md.exists():
+            self.send_error_json(f"Nexus '{nexus_name}' not found", 404)
+            return
+
+        frontmatter = parse_nexus_frontmatter(nexus_md)
+        deps = list(frontmatter.get('skill_dependencies', []))
+
+        if action == 'add':
+            if skill_id not in deps:
+                deps.append(skill_id)
+        elif action == 'remove':
+            if len(deps) <= 1:
+                self.send_error_json('Cannot remove last skill dependency', 400)
+                return
+            if skill_id in deps:
+                deps.remove(skill_id)
+
+        update_nexus_frontmatter(nexus_md, {'skill_dependencies': deps})
+
+        self.send_json({
+            'status': 'ok',
+            'nexusId': nexus_name,
+            'skillDependencies': deps,
+        })
+
+    def handle_add_experience(self, nexus_name: str, data: dict):
+        """POST /nexuses/{name}/experience - 为 Nexus 添加经验记录"""
+        nexuses_dir = self.clawd_path / 'nexuses'
+        nexus_dir = nexuses_dir / nexus_name
+
+        if not nexus_dir.exists():
+            self.send_error_json(f"Nexus '{nexus_name}' not found", 404)
+            return
+
+        task = data.get('task', '')
+        tools_used = data.get('tools_used', [])
+        outcome = data.get('outcome', 'success')
+        key_insight = data.get('key_insight', '')
+
+        if not task:
+            self.send_error_json('Missing required field: task', 400)
+            return
+
+        # 确保 experience 目录存在
+        exp_dir = nexus_dir / 'experience'
+        exp_dir.mkdir(parents=True, exist_ok=True)
+
+        # 构建 Markdown 条目
+        from datetime import datetime
+        timestamp = datetime.now().strftime('%Y-%m-%d')
+        tool_seq = ' → '.join(tools_used) if tools_used else 'N/A'
+
+        entry = f"\n### [{timestamp}] {task[:80]}\n"
+        entry += f"- **Tools**: {tool_seq}\n"
+        if key_insight:
+            entry += f"- **Insight**: {key_insight}\n"
+        entry += "---\n"
+
+        # 追加到对应文件
+        target_file = exp_dir / ('successes.md' if outcome == 'success' else 'failures.md')
+        try:
+            with target_file.open('a', encoding='utf-8') as f:
+                f.write(entry)
+            self.send_json({'status': 'ok', 'outcome': outcome})
+        except Exception as e:
+            self.send_error_json(f'Failed to write experience: {str(e)}', 500)
 
     def handle_tools_list(self):
         """GET /tools - 列出所有已注册的工具"""
@@ -1451,6 +1827,77 @@ curl -X POST http://localhost:3001/api/tools/execute \\
                 break
 
         self.send_json(results)
+    
+    def handle_trace_recent(self, query_params):
+        """GET /api/traces/recent?days=3&limit=100 - 获取最近N天的执行日志 (供 Observer 分析)"""
+        days = min(int(query_params.get('days', ['3'])[0]), 30)
+        limit = min(int(query_params.get('limit', ['100'])[0]), 500)
+        
+        traces_dir = self.clawd_path / 'memory' / 'exec_traces'
+        if not traces_dir.exists():
+            self.send_json({'traces': [], 'stats': {}})
+            return
+        
+        cutoff_time = datetime.now() - timedelta(days=days)
+        cutoff_ts = cutoff_time.timestamp() * 1000  # 毫秒时间戳
+        
+        traces = []
+        tool_freq = {}  # 工具使用频率
+        nexus_freq = {}  # Nexus 使用频率
+        total_turns = 0
+        total_errors = 0
+        
+        # 从最近的月份文件开始读取
+        for trace_file in sorted(traces_dir.glob('*.jsonl'), reverse=True)[:3]:
+            try:
+                for line in reversed(trace_file.read_text(encoding='utf-8').strip().split('\n')):
+                    if not line.strip():
+                        continue
+                    try:
+                        trace = json.loads(line)
+                        ts = trace.get('timestamp', 0)
+                        if ts < cutoff_ts:
+                            continue  # 超出时间范围
+                        
+                        traces.append(trace)
+                        
+                        # 统计工具频率
+                        for tool in trace.get('tools', []):
+                            tool_name = tool.get('name', 'unknown')
+                            tool_freq[tool_name] = tool_freq.get(tool_name, 0) + 1
+                        
+                        # 统计 Nexus 频率
+                        nexus_id = trace.get('activeNexusId')
+                        if nexus_id:
+                            nexus_freq[nexus_id] = nexus_freq.get(nexus_id, 0) + 1
+                        
+                        # 统计轮次和错误
+                        total_turns += trace.get('turnCount', 0)
+                        total_errors += trace.get('errorCount', 0)
+                        
+                        if len(traces) >= limit:
+                            break
+                    except json.JSONDecodeError:
+                        continue
+            except Exception:
+                continue
+            if len(traces) >= limit:
+                break
+        
+        # 按时间倒序排列
+        traces.sort(key=lambda t: t.get('timestamp', 0), reverse=True)
+        
+        self.send_json({
+            'traces': traces,
+            'stats': {
+                'totalExecutions': len(traces),
+                'toolFrequency': tool_freq,
+                'nexusFrequency': nexus_freq,
+                'avgTurnsPerExecution': total_turns / len(traces) if traces else 0,
+                'totalErrors': total_errors,
+                'timeRangeDays': days,
+            }
+        })
     
     def handle_memories(self):
         memories = []
@@ -1809,10 +2256,11 @@ You are DD-OS, a local AI operating system running directly on the user's comput
     
     # 🔌 初始化工具注册表
     registry = ToolRegistry(clawd_path)
-    # 注册 10 个内置工具
+    # 注册 12 个内置工具
     builtin_names = [
         'readFile', 'writeFile', 'appendFile', 'listDir', 'runCmd',
         'weather', 'webSearch', 'webFetch', 'saveMemory', 'searchMemory',
+        'nexusBindSkill', 'nexusUnbindSkill',
     ]
     for name in builtin_names:
         registry.register_builtin(name, name)  # handler resolved at dispatch time

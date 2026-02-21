@@ -519,6 +519,7 @@ export interface BuildProposal {
   suggestedArchetype: NexusArchetype
   previewVisualDNA: VisualDNA
   boundSkillId?: string        // 可选绑定的 Skill
+  purposeSummary: string       // 一句话概括此 Nexus 的功能目标
   status: 'pending' | 'accepted' | 'rejected'
   createdAt: number
 }
