@@ -63,6 +63,24 @@ MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB 最大文件大小
 MAX_OUTPUT_SIZE = 512 * 1024      # 512KB 最大输出
 PLUGIN_TIMEOUT = 60               # 插件执行超时(秒)
 
+# 🌐 静态文件 MIME 类型映射
+MIME_TYPES = {
+    '.html': 'text/html',
+    '.css': 'text/css',
+    '.js': 'application/javascript',
+    '.json': 'application/json',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif',
+    '.svg': 'image/svg+xml',
+    '.ico': 'image/x-icon',
+    '.woff': 'font/woff',
+    '.woff2': 'font/woff2',
+    '.ttf': 'font/ttf',
+    '.eot': 'application/vnd.ms-fontobject',
+}
+
 
 # ============================================
 # 🔌 SKILL.md Frontmatter 解析
@@ -492,8 +510,16 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
             self.handle_trace_recent(query)
         elif path == '/mcp/servers':
             self.handle_mcp_servers_list()
+        elif path.startswith('/data/'):
+            # 前端数据读取 API
+            key = path[6:]  # strip '/data/'
+            self.handle_data_get(key)
+        elif path == '/data':
+            # 列出所有数据键
+            self.handle_data_list()
         else:
-            self.send_error_json(f'Unknown endpoint: {path}', 404)
+            # 静态文件服务 (托管 dist/ 目录)
+            self.serve_static_file(path)
     
     def do_POST(self):
         parsed = urlparse(self.path)
@@ -532,8 +558,150 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
             self.handle_add_experience(nexus_name, data)
         elif path == '/task/execute':
             self.handle_task_execute(data)
+        elif path.startswith('/data/'):
+            # 前端数据写入 API
+            key = path[6:]  # strip '/data/'
+            self.handle_data_set(key, data)
         else:
             self.send_error_json(f'Unknown endpoint: {path}', 404)
+    
+    # ============================================
+    # 🌐 静态文件服务 (托管前端 dist/)
+    # ============================================
+    
+    def serve_static_file(self, path: str):
+        """托管 dist/ 目录的前端构建产物，支持 SPA 路由"""
+        # 静态文件目录 (与服务器脚本同级的 dist/)
+        static_dir = Path(__file__).parent / 'dist'
+        
+        if not static_dir.exists():
+            # dist/ 不存在时返回提示
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(b'''<!DOCTYPE html>
+<html>
+<head><title>DD-OS Server</title></head>
+<body style="font-family: system-ui; padding: 40px; background: #1a1a2e; color: #eee;">
+<h1>DD-OS Native Server</h1>
+<p>Frontend not built. Run <code>npm run build</code> to generate dist/</p>
+<p>Or access dev server at <a href="http://localhost:5173">http://localhost:5173</a></p>
+<hr>
+<p>API Endpoints:</p>
+<ul>
+<li>GET /status - Server status</li>
+<li>GET /skills - List skills</li>
+<li>POST /api/tools/execute - Execute tool</li>
+</ul>
+</body>
+</html>''')
+            return
+        
+        # 确定文件路径
+        if path == '/' or path == '':
+            file_path = static_dir / 'index.html'
+        else:
+            # 去掉开头的 /
+            clean_path = path.lstrip('/')
+            file_path = static_dir / clean_path
+        
+        # SPA 路由支持：如果不是文件（没有扩展名），返回 index.html
+        if not file_path.exists():
+            if '.' not in file_path.name:
+                file_path = static_dir / 'index.html'
+        
+        if not file_path.exists():
+            self.send_error_json(f'File not found: {path}', 404)
+            return
+        
+        # 安全检查：确保路径在 static_dir 内
+        try:
+            file_path.resolve().relative_to(static_dir.resolve())
+        except ValueError:
+            self.send_error_json('Access denied', 403)
+            return
+        
+        # 获取 MIME 类型
+        suffix = file_path.suffix.lower()
+        content_type = MIME_TYPES.get(suffix, 'application/octet-stream')
+        
+        try:
+            with open(file_path, 'rb') as f:
+                content = f.read()
+            
+            self.send_response(200)
+            self.send_header('Content-Type', content_type)
+            self.send_header('Content-Length', str(len(content)))
+            # 缓存控制：静态资源长期缓存
+            if '/assets/' in str(file_path):
+                self.send_header('Cache-Control', 'public, max-age=31536000')
+            self.end_headers()
+            self.wfile.write(content)
+        except Exception as e:
+            self.send_error_json(f'Failed to read file: {str(e)}', 500)
+    
+    # ============================================
+    # 📦 前端数据持久化 API (/data)
+    # ============================================
+    
+    def handle_data_get(self, key: str):
+        """读取前端数据"""
+        data_dir = self.clawd_path / 'data'
+        data_dir.mkdir(exist_ok=True)
+        
+        # 安全检查：key 只能是字母数字下划线
+        if not re.match(r'^[a-zA-Z0-9_-]+$', key):
+            self.send_error_json('Invalid key format', 400)
+            return
+        
+        file_path = data_dir / f'{key}.json'
+        
+        if not file_path.exists():
+            self.send_json({'key': key, 'value': None, 'exists': False})
+            return
+        
+        try:
+            content = file_path.read_text(encoding='utf-8')
+            self.send_json({'key': key, 'value': json.loads(content), 'exists': True})
+        except Exception as e:
+            self.send_error_json(f'Failed to read data: {str(e)}', 500)
+    
+    def handle_data_set(self, key: str, data: dict):
+        """写入前端数据"""
+        data_dir = self.clawd_path / 'data'
+        data_dir.mkdir(exist_ok=True)
+        
+        # 安全检查：key 只能是字母数字下划线
+        if not re.match(r'^[a-zA-Z0-9_-]+$', key):
+            self.send_error_json('Invalid key format', 400)
+            return
+        
+        file_path = data_dir / f'{key}.json'
+        value = data.get('value')
+        
+        try:
+            if value is None:
+                # 删除数据
+                if file_path.exists():
+                    file_path.unlink()
+                self.send_json({'key': key, 'deleted': True})
+            else:
+                # 写入数据
+                file_path.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding='utf-8')
+                self.send_json({'key': key, 'saved': True})
+        except Exception as e:
+            self.send_error_json(f'Failed to save data: {str(e)}', 500)
+    
+    def handle_data_list(self):
+        """列出所有数据键"""
+        data_dir = self.clawd_path / 'data'
+        data_dir.mkdir(exist_ok=True)
+        
+        keys = []
+        for f in data_dir.glob('*.json'):
+            keys.append(f.stem)
+        
+        self.send_json({'keys': keys})
     
     # ============================================
     # 🛠️ 工具执行 (核心新功能)
@@ -2208,7 +2376,9 @@ def cleanup_old_traces(clawd_path, max_months=6):
 def main():
     parser = argparse.ArgumentParser(description='DD-OS Native Server')
     parser.add_argument('--port', type=int, default=3001, help='Server port (default: 3001)')
-    parser.add_argument('--path', type=str, default='~/clawd', help='Data directory path (default: ~/clawd)')
+    # 支持环境变量覆盖默认路径
+    default_path = os.getenv('DDOS_DATA_PATH', '~/.ddos')
+    parser.add_argument('--path', type=str, default=default_path, help='Data directory path (default: ~/.ddos)')
     parser.add_argument('--host', type=str, default='0.0.0.0', help='Server host (default: 0.0.0.0)')
     args = parser.parse_args()
     

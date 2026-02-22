@@ -102,8 +102,13 @@ interface StoreActions {
 // 配置
 // ============================================
 
+// 检测运行环境
+const isDevMode = import.meta.env?.DEV ?? false
+const isTauriMode = typeof window !== 'undefined' && '__TAURI__' in window
+
 const CONFIG = {
-  LOCAL_SERVER_URL: 'http://localhost:3001',
+  // 开发模式使用 localhost:3001，生产模式使用相对路径（Python 托管）
+  LOCAL_SERVER_URL: isDevMode ? 'http://localhost:3001' : (isTauriMode ? 'http://127.0.0.1:3001' : ''),
   MAX_REACT_TURNS: 100,    // 重型任务：实际上不限制
   DEFAULT_TURNS: 30,       // 普通任务：30轮
   SIMPLE_TURNS: 5,         // 简单任务：5轮

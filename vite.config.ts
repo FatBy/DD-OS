@@ -9,10 +9,15 @@ const GATEWAY_URL = process.env.OPENCLAW_GATEWAY || 'ws://localhost:18789'
 
 export default defineConfig({
   plugins: [react()],
+  base: './',  // 相对路径，支持任意部署位置
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
     },
+  },
+  build: {
+    outDir: 'dist',
+    assetsDir: 'assets',
   },
   server: {
     proxy: {
