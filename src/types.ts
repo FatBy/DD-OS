@@ -47,6 +47,63 @@ export interface TaskItem {
   executionOutput?: string
   executionError?: string
   executionDuration?: number
+  // Quest 风格复杂任务支持
+  taskPlan?: TaskPlan           // 复杂任务的执行计划
+  executionMode?: 'simple' | 'complex'
+}
+
+// ============================================
+// Quest 风格任务执行系统
+// ============================================
+
+// 子任务状态
+export type SubTaskStatus = 
+  | 'pending'           // 等待执行
+  | 'ready'             // 依赖已满足，可执行
+  | 'executing'         // 执行中
+  | 'done'              // 完成
+  | 'failed'            // 失败
+  | 'blocked'           // 被依赖阻塞
+  | 'skipped'           // 用户跳过
+  | 'paused_for_approval' // 等待用户确认
+
+// 子任务定义（原子级任务单元）
+export interface SubTask {
+  id: string
+  description: string           // 任务描述
+  toolHint?: string             // 建议的工具名
+  status: SubTaskStatus
+  dependsOn: string[]           // 依赖的子任务 ID 列表（空 = 无依赖，可并行）
+  result?: string               // 执行结果
+  error?: string                // 错误信息
+  startTime?: number
+  endTime?: number
+  retryCount?: number           // 已重试次数
+  maxRetries?: number           // 最大重试次数（默认 2）
+  approvalRequired?: boolean    // 需要用户确认
+  approvalReason?: string       // 确认原因
+  // 执行追踪
+  executionSteps?: ExecutionStep[]
+}
+
+// 任务计划状态
+export type TaskPlanStatus = 'planning' | 'executing' | 'paused' | 'done' | 'failed' | 'cancelled'
+
+// 任务计划（DAG 结构）
+export interface TaskPlan {
+  id: string
+  title: string                 // AI 生成的任务标题
+  userPrompt: string            // 用户原始需求
+  subTasks: SubTask[]           // 子任务列表（构成 DAG）
+  status: TaskPlanStatus
+  nexusId?: string              // 关联的 Nexus ID（如果通过 Nexus 执行）
+  createdAt: number
+  startedAt?: number
+  completedAt?: number
+  progress: number              // 0-100 完成百分比
+  // 执行配置
+  maxParallel?: number          // 最大并行度（默认 3）
+  autoApprove?: boolean         // 自动批准低风险操作
 }
 
 // 技能节点 (映射自 OpenClaw Skill)

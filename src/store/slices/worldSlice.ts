@@ -71,22 +71,45 @@ function createDemoNexuses(): Map<string, NexusEntity> {
   return loadNexusesFromStorage()
 }
 
-// 用于从服务器数据自动分配 grid 位置
-let nextGridSlot = 0
-function assignGridPosition(): GridPosition {
-  const positions: GridPosition[] = [
-    { gridX: 3, gridY: -2 },
-    { gridX: -2, gridY: 3 },
-    { gridX: 4, gridY: 1 },
-    { gridX: -1, gridY: -3 },
-    { gridX: 0, gridY: 4 },
-    { gridX: 5, gridY: -1 },
-    { gridX: -3, gridY: 0 },
-    { gridX: 2, gridY: 5 },
-  ]
-  const pos = positions[nextGridSlot % positions.length]
-  nextGridSlot++
-  return pos
+// 用于从服务器数据自动分配 grid 位置（考虑已存在的位置避免重叠）
+const PREDEFINED_POSITIONS: GridPosition[] = [
+  { gridX: 3, gridY: -2 },
+  { gridX: -2, gridY: 3 },
+  { gridX: 4, gridY: 1 },
+  { gridX: -1, gridY: -3 },
+  { gridX: 0, gridY: 4 },
+  { gridX: 5, gridY: -1 },
+  { gridX: -3, gridY: 0 },
+  { gridX: 2, gridY: 5 },
+  { gridX: -4, gridY: 2 },
+  { gridX: 1, gridY: -4 },
+  { gridX: 6, gridY: 2 },
+  { gridX: -2, gridY: -2 },
+]
+
+function assignGridPosition(existingNexuses: Map<string, NexusEntity>): GridPosition {
+  // 收集已占用的位置
+  const occupied = new Set<string>()
+  for (const nexus of existingNexuses.values()) {
+    if (nexus.position) {
+      occupied.add(`${nexus.position.gridX},${nexus.position.gridY}`)
+    }
+  }
+  
+  // 找到第一个未被占用的预定义位置
+  for (const pos of PREDEFINED_POSITIONS) {
+    const key = `${pos.gridX},${pos.gridY}`
+    if (!occupied.has(key)) {
+      return pos
+    }
+  }
+  
+  // 所有预定义位置都被占用时，生成随机位置
+  const randomOffset = () => Math.floor(Math.random() * 10) - 5
+  return {
+    gridX: randomOffset() + 7,
+    gridY: randomOffset() - 5,
+  }
 }
 
 // 执行结果类型
@@ -229,7 +252,7 @@ export const createWorldSlice: StateCreator<WorldSlice> = (set, get) => ({
         // 从服务器合并的数据
         id: serverNexus.id,
         archetype,
-        position: existing?.position || assignGridPosition(),
+        position: existing?.position || assignGridPosition(next),
         level: xpToLevel(xp),
         xp,
         visualDNA,

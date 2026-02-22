@@ -4,7 +4,7 @@ import {
   Inbox, Clock, CheckCircle2, Play,
   Loader2, MessageSquare, ChevronRight,
   Calendar, Hash, Activity, Brain, Wrench, Terminal,
-  AlertCircle, ChevronDown, Trash2
+  AlertCircle, ChevronDown, Trash2, RotateCcw, Pause, XCircle, SkipForward
 } from 'lucide-react'
 import { GlassCard } from '@/components/GlassCard'
 import { AISummaryCard } from '@/components/ai/AISummaryCard'
@@ -12,7 +12,7 @@ import { useStore } from '@/store'
 import { cn } from '@/utils/cn'
 import { useT } from '@/i18n'
 import type { TranslationKey } from '@/i18n/locales/zh'
-import type { TaskItem, ExecutionStep } from '@/types'
+import type { TaskItem, ExecutionStep, SubTask, TaskPlan } from '@/types'
 
 // 默认任务（根据模式显示不同内容）
 const defaultTasksNative: TaskItem[] = [
@@ -207,6 +207,268 @@ function ExecutionStepsViewer({ steps, output, error, duration }: {
   )
 }
 
+// ============================================
+// Quest 风格任务进度条
+// ============================================
+
+function TaskProgressBar({ plan }: { plan: TaskPlan }) {
+  const completed = plan.subTasks.filter(t => t.status === 'done' || t.status === 'skipped').length
+  const failed = plan.subTasks.filter(t => t.status === 'failed').length
+  const blocked = plan.subTasks.filter(t => t.status === 'blocked').length
+  const executing = plan.subTasks.filter(t => t.status === 'executing').length
+  const total = plan.subTasks.length
+  const progress = total > 0 ? Math.round((completed / total) * 100) : 0
+
+  return (
+    <div className="mb-3">
+      {/* 进度条 */}
+      <div className="h-2 bg-white/10 rounded-full overflow-hidden mb-2">
+        <motion.div
+          initial={{ width: 0 }}
+          animate={{ width: `${progress}%` }}
+          transition={{ duration: 0.5, ease: 'easeOut' }}
+          className={cn(
+            'h-full rounded-full',
+            failed > 0 ? 'bg-gradient-to-r from-emerald-500 to-red-500' : 'bg-gradient-to-r from-cyan-500 to-emerald-500'
+          )}
+        />
+      </div>
+      
+      {/* 统计信息 */}
+      <div className="flex items-center gap-3 text-[11px] font-mono">
+        <span className="text-white/50">{completed}/{total} 完成</span>
+        {executing > 0 && (
+          <span className="flex items-center gap-1 text-cyan-400">
+            <Play className="w-3 h-3" />
+            {executing} 执行中
+          </span>
+        )}
+        {blocked > 0 && (
+          <span className="flex items-center gap-1 text-amber-400">
+            <Pause className="w-3 h-3" />
+            {blocked} 阻塞
+          </span>
+        )}
+        {failed > 0 && (
+          <span className="flex items-center gap-1 text-red-400">
+            <XCircle className="w-3 h-3" />
+            {failed} 失败
+          </span>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ============================================
+// Quest 风格子任务状态配置
+// ============================================
+
+const subTaskStatusConfig = {
+  pending: { icon: Clock, color: 'slate', label: '等待' },
+  ready: { icon: Play, color: 'green', label: '就绪' },
+  executing: { icon: Loader2, color: 'cyan', label: '执行中' },
+  done: { icon: CheckCircle2, color: 'emerald', label: '完成' },
+  failed: { icon: XCircle, color: 'red', label: '失败' },
+  blocked: { icon: Pause, color: 'amber', label: '阻塞' },
+  skipped: { icon: SkipForward, color: 'slate', label: '跳过' },
+  paused_for_approval: { icon: AlertCircle, color: 'yellow', label: '待确认' },
+}
+
+// ============================================
+// Quest 风格子任务树视图
+// ============================================
+
+function SubTaskTreeView({ 
+  plan, 
+  onRetry, 
+  onApprove 
+}: { 
+  plan: TaskPlan
+  onRetry?: (taskId: string) => void
+  onApprove?: (taskId: string) => void
+}) {
+  const [expanded, setExpanded] = useState(true)
+
+  // 按依赖层级分组（拓扑排序）
+  const layers = getTaskLayers(plan.subTasks)
+
+  return (
+    <div className="mt-3 rounded-lg border border-white/10 overflow-hidden">
+      <button
+        onClick={(e) => { e.stopPropagation(); setExpanded(!expanded) }}
+        className="w-full flex items-center gap-2 px-3 py-2 bg-white/5 hover:bg-white/8 transition-colors"
+      >
+        <Activity className="w-3.5 h-3.5 text-cyan-400" />
+        <span className="text-[13px] font-mono text-white/60">
+          子任务 ({plan.subTasks.length})
+        </span>
+        <motion.div
+          animate={{ rotate: expanded ? 180 : 0 }}
+          transition={{ duration: 0.2 }}
+          className="ml-auto"
+        >
+          <ChevronDown className="w-3.5 h-3.5 text-white/30" />
+        </motion.div>
+      </button>
+
+      <AnimatePresence>
+        {expanded && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="overflow-hidden"
+          >
+            <div className="p-3 space-y-2 max-h-80 overflow-y-auto">
+              {layers.map((layer, layerIdx) => (
+                <div key={layerIdx} className="space-y-1.5">
+                  {/* 层级指示 */}
+                  {layers.length > 1 && (
+                    <div className="flex items-center gap-2 text-[10px] font-mono text-white/30 mb-1">
+                      <div className="h-px flex-1 bg-white/10" />
+                      <span>Layer {layerIdx}</span>
+                      <div className="h-px flex-1 bg-white/10" />
+                    </div>
+                  )}
+                  
+                  {/* 同层任务（可并行） */}
+                  <div className="flex flex-wrap gap-2">
+                    {layer.map(task => {
+                      const config = subTaskStatusConfig[task.status] || subTaskStatusConfig.pending
+                      const StatusIcon = config.icon
+                      const isExecuting = task.status === 'executing'
+                      
+                      return (
+                        <div
+                          key={task.id}
+                          className={cn(
+                            'flex-1 min-w-[200px] p-2.5 rounded-lg border transition-all',
+                            task.status === 'done' && 'bg-emerald-500/5 border-emerald-500/20',
+                            task.status === 'failed' && 'bg-red-500/5 border-red-500/20',
+                            task.status === 'executing' && 'bg-cyan-500/5 border-cyan-500/30 animate-pulse',
+                            task.status === 'blocked' && 'bg-amber-500/5 border-amber-500/20',
+                            task.status === 'paused_for_approval' && 'bg-yellow-500/10 border-yellow-500/30',
+                            task.status === 'pending' && 'bg-white/3 border-white/10',
+                            task.status === 'ready' && 'bg-green-500/5 border-green-500/20',
+                            task.status === 'skipped' && 'bg-white/3 border-white/10 opacity-50',
+                          )}
+                        >
+                          <div className="flex items-start gap-2">
+                            <div className={cn(
+                              'w-5 h-5 rounded flex items-center justify-center flex-shrink-0',
+                              `bg-${config.color}-500/20`
+                            )}>
+                              <StatusIcon className={cn(
+                                'w-3 h-3',
+                                `text-${config.color}-400`,
+                                isExecuting && 'animate-spin'
+                              )} />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-[11px] font-mono text-white/40">[{task.id}]</span>
+                                <span className={cn('text-[11px] font-mono', `text-${config.color}-400`)}>
+                                  {config.label}
+                                </span>
+                              </div>
+                              <p className="text-[12px] text-white/70 mt-0.5 leading-relaxed line-clamp-2">
+                                {task.description}
+                              </p>
+                              
+                              {/* 依赖信息 */}
+                              {task.dependsOn.length > 0 && (
+                                <div className="flex items-center gap-1 mt-1 text-[10px] text-white/30">
+                                  <span>依赖:</span>
+                                  {task.dependsOn.map(dep => (
+                                    <span key={dep} className="bg-white/10 px-1 rounded">{dep}</span>
+                                  ))}
+                                </div>
+                              )}
+                              
+                              {/* 结果/错误 */}
+                              {task.result && task.status === 'done' && (
+                                <p className="text-[11px] text-emerald-400/70 mt-1 line-clamp-1">
+                                  ✓ {task.result.slice(0, 50)}...
+                                </p>
+                              )}
+                              {task.error && (
+                                <p className="text-[11px] text-red-400/70 mt-1 line-clamp-1">
+                                  ✗ {task.error}
+                                </p>
+                              )}
+                              
+                              {/* 操作按钮 */}
+                              <div className="flex gap-1.5 mt-2">
+                                {task.status === 'failed' && onRetry && (
+                                  <button
+                                    onClick={(e) => { e.stopPropagation(); onRetry(task.id) }}
+                                    className="flex items-center gap-1 text-[10px] font-mono px-1.5 py-0.5 bg-amber-500/20 text-amber-300 rounded hover:bg-amber-500/30"
+                                  >
+                                    <RotateCcw className="w-2.5 h-2.5" />
+                                    重试
+                                  </button>
+                                )}
+                                {task.status === 'paused_for_approval' && onApprove && (
+                                  <button
+                                    onClick={(e) => { e.stopPropagation(); onApprove(task.id) }}
+                                    className="flex items-center gap-1 text-[10px] font-mono px-1.5 py-0.5 bg-yellow-500/20 text-yellow-300 rounded hover:bg-yellow-500/30"
+                                  >
+                                    <CheckCircle2 className="w-2.5 h-2.5" />
+                                    确认
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  )
+}
+
+/**
+ * 按依赖关系将任务分层（拓扑排序）
+ */
+function getTaskLayers(subTasks: SubTask[]): SubTask[][] {
+  const layers: SubTask[][] = []
+  const completed = new Set<string>()
+  const remaining = [...subTasks]
+
+  while (remaining.length > 0) {
+    // 找出当前可执行的任务（依赖都已完成）
+    const ready = remaining.filter(task =>
+      task.dependsOn.every(dep => completed.has(dep))
+    )
+
+    if (ready.length === 0) {
+      // 有循环依赖或无效依赖，把剩余的都放到最后一层
+      layers.push(remaining)
+      break
+    }
+
+    layers.push(ready)
+    ready.forEach(t => completed.add(t.id))
+    
+    // 从 remaining 中移除已处理的
+    ready.forEach(t => {
+      const idx = remaining.findIndex(r => r.id === t.id)
+      if (idx >= 0) remaining.splice(idx, 1)
+    })
+  }
+
+  return layers
+}
+
 function TaskCard({ task, index, isExpanded, onToggle }: { 
   task: TaskItem
   index: number
@@ -273,8 +535,26 @@ function TaskCard({ task, index, isExpanded, onToggle }: {
                     </p>
                   </div>
 
-                  {/* 执行步骤详情 */}
-                  {(task.executionSteps || task.executionOutput || task.executionError) && (
+                  {/* Quest 任务计划视图 */}
+                  {task.taskPlan && (
+                    <div className="mt-3">
+                      <TaskProgressBar plan={task.taskPlan} />
+                      <SubTaskTreeView 
+                        plan={task.taskPlan}
+                        onRetry={(taskId) => {
+                          // TODO: 触发重试逻辑
+                          console.log('Retry task:', taskId)
+                        }}
+                        onApprove={(taskId) => {
+                          // TODO: 触发确认逻辑  
+                          console.log('Approve task:', taskId)
+                        }}
+                      />
+                    </div>
+                  )}
+
+                  {/* 执行步骤详情（传统模式或无 taskPlan 时显示） */}
+                  {!task.taskPlan && (task.executionSteps || task.executionOutput || task.executionError) && (
                     <ExecutionStepsViewer
                       steps={task.executionSteps}
                       output={task.executionOutput}

@@ -10,7 +10,7 @@
 
 import { chat, streamChat, isLLMConfigured, embed, cosineSimilarity, convertToolInfoToFunctions } from './llmService'
 import type { SimpleChatMessage, LLMStreamResult } from './llmService'
-import type { ExecutionStatus, OpenClawSkill, MemoryEntry, ToolInfo, ExecTrace, ExecTraceToolCall, ApprovalRequest, ExecutionStep, NexusEntity } from '@/types'
+import type { ExecutionStatus, OpenClawSkill, MemoryEntry, ToolInfo, ExecTrace, ExecTraceToolCall, ApprovalRequest, ExecutionStep, NexusEntity, SubTask, TaskPlan, SubTaskStatus } from '@/types'
 import { parseSoulMd, type ParsedSoul } from '@/utils/soulParser'
 import { skillStatsService } from './skillStatsService'
 import { immuneService } from './capsuleService'
@@ -481,6 +481,75 @@ const TASK_COMPLETION_PROMPT = `你是任务完成度评估器。请分析以下
 }
 
 重要: 仅输出 JSON，不要包含任何其他文字。`
+
+// ============================================
+// Quest 风格任务规划提示词
+// ============================================
+
+/**
+ * Quest 风格任务分解器提示词
+ * 将复杂任务分解为有依赖关系的子任务 DAG
+ */
+const QUEST_PLANNER_PROMPT = `你是 Quest 任务规划器。请将用户的复杂请求拆解为有依赖关系的子任务。
+
+## 规则
+1. 子任务数量：3-10 个（根据任务复杂度调整）
+2. 每个子任务应该是原子性的（单一工具调用或简单推理）
+3. 用 dependsOn 标记依赖关系：
+   - 空数组 [] = 无依赖，可与其他无依赖任务并行执行
+   - ["t1"] = 依赖 t1 完成后才能执行
+   - ["t1", "t2"] = 需要 t1 和 t2 都完成后才能执行
+4. 高风险操作必须标记 approvalRequired: true，包括：
+   - 写文件、删除文件
+   - 发送消息、邮件
+   - API 调用、付费操作
+   - 系统命令执行
+
+## 可用工具参考
+- webSearch: 网络搜索
+- webFetch: 获取网页内容
+- readFile: 读取文件
+- writeFile: 写入文件（需确认）
+- listDir: 列出目录
+- runCmd: 执行命令（需确认）
+- saveMemory: 保存记忆
+- searchMemory: 搜索记忆
+
+## 输出格式（纯 JSON）
+{
+  "title": "任务标题（简洁描述）",
+  "subTasks": [
+    {
+      "id": "t1",
+      "description": "搜索相关资料",
+      "toolHint": "webSearch",
+      "dependsOn": [],
+      "approvalRequired": false
+    },
+    {
+      "id": "t2",
+      "description": "分析搜索结果",
+      "dependsOn": ["t1"],
+      "approvalRequired": false
+    },
+    {
+      "id": "t3",
+      "description": "生成报告并保存",
+      "toolHint": "writeFile",
+      "dependsOn": ["t2"],
+      "approvalRequired": true,
+      "approvalReason": "将创建新文件"
+    }
+  ]
+}
+
+## 用户请求
+{prompt}
+
+## Nexus 上下文（如有）
+{nexus_context}
+
+请输出 JSON（不要包含其他文字）：`
 
 // ============================================
 // LocalClawService 主类
@@ -2769,6 +2838,357 @@ ${stepsReport}
       return await chat([{ role: 'user', content: summaryPrompt }])
     } catch {
       return `任务执行完成。\n\n${stepsReport}`
+    }
+  }
+
+  // ============================================
+  // 🎯 Quest 风格任务规划系统
+  // ============================================
+
+  /**
+   * 生成 Quest 风格的任务计划（DAG 结构）
+   * 将复杂任务分解为有依赖关系的子任务
+   */
+  async generateQuestPlan(userPrompt: string, nexusId?: string): Promise<TaskPlan> {
+    console.log('[LocalClaw] Generating Quest plan for:', userPrompt.slice(0, 50))
+
+    // 构建 Nexus 上下文（如果有）
+    let nexusContext = '无'
+    if (nexusId) {
+      const nexusCtx = await this.buildNexusContext(nexusId, userPrompt)
+      if (nexusCtx) {
+        nexusContext = nexusCtx
+      }
+    }
+
+    const plannerPrompt = QUEST_PLANNER_PROMPT
+      .replace('{prompt}', userPrompt)
+      .replace('{nexus_context}', nexusContext)
+
+    try {
+      const response = await chat([{ role: 'user', content: plannerPrompt }])
+
+      // 提取 JSON
+      const jsonMatch = response.match(/\{[\s\S]*\}/)
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]) as { title: string; subTasks: SubTask[] }
+        
+        // 验证和规范化子任务
+        const subTasks: SubTask[] = parsed.subTasks.slice(0, CONFIG.MAX_PLAN_STEPS).map((task, i) => ({
+          id: task.id || `t${i + 1}`,
+          description: task.description,
+          toolHint: task.toolHint,
+          status: 'pending' as SubTaskStatus,
+          dependsOn: task.dependsOn || [],
+          approvalRequired: task.approvalRequired || false,
+          approvalReason: task.approvalReason,
+          retryCount: 0,
+          maxRetries: 2,
+        }))
+
+        // 验证依赖关系（检测循环依赖）
+        if (!this.validateTaskDependencies(subTasks)) {
+          console.warn('[LocalClaw] Invalid dependencies detected, fixing...')
+          // 简单修复：移除无效依赖
+          subTasks.forEach(task => {
+            task.dependsOn = task.dependsOn.filter(dep => 
+              subTasks.some(t => t.id === dep)
+            )
+          })
+        }
+
+        const plan: TaskPlan = {
+          id: `plan-${Date.now()}`,
+          title: parsed.title || userPrompt.slice(0, 50),
+          userPrompt,
+          subTasks,
+          status: 'planning',
+          nexusId,
+          createdAt: Date.now(),
+          progress: 0,
+          maxParallel: 3,
+        }
+
+        console.log(`[LocalClaw] Quest plan generated: ${subTasks.length} sub-tasks`)
+        return plan
+      }
+    } catch (error) {
+      console.error('[LocalClaw] Quest plan generation failed:', error)
+    }
+
+    // 降级：单任务计划
+    return {
+      id: `plan-${Date.now()}`,
+      title: userPrompt.slice(0, 50),
+      userPrompt,
+      subTasks: [{
+        id: 't1',
+        description: userPrompt,
+        status: 'pending',
+        dependsOn: [],
+        retryCount: 0,
+        maxRetries: 2,
+      }],
+      status: 'planning',
+      nexusId,
+      createdAt: Date.now(),
+      progress: 0,
+      maxParallel: 1,
+    }
+  }
+
+  /**
+   * 验证任务依赖关系（检测循环依赖）
+   */
+  private validateTaskDependencies(subTasks: SubTask[]): boolean {
+    const taskIds = new Set(subTasks.map(t => t.id))
+    const visited = new Set<string>()
+    const recursionStack = new Set<string>()
+
+    const hasCycle = (taskId: string): boolean => {
+      if (recursionStack.has(taskId)) return true
+      if (visited.has(taskId)) return false
+
+      visited.add(taskId)
+      recursionStack.add(taskId)
+
+      const task = subTasks.find(t => t.id === taskId)
+      if (task) {
+        for (const dep of task.dependsOn) {
+          if (!taskIds.has(dep)) continue // 忽略无效依赖
+          if (hasCycle(dep)) return true
+        }
+      }
+
+      recursionStack.delete(taskId)
+      return false
+    }
+
+    for (const task of subTasks) {
+      if (hasCycle(task.id)) {
+        console.error('[LocalClaw] Circular dependency detected involving:', task.id)
+        return false
+      }
+    }
+
+    return true
+  }
+
+  /**
+   * 获取就绪的子任务（依赖已满足）
+   */
+  private getReadySubTasks(plan: TaskPlan): SubTask[] {
+    return plan.subTasks.filter(task => {
+      if (task.status !== 'pending') return false
+      
+      // 检查所有依赖是否已完成
+      return task.dependsOn.every(depId => {
+        const depTask = plan.subTasks.find(t => t.id === depId)
+        return depTask && (depTask.status === 'done' || depTask.status === 'skipped')
+      })
+    })
+  }
+
+  /**
+   * 计算任务计划进度（0-100）
+   */
+  private calculatePlanProgress(plan: TaskPlan): number {
+    const total = plan.subTasks.length
+    if (total === 0) return 100
+    
+    const completed = plan.subTasks.filter(
+      t => t.status === 'done' || t.status === 'skipped'
+    ).length
+    
+    return Math.round((completed / total) * 100)
+  }
+
+  /**
+   * 执行 Quest 风格的任务计划
+   * 支持依赖管理和并行执行
+   */
+  async executeQuestPlan(
+    plan: TaskPlan,
+    onProgress?: (plan: TaskPlan, currentTask?: SubTask) => void,
+    onApprovalRequired?: (task: SubTask) => Promise<'approve' | 'skip' | 'cancel'>
+  ): Promise<string> {
+    console.log('[LocalClaw] Executing Quest plan:', plan.title)
+    
+    plan.status = 'executing'
+    plan.startedAt = Date.now()
+    onProgress?.(plan)
+
+    const maxParallel = plan.maxParallel || 3
+
+    while (true) {
+      // 获取就绪任务
+      const readyTasks = this.getReadySubTasks(plan)
+      
+      // 检查是否完成
+      if (readyTasks.length === 0) {
+        const pendingTasks = plan.subTasks.filter(t => t.status === 'pending')
+        const blockedTasks = plan.subTasks.filter(t => t.status === 'blocked')
+        
+        if (pendingTasks.length === 0 && blockedTasks.length === 0) {
+          // 全部完成
+          break
+        }
+        
+        // 有阻塞的任务（可能是依赖失败）
+        if (pendingTasks.length > 0) {
+          // 标记被阻塞的任务
+          pendingTasks.forEach(task => {
+            const hasFailedDep = task.dependsOn.some(depId => {
+              const dep = plan.subTasks.find(t => t.id === depId)
+              return dep && dep.status === 'failed'
+            })
+            if (hasFailedDep) {
+              task.status = 'blocked'
+            }
+          })
+          
+          // 重新检查
+          const stillReady = this.getReadySubTasks(plan)
+          if (stillReady.length === 0) {
+            console.warn('[LocalClaw] All remaining tasks are blocked')
+            break
+          }
+        } else {
+          break
+        }
+        
+        continue
+      }
+
+      // 检查是否有需要审批的任务
+      const needsApproval = readyTasks.find(t => t.approvalRequired && t.status === 'pending')
+      if (needsApproval && onApprovalRequired) {
+        needsApproval.status = 'paused_for_approval'
+        onProgress?.(plan, needsApproval)
+        
+        const decision = await onApprovalRequired(needsApproval)
+        
+        if (decision === 'cancel') {
+          plan.status = 'cancelled'
+          onProgress?.(plan)
+          return '任务已取消'
+        } else if (decision === 'skip') {
+          needsApproval.status = 'skipped'
+          plan.progress = this.calculatePlanProgress(plan)
+          onProgress?.(plan)
+          continue
+        } else {
+          needsApproval.status = 'pending'
+          needsApproval.approvalRequired = false // 已批准，不再需要
+        }
+      }
+
+      // 选择要执行的任务（最多 maxParallel 个）
+      const tasksToExecute = readyTasks
+        .filter(t => t.status === 'pending')
+        .slice(0, maxParallel)
+
+      if (tasksToExecute.length === 0) continue
+
+      // 并行执行
+      const execPromises = tasksToExecute.map(async (task) => {
+        task.status = 'executing'
+        task.startTime = Date.now()
+        onProgress?.(plan, task)
+
+        try {
+          // 构建子任务上下文
+          const completedContext = plan.subTasks
+            .filter(t => t.status === 'done')
+            .map(t => `[${t.id}] ${t.description}: ${t.result?.slice(0, 200) || '完成'}`)
+            .join('\n')
+
+          const taskPrompt = completedContext
+            ? `基于已完成的步骤:\n${completedContext}\n\n当前任务: ${task.description}`
+            : task.description
+
+          // 执行 ReAct 循环
+          const result = await this.runReActLoop(taskPrompt)
+          
+          task.status = 'done'
+          task.result = result
+          task.endTime = Date.now()
+          
+        } catch (error) {
+          task.retryCount = (task.retryCount || 0) + 1
+          
+          if (task.retryCount < (task.maxRetries || 2)) {
+            // 重试
+            task.status = 'pending'
+            task.error = `重试 ${task.retryCount}/${task.maxRetries}: ${error}`
+          } else {
+            // 最终失败
+            task.status = 'failed'
+            task.error = String(error)
+            task.endTime = Date.now()
+          }
+        }
+      })
+
+      await Promise.allSettled(execPromises)
+      
+      // 更新进度
+      plan.progress = this.calculatePlanProgress(plan)
+      onProgress?.(plan)
+    }
+
+    // 确定最终状态
+    const failedTasks = plan.subTasks.filter(t => t.status === 'failed')
+    const blockedTasks = plan.subTasks.filter(t => t.status === 'blocked')
+    
+    if (failedTasks.length > 0 || blockedTasks.length > 0) {
+      plan.status = 'failed'
+    } else {
+      plan.status = 'done'
+    }
+    
+    plan.completedAt = Date.now()
+    plan.progress = this.calculatePlanProgress(plan)
+    onProgress?.(plan)
+
+    // 生成总结
+    return this.synthesizeQuestReport(plan)
+  }
+
+  /**
+   * 生成 Quest 任务执行报告
+   */
+  private async synthesizeQuestReport(plan: TaskPlan): Promise<string> {
+    const tasksSummary = plan.subTasks.map(t => {
+      const statusEmoji = {
+        done: '✅',
+        failed: '❌',
+        skipped: '⏭️',
+        blocked: '🚫',
+        pending: '⏳',
+        executing: '🔄',
+        ready: '🟢',
+        paused_for_approval: '⏸️',
+      }[t.status] || '❓'
+      
+      return `${statusEmoji} [${t.id}] ${t.description}${t.result ? `\n   结果: ${t.result.slice(0, 100)}` : ''}${t.error ? `\n   错误: ${t.error}` : ''}`
+    }).join('\n\n')
+
+    const summaryPrompt = `请根据以下 Quest 任务执行结果，为用户生成简洁的总结报告。
+
+原始请求: ${plan.userPrompt}
+
+执行进度: ${plan.progress}%
+
+子任务执行情况:
+${tasksSummary}
+
+请用简洁的语言总结任务完成情况，突出关键结果：`
+
+    try {
+      return await chat([{ role: 'user', content: summaryPrompt }])
+    } catch {
+      return `任务执行完成 (${plan.progress}%)\n\n${tasksSummary}`
     }
   }
 

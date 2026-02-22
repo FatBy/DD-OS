@@ -3,7 +3,8 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { 
   X, Play, Trash2, Star, Clock, Globe2, 
   ChevronDown, ChevronRight, Puzzle, Cpu,
-  BookOpen, Zap, CheckCircle2, XCircle, Timer
+  BookOpen, Zap, CheckCircle2, XCircle, Timer, Target, TrendingUp, AlertCircle,
+  Loader2, Pause, SkipForward, Activity
 } from 'lucide-react'
 import { useStore } from '@/store'
 import { cn } from '@/utils/cn'
@@ -125,9 +126,11 @@ export function NexusDetailPanel() {
   const activeNexusId = useStore((s) => s.activeNexusId)
   const setChatOpen = useStore((s) => s.setChatOpen)
   const addNexusActivationMessage = useStore((s) => s.addNexusActivationMessage)
+  const tasks = useStore((s) => s.tasks)
+  const activeExecutions = useStore((s) => s.activeExecutions)
   
   const [showModelConfig, setShowModelConfig] = useState(false)
-  const [showSOP, setShowSOP] = useState(false)
+  const [showSOP, setShowSOP] = useState(true)  // 默认展开 SOP
   const [customBaseUrl, setCustomBaseUrl] = useState('')
   const [customModel, setCustomModel] = useState('')
   const [customApiKey, setCustomApiKey] = useState('')
@@ -135,20 +138,34 @@ export function NexusDetailPanel() {
   
   const nexus = selectedNexusForPanel ? nexuses.get(selectedNexusForPanel) : null
   
-  // Resolve all bound skills
+  // Resolve all bound skills (不过滤未加载的技能，标记为 missing)
   const boundSkills = useMemo(() => {
     if (!nexus) return []
-    const ids = nexus.boundSkillIds || (nexus.boundSkillId ? [nexus.boundSkillId] : [])
+    const ids = nexus.boundSkillIds || nexus.skillDependencies || (nexus.boundSkillId ? [nexus.boundSkillId] : [])
     return ids.map(id => {
       // Match by id or name
       const fromStore = skills.find(s => s.id === id || s.name === id)
       const fromOC = openClawSkills.find(s => s.name === id)
-      return fromStore || (fromOC ? { id: fromOC.name, name: fromOC.name, description: fromOC.description, status: 'active' as const, unlocked: true } : null)
-    }).filter(Boolean) as Array<{ id: string; name: string; description?: string; status: string }>
+      if (fromStore) return fromStore
+      if (fromOC) return { id: fromOC.name, name: fromOC.name, description: fromOC.description, status: 'active' as const, unlocked: true }
+      // 技能未加载时，标记为 missing 而不是过滤掉
+      return { id, name: id, description: '等待系统加载...', status: 'missing' as const, unlocked: false }
+    }) as Array<{ id: string; name: string; description?: string; status: string; unlocked?: boolean }>
   }, [nexus, skills, openClawSkills])
 
   // File-based Nexus can execute even without bound skills (it has SOP)
   const canExecute = boundSkills.length > 0 || !!nexus?.sopContent
+
+  // 查找与当前 Nexus 关联的活跃任务
+  const activeTask = useMemo(() => {
+    if (!nexus) return null
+    const allTasks = [...activeExecutions, ...tasks]
+    // 找到正在执行且关联到此 Nexus 的任务
+    return allTasks.find(t => 
+      t.status === 'executing' && 
+      t.taskPlan?.nexusId === nexus.id
+    ) || null
+  }, [nexus, activeExecutions, tasks])
 
   // Load experiences from server when panel opens
   useEffect(() => {
@@ -438,9 +455,11 @@ export function NexusDetailPanel() {
                             'text-[13px] font-mono px-2 py-0.5 rounded-full',
                             skill.status === 'active' 
                               ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/20'
+                              : skill.status === 'missing'
+                              ? 'bg-amber-500/20 text-amber-400 border border-amber-500/20'
                               : 'bg-white/5 text-white/40 border border-white/10'
                           )}>
-                            {skill.status === 'active' ? 'ONLINE' : 'STANDBY'}
+                            {skill.status === 'active' ? 'ONLINE' : skill.status === 'missing' ? 'LOADING' : 'STANDBY'}
                           </span>
                         </div>
                         {skill.description && (
@@ -455,6 +474,51 @@ export function NexusDetailPanel() {
                   <p className="text-sm font-mono text-white/20 italic">No skills bound to this Nexus</p>
                 )}
               </div>
+
+              {/* ==================== Objective Function (目标函数) ==================== */}
+              {(nexus.objective || nexus.metrics || nexus.strategy) && (
+                <div className="p-5 rounded-xl bg-white/[0.03] border border-white/[0.06]">
+                  <div className="flex items-center gap-2 mb-3">
+                    <Target className={cn('w-4 h-4', archConfig.textClass)} />
+                    <span className="text-xs font-mono text-white/50 uppercase tracking-wider">
+                      Objective Function
+                    </span>
+                  </div>
+                  
+                  {nexus.objective && (
+                    <div className="mb-4">
+                      <p className="text-sm text-white/80 leading-relaxed">{nexus.objective}</p>
+                    </div>
+                  )}
+                  
+                  {nexus.strategy && (
+                    <div className="mb-3 p-3 rounded-lg bg-white/[0.02] border border-white/[0.04]">
+                      <div className="flex items-center gap-1.5 mb-2">
+                        <TrendingUp className="w-3 h-3 text-white/40" />
+                        <span className="text-xs font-mono text-white/40 uppercase">Strategy</span>
+                      </div>
+                      <p className="text-xs text-white/60 leading-relaxed whitespace-pre-wrap">{nexus.strategy}</p>
+                    </div>
+                  )}
+                  
+                  {nexus.metrics && nexus.metrics.length > 0 && (
+                    <div className="p-3 rounded-lg bg-white/[0.02] border border-white/[0.04]">
+                      <div className="flex items-center gap-1.5 mb-2">
+                        <AlertCircle className="w-3 h-3 text-white/40" />
+                        <span className="text-xs font-mono text-white/40 uppercase">Success Metrics</span>
+                      </div>
+                      <ul className="space-y-1">
+                        {nexus.metrics.map((metric, i) => (
+                          <li key={i} className="text-xs text-white/50 flex items-start gap-2">
+                            <span className="text-white/30">•</span>
+                            <span>{metric}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* ==================== Active Nexus Indicator ==================== */}
               {activeNexusId === nexus.id && (
@@ -471,6 +535,110 @@ export function NexusDetailPanel() {
                   >
                     Deactivate
                   </button>
+                </div>
+              )}
+
+              {/* ==================== Task Execution Progress ==================== */}
+              {activeTask?.taskPlan && (
+                <div className="p-5 rounded-xl bg-cyan-500/5 border border-cyan-500/20">
+                  <div className="flex items-center gap-2 mb-3">
+                    <Activity className="w-4 h-4 text-cyan-400 animate-pulse" />
+                    <span className="text-xs font-mono text-cyan-400 uppercase tracking-wider">
+                      Task Execution
+                    </span>
+                    <span className="ml-auto text-xs font-mono text-white/30">
+                      {activeTask.taskPlan.subTasks.filter(t => t.status === 'done').length}/{activeTask.taskPlan.subTasks.length}
+                    </span>
+                  </div>
+                  
+                  {/* 进度条 */}
+                  <div className="mb-3">
+                    <div className="h-2 bg-white/10 rounded-full overflow-hidden">
+                      <motion.div
+                        initial={{ width: 0 }}
+                        animate={{ 
+                          width: `${Math.round(
+                            (activeTask.taskPlan.subTasks.filter(t => t.status === 'done' || t.status === 'skipped').length / 
+                             activeTask.taskPlan.subTasks.length) * 100
+                          )}%` 
+                        }}
+                        transition={{ duration: 0.5, ease: 'easeOut' }}
+                        className="h-full rounded-full bg-gradient-to-r from-cyan-500 to-emerald-500"
+                      />
+                    </div>
+                  </div>
+                  
+                  {/* 子任务状态统计 */}
+                  <div className="flex flex-wrap gap-2 mb-3 text-[11px] font-mono">
+                    {activeTask.taskPlan.subTasks.filter(t => t.status === 'executing').length > 0 && (
+                      <span className="flex items-center gap-1 text-cyan-400">
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                        {activeTask.taskPlan.subTasks.filter(t => t.status === 'executing').length} 执行中
+                      </span>
+                    )}
+                    {activeTask.taskPlan.subTasks.filter(t => t.status === 'blocked').length > 0 && (
+                      <span className="flex items-center gap-1 text-amber-400">
+                        <Pause className="w-3 h-3" />
+                        {activeTask.taskPlan.subTasks.filter(t => t.status === 'blocked').length} 阻塞
+                      </span>
+                    )}
+                    {activeTask.taskPlan.subTasks.filter(t => t.status === 'failed').length > 0 && (
+                      <span className="flex items-center gap-1 text-red-400">
+                        <XCircle className="w-3 h-3" />
+                        {activeTask.taskPlan.subTasks.filter(t => t.status === 'failed').length} 失败
+                      </span>
+                    )}
+                    {activeTask.taskPlan.subTasks.filter(t => t.status === 'paused_for_approval').length > 0 && (
+                      <span className="flex items-center gap-1 text-yellow-400">
+                        <AlertCircle className="w-3 h-3" />
+                        {activeTask.taskPlan.subTasks.filter(t => t.status === 'paused_for_approval').length} 待确认
+                      </span>
+                    )}
+                  </div>
+                  
+                  {/* 子任务列表 */}
+                  <div className="space-y-1.5 max-h-[200px] overflow-y-auto">
+                    {activeTask.taskPlan.subTasks.map(subTask => {
+                      const statusConfig: Record<string, { icon: typeof CheckCircle2; color: string }> = {
+                        pending: { icon: Clock, color: 'slate' },
+                        ready: { icon: Play, color: 'green' },
+                        executing: { icon: Loader2, color: 'cyan' },
+                        done: { icon: CheckCircle2, color: 'emerald' },
+                        failed: { icon: XCircle, color: 'red' },
+                        blocked: { icon: Pause, color: 'amber' },
+                        skipped: { icon: SkipForward, color: 'slate' },
+                        paused_for_approval: { icon: AlertCircle, color: 'yellow' },
+                      }
+                      const config = statusConfig[subTask.status] || statusConfig.pending
+                      const StatusIcon = config.icon
+                      const isExecuting = subTask.status === 'executing'
+                      
+                      return (
+                        <div 
+                          key={subTask.id}
+                          className={cn(
+                            'p-2 rounded-lg border flex items-start gap-2 transition-all',
+                            subTask.status === 'done' && 'bg-emerald-500/5 border-emerald-500/15',
+                            subTask.status === 'failed' && 'bg-red-500/5 border-red-500/15',
+                            subTask.status === 'executing' && 'bg-cyan-500/5 border-cyan-500/20',
+                            subTask.status === 'blocked' && 'bg-amber-500/5 border-amber-500/15',
+                            subTask.status === 'paused_for_approval' && 'bg-yellow-500/5 border-yellow-500/20',
+                            (subTask.status === 'pending' || subTask.status === 'ready' || subTask.status === 'skipped') && 'bg-white/[0.02] border-white/[0.05]'
+                          )}
+                        >
+                          <div className={cn('w-4 h-4 flex items-center justify-center flex-shrink-0', `text-${config.color}-400`)}>
+                            <StatusIcon className={cn('w-3 h-3', isExecuting && 'animate-spin')} />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-[11px] text-white/60 line-clamp-1">{subTask.description}</p>
+                            {subTask.error && (
+                              <p className="text-[10px] text-red-400/70 mt-0.5 line-clamp-1">✗ {subTask.error}</p>
+                            )}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
                 </div>
               )}
               
