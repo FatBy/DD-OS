@@ -16,6 +16,7 @@ import { openClawService } from '@/services/OpenClawService'
 import { localClawService } from '@/services/LocalClawService'
 import { getLocalSoulData, getLocalSkills, getLocalMemories } from '@/utils/localDataProvider'
 import { simpleVisualDNA } from '@/store/slices/worldSlice'
+import { restoreLLMConfigFromServer } from '@/services/llmService'
 
 /**
  * 从 localStorage 缓存立即恢复数据到 store
@@ -140,12 +141,25 @@ function App() {
     // 自动重连: 恢复上次的连接状态
     const savedMode = localStorage.getItem('ddos_connection_mode')
     
-    // LLM 配置自动恢复 + 自动验证
-    const llmConfig = useStore.getState().llmConfig
-    if (llmConfig.apiKey && llmConfig.baseUrl && llmConfig.model) {
-      console.log('[App] LLM config restored from localStorage')
-      useStore.getState().setLlmConnected(true) // 标记为已配置
+    // LLM 配置自动恢复：先尝试从后端恢复，再检查localStorage
+    const tryRestoreLLMConfig = async () => {
+      // 先尝试从后端文件系统恢复（解决跨端口问题）
+      const serverConfig = await restoreLLMConfigFromServer()
+      
+      // 再次检查配置（可能已从后端恢复到localStorage）
+      const llmConfig = useStore.getState().llmConfig
+      const finalConfig = serverConfig || llmConfig
+      
+      if (finalConfig.apiKey && finalConfig.baseUrl && finalConfig.model) {
+        // 更新store状态
+        if (serverConfig) {
+          useStore.getState().setLlmConfig(serverConfig)
+        }
+        useStore.getState().setLlmConnected(true)
+        console.log('[App] LLM config restored')
+      }
     }
+    tryRestoreLLMConfig()
 
     // 种子 Nexus: 仅在后端未加载 Nexus 时作为 fallback
     // Phase 4: 实际 Nexus 数据将从 /nexuses API 加载
@@ -221,11 +235,22 @@ function App() {
 
   const isChatOpen = useStore((s) => s.isChatOpen)
   const initTheme = useStore((s) => s.initTheme)
+  const worldTheme = useStore((s) => s.worldTheme)
 
   // 初始化主题
   useEffect(() => {
     initTheme()
   }, [initTheme])
+
+  // 根据 worldTheme 切换 CSS 主题类
+  useEffect(() => {
+    const root = document.documentElement
+    if (worldTheme === 'cityscape') {
+      root.classList.add('theme-cityscape')
+    } else {
+      root.classList.remove('theme-cityscape')
+    }
+  }, [worldTheme])
 
   // 聊天面板开关时触发 resize，让 Canvas 重新计算尺寸
   useEffect(() => {

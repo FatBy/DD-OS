@@ -65,7 +65,9 @@ export function BuildProposalModal() {
         label: accepted.suggestedName,
         constructionProgress: 0, // 开始建造动画
         createdAt: Date.now(),
-        boundSkillId: accepted.boundSkillId,
+        // 传入技能和 SOP
+        boundSkillIds: accepted.boundSkillIds || [],
+        sopContent: accepted.sopContent || '',
         flavorText: `由 Observer 在 ${new Date().toLocaleDateString()} 创建`,
       })
     }

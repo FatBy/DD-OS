@@ -4,7 +4,7 @@ import {
   X, Play, Trash2, Star, Clock, Globe2, 
   ChevronDown, ChevronRight, Puzzle, Cpu,
   BookOpen, Zap, CheckCircle2, XCircle, Timer, Target, TrendingUp, AlertCircle,
-  Loader2, Pause, SkipForward, Activity
+  Loader2, Pause, SkipForward, Activity, Edit2
 } from 'lucide-react'
 import { useStore } from '@/store'
 import { cn } from '@/utils/cn'
@@ -14,10 +14,11 @@ import type { NexusArchetype, NexusExperience } from '@/types'
 // 建造总时长（与 worldSlice tickConstructionAnimations 中的 3000ms 一致）
 const CONSTRUCTION_DURATION_MS = 3000
 
-// Archetype config
+// Archetype config - 支持双主题标签
 const ARCHETYPE_CONFIG: Record<NexusArchetype, { 
   label: string 
-  typeLabel: string
+  typeLabel: string       // 宇宙主题
+  typeLabelCity: string   // 城市主题
   color: string
   bgClass: string
   borderClass: string
@@ -26,6 +27,7 @@ const ARCHETYPE_CONFIG: Record<NexusArchetype, {
   MONOLITH: {
     label: 'Knowledge Storage',
     typeLabel: '知识星球',
+    typeLabelCity: '知识大厦',
     color: 'amber',
     bgClass: 'bg-amber-500/20',
     borderClass: 'border-amber-500/30',
@@ -34,6 +36,7 @@ const ARCHETYPE_CONFIG: Record<NexusArchetype, {
   SPIRE: {
     label: 'Reasoning Engine',
     typeLabel: '推理星球',
+    typeLabelCity: '分析塔',
     color: 'purple',
     bgClass: 'bg-purple-500/20',
     borderClass: 'border-purple-500/30',
@@ -42,6 +45,7 @@ const ARCHETYPE_CONFIG: Record<NexusArchetype, {
   REACTOR: {
     label: 'Execution Core',
     typeLabel: '执行星球',
+    typeLabelCity: '执行中心',
     color: 'cyan',
     bgClass: 'bg-cyan-500/20',
     borderClass: 'border-cyan-500/30',
@@ -50,6 +54,7 @@ const ARCHETYPE_CONFIG: Record<NexusArchetype, {
   VAULT: {
     label: 'Memory Crystal',
     typeLabel: '记忆星球',
+    typeLabelCity: '档案馆',
     color: 'emerald',
     bgClass: 'bg-emerald-500/20',
     borderClass: 'border-emerald-500/30',
@@ -128,6 +133,7 @@ export function NexusDetailPanel() {
   const addNexusActivationMessage = useStore((s) => s.addNexusActivationMessage)
   const tasks = useStore((s) => s.tasks)
   const activeExecutions = useStore((s) => s.activeExecutions)
+  const worldTheme = useStore((s) => s.worldTheme)
   
   const [showModelConfig, setShowModelConfig] = useState(false)
   const [showSOP, setShowSOP] = useState(true)  // 默认展开 SOP
@@ -135,6 +141,10 @@ export function NexusDetailPanel() {
   const [customModel, setCustomModel] = useState('')
   const [customApiKey, setCustomApiKey] = useState('')
   const [experiences, setExperiences] = useState<NexusExperience[]>([])
+  
+  // 名称编辑状态
+  const [isEditingName, setIsEditingName] = useState(false)
+  const [editNameValue, setEditNameValue] = useState('')
   
   const nexus = selectedNexusForPanel ? nexuses.get(selectedNexusForPanel) : null
   
@@ -181,10 +191,42 @@ export function NexusDetailPanel() {
       .catch(() => {})
   }, [nexus?.id, nexusPanelOpen])
   
+  // 面板关闭时重置编辑状态
+  useEffect(() => {
+    if (!nexusPanelOpen) {
+      setIsEditingName(false)
+      setEditNameValue('')
+    }
+  }, [nexusPanelOpen])
+  
   if (!nexus) return null
   
   const archConfig = ARCHETYPE_CONFIG[nexus.archetype]
   const progress = xpProgress(nexus.xp, nexus.level)
+  
+  // 保存名称修改
+  const handleSaveName = async () => {
+    setIsEditingName(false)
+    const trimmedName = editNameValue.trim()
+    if (!trimmedName || trimmedName === nexus.label) return
+    
+    try {
+      const serverUrl = localStorage.getItem('ddos_server_url') || 'http://localhost:3001'
+      const res = await fetch(`${serverUrl}/nexuses/${nexus.id}/meta`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: trimmedName })
+      })
+      
+      if (res.ok) {
+        // 更新本地状态
+        removeNexus(nexus.id)
+        addNexus({ ...nexus, label: trimmedName })
+      }
+    } catch (e) {
+      console.error('Failed to update nexus name', e)
+    }
+  }
   
   // Which model is being used
   const activeModel = nexus.customModel 
@@ -236,7 +278,10 @@ export function NexusDetailPanel() {
   }
   
   const handleDelete = () => {
-    if (confirm('Decommission this planet node? This action is irreversible.')) {
+    const confirmMsg = worldTheme === 'cityscape' 
+      ? '确定要拆除这座建筑吗？此操作不可撤销。'
+      : '确定要停用这颗星球节点吗？此操作不可撤销。'
+    if (confirm(confirmMsg)) {
       removeNexus(nexus.id)
       closeNexusPanel()
     }
@@ -279,11 +324,34 @@ export function NexusDetailPanel() {
               <div className="flex items-center gap-3">
                 <Globe2 className={cn('w-5 h-5', archConfig.textClass)} />
                 <div>
-                  <h2 className="font-mono text-base font-semibold text-white/90 tracking-wide uppercase">
-                    {nexus.label || `Node-${nexus.id.slice(-6)}`}
-                  </h2>
+                  {/* 名称编辑 */}
+                  <div className="flex items-center gap-2 group">
+                    {isEditingName ? (
+                      <input 
+                        autoFocus
+                        className="bg-black/40 text-white/90 px-2 py-1 rounded border border-white/20 outline-none font-mono text-base font-semibold w-48 uppercase tracking-wide"
+                        value={editNameValue}
+                        onChange={e => setEditNameValue(e.target.value)}
+                        onKeyDown={e => e.key === 'Enter' && handleSaveName()}
+                        onBlur={handleSaveName}
+                      />
+                    ) : (
+                      <>
+                        <h2 className="font-mono text-base font-semibold text-white/90 tracking-wide uppercase">
+                          {nexus.label || `Node-${nexus.id.slice(-6)}`}
+                        </h2>
+                        <button 
+                          onClick={() => { setIsEditingName(true); setEditNameValue(nexus.label || nexus.id) }}
+                          className="opacity-0 group-hover:opacity-100 p-1 text-white/40 hover:text-white/80 transition-opacity rounded hover:bg-white/10"
+                          title="编辑名称"
+                        >
+                          <Edit2 className="w-3.5 h-3.5" />
+                        </button>
+                      </>
+                    )}
+                  </div>
                   <p className="text-xs font-mono text-white/40 mt-0.5">
-                    LV.{nexus.level} {archConfig.typeLabel}
+                    LV.{nexus.level} {worldTheme === 'cityscape' ? archConfig.typeLabelCity : archConfig.typeLabel}
                   </p>
                 </div>
               </div>

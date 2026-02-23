@@ -49,7 +49,7 @@ export interface TaskItem {
   executionDuration?: number
   // Quest 风格复杂任务支持
   taskPlan?: TaskPlan           // 复杂任务的执行计划
-  executionMode?: 'simple' | 'complex'
+  executionMode?: 'simple' | 'complex' | 'quest'
 }
 
 // ============================================
@@ -485,6 +485,15 @@ export interface ToolInfo {
 
 export type NexusArchetype = 'MONOLITH' | 'SPIRE' | 'REACTOR' | 'VAULT'
 
+// 建筑配置 (城市主题)
+export interface BuildingConfig {
+  base: string           // 地基类型 (concrete, steel, glass, stone)
+  body: string           // 主体类型 (office, lab, factory, library, tower, warehouse)
+  roof: string           // 屋顶类型 (flat, dome, antenna, satellite, chimney, garden)
+  props?: string[]       // 装饰物 (signs, lights, wires, plants, machines)
+  themeColor?: string    // 主题色 (用于发光效果)
+}
+
 export interface VisualDNA {
   primaryHue: number        // 0-360
   primarySaturation: number // 40-100
@@ -494,6 +503,10 @@ export interface VisualDNA {
   textureMode: 'solid' | 'wireframe' | 'gradient'
   glowIntensity: number     // 0-1
   geometryVariant: number   // 0-3 (sub-variant within archetype)
+  // 城市主题：建筑配置 (用于 cityscape 主题)
+  buildingConfig?: BuildingConfig
+  // AI 生图：自定义图片 URL (高级用户)
+  customImageUrl?: string
 }
 
 export interface GridPosition {
@@ -567,6 +580,9 @@ export interface TriggerPattern {
   evidence: string[]           // 证据摘要（相关消息片段）
   suggestedArchetype: NexusArchetype
   detectedAt: number
+  // 新增：技能和SOP推荐
+  suggestedSkills?: string[]   // 建议绑定的工具/技能名列表
+  suggestedSOP?: string        // 建议的系统提示词/作业程序
 }
 
 export interface BuildProposal {
@@ -575,7 +591,9 @@ export interface BuildProposal {
   suggestedName: string        // 建议的 Nexus 名称
   suggestedArchetype: NexusArchetype
   previewVisualDNA: VisualDNA
-  boundSkillId?: string        // 可选绑定的 Skill
+  boundSkillId?: string        // 兼容旧字段：单个 Skill
+  boundSkillIds?: string[]     // 新增：多技能绑定列表
+  sopContent?: string          // 新增：系统提示词/SOP
   purposeSummary: string       // 一句话概括此 Nexus 的功能目标
   status: 'pending' | 'accepted' | 'rejected'
   createdAt: number

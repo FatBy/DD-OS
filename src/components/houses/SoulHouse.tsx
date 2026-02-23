@@ -25,11 +25,11 @@ function HudPanel({
       initial={{ opacity: 0, x: side === 'left' ? -30 : 30 }}
       animate={{ opacity: 1, x: 0 }}
       transition={{ delay, duration: 0.6, ease: "easeOut" }}
-      className={`pointer-events-auto backdrop-blur-md bg-slate-900/30 border border-white/10 rounded-xl overflow-hidden shadow-[0_0_30px_rgba(0,0,0,0.3)] hover:bg-slate-900/50 hover:border-white/20 transition-all ${side === 'left' ? 'mr-auto' : 'ml-auto'}`}
+      className={`pointer-events-auto backdrop-blur-md bg-skin-bg-panel/40 border border-skin-border/10 rounded-xl overflow-hidden shadow-[0_0_30px_rgba(0,0,0,0.3)] hover:bg-skin-bg-panel/60 hover:border-skin-border/20 transition-all ${side === 'left' ? 'mr-auto' : 'ml-auto'}`}
     >
-      <div className="px-4 py-2 bg-white/5 border-b border-white/5 flex items-center gap-2">
-        <Icon className="w-3.5 h-3.5 text-cyan-400" />
-        <span className="text-[13px] font-mono uppercase tracking-widest text-cyan-100/70">
+      <div className="px-4 py-2 bg-skin-bg-secondary/20 border-b border-skin-border/5 flex items-center gap-2">
+        <Icon className="w-3.5 h-3.5 text-skin-accent-cyan" />
+        <span className="text-[13px] font-mono uppercase tracking-widest text-skin-text-secondary/70">
           {title}
         </span>
       </div>
@@ -60,7 +60,7 @@ export function SoulHouse() {
 
   if (loading && !soulIdentity) {
     return (
-      <div className="flex flex-col items-center justify-center h-full text-cyan-500/50 font-mono text-sm gap-2">
+      <div className="flex flex-col items-center justify-center h-full text-skin-accent-cyan/50 font-mono text-sm gap-2">
         <Loader2 className="w-6 h-6 animate-spin" />
         {t('soul.initializing')}
       </div>
@@ -68,7 +68,7 @@ export function SoulHouse() {
   }
 
   return (
-    <div className="relative w-full h-full bg-slate-950 overflow-hidden flex flex-col">
+    <div className="relative w-full h-full bg-skin-bg-primary overflow-hidden flex flex-col">
       {/* 1. 顶部 AI 状态栏 */}
       <div className="absolute top-4 left-4 right-4 z-30 pointer-events-none">
          <div className="pointer-events-auto">
@@ -111,10 +111,10 @@ export function SoulHouse() {
           <div className="flex flex-col gap-3 max-w-[220px] w-full">
             <HudPanel title={t('soul.identity')} icon={Fingerprint} side="left" delay={0.2}>
               <div className="space-y-2">
-                <div className="text-lg font-bold text-white/90 tracking-wide">
+                <div className="text-lg font-bold text-skin-text-primary/90 tracking-wide">
                   {soulIdentity?.name || 'GENESIS'}
                 </div>
-                <div className="text-[13px] font-mono text-cyan-400/60">
+                <div className="text-[13px] font-mono text-skin-accent-cyan/60">
                   {soulIdentity?.essence || 'Digital Soul Core'}
                 </div>
               </div>
@@ -125,8 +125,8 @@ export function SoulHouse() {
                 <div className="space-y-1.5 max-h-32 overflow-y-auto">
                   {soulCoreTruths.slice(0, 4).map((truth, i) => (
                     <div key={truth.id} className="flex items-start gap-2">
-                      <span className="text-[12px] font-mono text-cyan-500/60 mt-0.5">{String(i + 1).padStart(2, '0')}</span>
-                      <span className="text-[11px] text-white/60 leading-tight">{truth.title}</span>
+                      <span className="text-[12px] font-mono text-skin-accent-cyan/60 mt-0.5">{String(i + 1).padStart(2, '0')}</span>
+                      <span className="text-[11px] text-skin-text-secondary/60 leading-tight">{truth.title}</span>
                     </div>
                   ))}
                 </div>
@@ -139,20 +139,20 @@ export function SoulHouse() {
             <HudPanel title={t('soul.skill_matrix')} icon={Cpu} side="right" delay={0.3}>
               <div className="space-y-2">
                 <div className="flex justify-between text-[11px]">
-                  <span className="text-white/40">{t('soul.active_total')}</span>
-                  <span className="text-cyan-400 font-mono font-bold">
+                  <span className="text-skin-text-secondary/40">{t('soul.active_total')}</span>
+                  <span className="text-skin-accent-cyan font-mono font-bold">
                     {activeSkills.length} / {skills.length}
                   </span>
                 </div>
-                <div className="h-1.5 bg-white/5 rounded-full overflow-hidden">
+                <div className="h-1.5 bg-skin-bg-secondary/30 rounded-full overflow-hidden">
                   <motion.div 
-                    className="h-full bg-gradient-to-r from-cyan-500 to-purple-500 rounded-full"
+                    className="h-full bg-gradient-to-r from-skin-accent-cyan to-skin-accent-purple rounded-full"
                     initial={{ width: 0 }}
                     animate={{ width: `${skillRatio}%` }}
                     transition={{ duration: 1, delay: 0.5 }}
                   />
                 </div>
-                <div className="text-[12px] font-mono text-white/30">
+                <div className="text-[12px] font-mono text-skin-text-secondary/30">
                   {t('soul.activation_ratio')} {skillRatio.toFixed(1)}%
                 </div>
               </div>
@@ -161,16 +161,16 @@ export function SoulHouse() {
             <HudPanel title={t('soul.system_status')} icon={Activity} side="right" delay={0.5}>
               <div className="space-y-2">
                 <div className="flex justify-between text-[11px]">
-                  <span className="text-white/40">{t('soul.activity')}</span>
-                  <span className="text-emerald-400 font-mono">{(activityLevel * 100).toFixed(0)}%</span>
+                  <span className="text-skin-text-secondary/40">{t('soul.activity')}</span>
+                  <span className="text-skin-accent-emerald font-mono">{(activityLevel * 100).toFixed(0)}%</span>
                 </div>
                 <div className="flex justify-between text-[11px]">
-                  <span className="text-white/40">{t('soul.complexity')}</span>
-                  <span className="text-amber-400 font-mono">{complexity}</span>
+                  <span className="text-skin-text-secondary/40">{t('soul.complexity')}</span>
+                  <span className="text-skin-accent-amber font-mono">{complexity}</span>
                 </div>
                 <div className="flex justify-between text-[11px]">
-                  <span className="text-white/40">{t('soul.dimensions')}</span>
-                  <span className="text-purple-400 font-mono">{soulDimensions.length}</span>
+                  <span className="text-skin-text-secondary/40">{t('soul.dimensions')}</span>
+                  <span className="text-skin-accent-purple font-mono">{soulDimensions.length}</span>
                 </div>
               </div>
             </HudPanel>
@@ -185,7 +185,7 @@ export function SoulHouse() {
             transition={{ delay: 0.7 }}
             className="flex justify-center pointer-events-auto"
           >
-            <div className="flex gap-4 px-6 py-3 bg-black/40 backdrop-blur-xl rounded-2xl border border-white/5">
+            <div className="flex gap-4 px-6 py-3 bg-skin-bg-panel/40 backdrop-blur-xl rounded-2xl border border-skin-border/5">
               {soulDimensions.slice(0, 6).map((d, i) => (
                 <motion.div 
                   key={d.name} 
@@ -194,15 +194,15 @@ export function SoulHouse() {
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: 0.8 + i * 0.1 }}
                 >
-                  <div className="h-14 w-1.5 bg-white/10 rounded-full relative overflow-hidden">
+                  <div className="h-14 w-1.5 bg-skin-bg-secondary/30 rounded-full relative overflow-hidden">
                     <motion.div 
-                      className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-cyan-600 via-purple-500 to-pink-400 rounded-full"
+                      className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-skin-accent-cyan via-skin-accent-purple to-skin-accent-amber rounded-full"
                       initial={{ height: 0 }}
                       animate={{ height: `${d.value}%` }}
                       transition={{ duration: 1, delay: 0.9 + i * 0.1 }}
                     />
                   </div>
-                  <span className="text-[11px] text-white/40 font-mono truncate max-w-full text-center">
+                  <span className="text-[11px] text-skin-text-secondary/40 font-mono truncate max-w-full text-center">
                     {d.name}
                   </span>
                 </motion.div>

@@ -11,9 +11,10 @@ import type {
   Point,
 } from './types'
 import { RendererRegistry } from './RendererRegistry'
-import { createCosmosRenderers } from './index'
+import { createCosmosRenderers, createCityscapeRenderers } from './index'
 import { worldToScreen as wts, screenToWorld as stw } from './utils/coordinateTransforms'
 import { PlanetRenderer } from './entities/PlanetRenderer'
+import { BuildingRenderer } from './entities/BuildingRenderer'
 import { CosmosRippleRenderer } from './backgrounds/CosmosRipple'
 
 // 默认调色板 (保持原有配色)
@@ -38,7 +39,7 @@ export class GameCanvas {
   private dpr: number = 1
   private animFrameId = 0
   private _time = 0
-  private mousePos: Point = { x: 0, y: 0 }
+  // mousePos 已移除 - 核心渲染已禁用
   private palette: CanvasPalette = DEFAULT_PALETTE
   private registry: RendererRegistry
 
@@ -58,6 +59,7 @@ export class GameCanvas {
     // 初始化渲染器注册表
     this.registry = new RendererRegistry()
     this.registry.register('cosmos', createCosmosRenderers())
+    this.registry.register('cityscape', createCityscapeRenderers())
     this.registry.setTheme('cosmos')
 
     this.resize()
@@ -103,16 +105,24 @@ export class GameCanvas {
     const prevSkillCount = this.state.energyCore?.skills.length ?? -1
     const newSkillCount = state.energyCore?.skills.length ?? -1
     
-    // 更新核心粒子
+    // 更新核心粒子 (如果存在核心渲染器)
     if (state.energyCore && prevSkillCount !== newSkillCount) {
       const renderers = this.registry.getCurrent()
-      renderers?.core.initParticles?.(state.energyCore)
+      renderers?.core?.initParticles?.(state.energyCore)
     }
     
-    // 更新执行状态到 PlanetRenderer
+    // 更新执行状态到 PlanetRenderer 或 BuildingRenderer
     const planetRenderer = this.getPlanetRenderer()
     if (planetRenderer) {
       planetRenderer.setExecutionState(
+        state.executingNexusId ?? null,
+        state.executionStartTime ?? null,
+      )
+    }
+    
+    const buildingRenderer = this.getBuildingRenderer()
+    if (buildingRenderer) {
+      buildingRenderer.setExecutionState(
         state.executingNexusId ?? null,
         state.executionStartTime ?? null,
       )
@@ -127,9 +137,7 @@ export class GameCanvas {
     this.state = state
   }
 
-  setMousePosition(x: number, y: number): void {
-    this.mousePos = { x, y }
-  }
+  // setMousePosition 已移除 - 核心渲染已禁用
 
   triggerRipple(x: number, y: number): void {
     const renderers = this.registry.getCurrent()
@@ -190,6 +198,13 @@ export class GameCanvas {
     return planet as PlanetRenderer | null
   }
 
+  private getBuildingRenderer(): BuildingRenderer | null {
+    const renderers = this.registry.getCurrent()
+    if (!renderers) return null
+    const building = renderers.entities.find(e => e.id === 'building-renderer')
+    return building as BuildingRenderer | null
+  }
+
   private getRippleRenderer(): CosmosRippleRenderer | null {
     const renderers = this.registry.getCurrent()
     if (!renderers) return null
@@ -203,6 +218,10 @@ export class GameCanvas {
     const planetRenderer = this.getPlanetRenderer()
     if (planetRenderer) {
       planetRenderer.setDpr(this.dpr)
+    }
+    const buildingRenderer = this.getBuildingRenderer()
+    if (buildingRenderer) {
+      buildingRenderer.setDpr(this.dpr)
     }
   }
 
@@ -250,10 +269,11 @@ export class GameCanvas {
       renderers.background.render(renderCtx)
     }
 
-    // Layer 1: Energy Core (能量核心)
-    if (this.state.energyCore) {
-      renderers.core.render(renderCtx, this.state.energyCore, this.mousePos)
-    }
+    // Layer 1: Energy Core (能量核心) - 已禁用
+    // 如需恢复，取消下方注释
+    // if (this.state.energyCore && renderers.core) {
+    //   renderers.core.render(renderCtx, this.state.energyCore, this._mousePos)
+    // }
 
     // Layer 2: ISO Grid
     if (renderSettings.showGrid) {

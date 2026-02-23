@@ -203,7 +203,7 @@ export interface RendererSet {
   grid: GridRenderer
   entities: EntityRenderer[]
   particles: ParticleRenderer[]
-  core: EnergyCoreRenderer
+  core?: EnergyCoreRenderer          // 可选，不再强制渲染中心核心
   ripple: RippleRenderer
 }
 

@@ -10,7 +10,7 @@
 
 import { chat, streamChat, isLLMConfigured, embed, cosineSimilarity, convertToolInfoToFunctions } from './llmService'
 import type { SimpleChatMessage, LLMStreamResult } from './llmService'
-import type { ExecutionStatus, OpenClawSkill, MemoryEntry, ToolInfo, ExecTrace, ExecTraceToolCall, ApprovalRequest, ExecutionStep, NexusEntity, SubTask, TaskPlan, SubTaskStatus } from '@/types'
+import type { ExecutionStatus, OpenClawSkill, MemoryEntry, ToolInfo, ExecTrace, ExecTraceToolCall, ApprovalRequest, ExecutionStep, NexusEntity, SubTask, TaskPlan, SubTaskStatus, TaskItem } from '@/types'
 import { parseSoulMd, type ParsedSoul } from '@/utils/soulParser'
 import { skillStatsService } from './skillStatsService'
 import { immuneService } from './capsuleService'
@@ -1699,6 +1699,106 @@ class LocalClawService {
       throw error
     } finally {
       // 清除当前任务上下文
+      this.storeActions?.setCurrentTask(null, null)
+    }
+  }
+
+  /**
+   * Quest 模式：发送消息并生成分步骤任务计划
+   * 会自动将任务添加到 TaskHouse 并显示子任务进度
+   */
+  async sendMessageWithQuestPlan(
+    prompt: string,
+    nexusId?: string,
+    onStep?: (step: ExecutionStep) => void
+  ): Promise<string> {
+    if (!isLLMConfigured()) {
+      throw new Error('LLM 未配置。请在设置中配置 API Key。')
+    }
+
+    const taskId = `quest-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+    
+    // 1. 设置执行状态
+    this.storeActions?.setAgentStatus('planning')
+    this.storeActions?.setCurrentTask(taskId, `规划任务: ${prompt.slice(0, 50)}...`)
+
+    try {
+      // 2. 生成 Quest 任务计划
+      console.log('[LocalClaw/Quest] Generating task plan...')
+      const taskPlan = await this.generateQuestPlan(prompt, nexusId)
+      console.log('[LocalClaw/Quest] Task plan generated:', taskPlan.subTasks.length, 'subtasks')
+
+      // 3. 创建 TaskItem 并添加到 activeExecutions
+      const taskItem: TaskItem = {
+        id: taskId,
+        title: taskPlan.title || prompt.slice(0, 50),
+        description: prompt,
+        status: 'executing',
+        priority: 'high',
+        timestamp: new Date().toISOString(),
+        taskPlan,
+        executionMode: 'quest',
+        executionSteps: [],
+      }
+      this.storeActions?.addActiveExecution(taskItem)
+
+      // 4. 更新状态为执行中
+      this.storeActions?.setAgentStatus('executing')
+      this.storeActions?.setCurrentTask(taskId, taskPlan.title || prompt.slice(0, 50))
+
+      // 5. 执行任务计划，通过回调更新进度
+      const result = await this.executeQuestPlan(
+        taskPlan,
+        // onProgress 回调：更新子任务状态
+        (updatedPlan) => {
+          this.storeActions?.updateActiveExecution(taskId, {
+            taskPlan: updatedPlan,
+          })
+          
+          // 同时触发 onStep 回调（如果提供）
+          const executingTask = updatedPlan.subTasks.find(t => t.status === 'executing')
+          if (executingTask && onStep) {
+            onStep({
+              id: `step-${executingTask.id}`,
+              type: 'tool_call',
+              content: `执行子任务: ${executingTask.description}`,
+              timestamp: Date.now(),
+            })
+          }
+        },
+        // onApprovalRequired 回调：处理需要确认的操作
+        async (task: SubTask) => {
+          const approved = await this.storeActions?.requestApproval({
+            toolName: 'quest_subtask',
+            args: { taskId: task.id, description: task.description },
+            dangerLevel: 'high',
+            reason: task.approvalReason || `子任务 "${task.description}" 需要确认`,
+          })
+          return approved ? 'approve' : 'skip'
+        }
+      )
+
+      // 6. 更新任务状态为完成
+      this.storeActions?.updateActiveExecution(taskId, {
+        status: 'done',
+        executionOutput: result,
+        executionDuration: Date.now() - new Date(taskItem.timestamp).getTime(),
+      })
+
+      return result
+
+    } catch (error: any) {
+      console.error('[LocalClaw/Quest] Execution failed:', error)
+      
+      // 更新任务状态为失败
+      this.storeActions?.updateActiveExecution(taskId, {
+        status: 'done', // 即使失败也标记为完成，避免一直显示执行中
+        executionError: error.message,
+      })
+
+      throw error
+    } finally {
+      this.storeActions?.setAgentStatus('idle')
       this.storeActions?.setCurrentTask(null, null)
     }
   }

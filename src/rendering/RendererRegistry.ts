@@ -85,7 +85,7 @@ export class RendererRegistry {
   private disposeRendererSet(renderers: RendererSet): void {
     renderers.background.dispose?.()
     renderers.grid.dispose?.()
-    renderers.core.dispose?.()
+    renderers.core?.dispose?.()
     renderers.ripple.dispose?.()
     
     for (const entity of renderers.entities) {
@@ -124,7 +124,7 @@ export function createEmptyRendererSet(): RendererSet {
     grid: { id: 'empty-grid', render: noop },
     entities: [],
     particles: [],
-    core: { id: 'empty-core', render: noop },
+    // core 已移除
     ripple: { id: 'empty-ripple', trigger: noop, update: noop, render: noop },
   }
 }

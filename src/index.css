@@ -41,6 +41,43 @@
 }
 
 /* ============================================
+   城市主题 (Cityscape Theme)
+   明亮自然的白天城市风格
+   ============================================ */
+
+.theme-cityscape {
+  /* 背景系 - 明亮的浅色调 */
+  --color-bg-primary: 241 245 249;      /* #f1f5f9 slate-100 */
+  --color-bg-secondary: 226 232 240;    /* #e2e8f0 slate-200 */
+  --color-bg-panel: 255 255 255;        /* white */
+  --color-bg-elevated: 248 250 252;     /* #f8fafc slate-50 */
+
+  /* 文本系 - 深色文字 */
+  --color-text-primary: 15 23 42;       /* #0f172a slate-900 */
+  --color-text-secondary: 71 85 105;    /* #475569 slate-600 */
+  --color-text-muted: 100 116 139;      /* #64748b slate-500 */
+
+  /* 边框 - 深色边框 */
+  --color-border-subtle: 71 85 105;     /* slate-600 (with opacity) */
+  --color-border-medium: 51 65 85;      /* slate-700 */
+
+  /* 强调色 - 城市/自然风格 */
+  --color-accent-cyan: 14 165 233;      /* sky-500 - 天空蓝 */
+  --color-accent-amber: 245 158 11;     /* amber-500 - 阳光橙 */
+  --color-accent-emerald: 34 197 94;    /* green-500 - 草地绿 */
+  --color-accent-purple: 139 92 246;    /* violet-500 - 建筑紫 */
+  --color-accent-red: 239 68 68;        /* red-500 */
+
+  /* Canvas 专用 - 城市天空 */
+  --canvas-space-1: #87ceeb;            /* 天空蓝 */
+  --canvas-space-2: #b0e0e6;            /* 淡蓝 */
+  --canvas-space-3: #f0f8ff;            /* 爱丽丝蓝 */
+  --canvas-grid: 34 139 34;             /* 草地绿 */
+  --canvas-grid-opacity: 0.15;
+  --canvas-star: #ffffff;               /* 云朵白 */
+}
+
+/* ============================================
    全局样式重置
    ============================================ */
 

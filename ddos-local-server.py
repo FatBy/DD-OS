@@ -83,6 +83,36 @@ MIME_TYPES = {
 
 
 # ============================================
+# 🧮 文本相似度计算 (用于 Nexus 去重)
+# ============================================
+
+def calculate_text_similarity(text1: str, text2: str) -> float:
+    """计算两个文本的 N-gram Jaccard 相似度"""
+    if not text1 or not text2:
+        return 0.0
+    
+    def get_ngrams(text: str) -> set:
+        text = text.lower()
+        # 清理符号，保留中英文和数字
+        text = re.sub(r'[^\w\s\u4e00-\u9fff]', '', text)
+        chars = list(text.replace(' ', ''))
+        if len(chars) < 2:
+            return set(chars)
+        # 提取单字和相邻双字词 (Bi-gram)
+        bigrams = [''.join(chars[i:i+2]) for i in range(len(chars)-1)]
+        return set(chars + bigrams)
+    
+    set1 = get_ngrams(text1)
+    set2 = get_ngrams(text2)
+    if not set1 or not set2:
+        return 0.0
+    
+    intersection = set1.intersection(set2)
+    union = set1.union(set2)
+    return len(intersection) / len(union)
+
+
+# ============================================
 # 🔌 SKILL.md Frontmatter 解析
 # ============================================
 
@@ -556,6 +586,9 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
         elif path.startswith('/nexuses/') and path.endswith('/experience'):
             nexus_name = path[9:-11]  # strip '/nexuses/' and '/experience'
             self.handle_add_experience(nexus_name, data)
+        elif path.startswith('/nexuses/') and path.endswith('/meta'):
+            nexus_name = path[9:-5]  # strip '/nexuses/' and '/meta'
+            self.handle_nexus_update_meta(nexus_name, data)
         elif path == '/task/execute':
             self.handle_task_execute(data)
         elif path.startswith('/data/'):
@@ -910,11 +943,74 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
         
         file_path = self._resolve_path(path)
         
+        # === Nexus 涌现去重网关 ===
+        if 'nexuses/' in path and path.endswith('NEXUS.md'):
+            # 仅在文件不存在时（即新建操作）进行去重检查
+            if not file_path.exists():
+                duplicate_id = self._check_nexus_duplication(content)
+                if duplicate_id:
+                    return (f"【系统拦截】创建失败！\n"
+                            f"检测到高度相似的 Nexus 节点已存在 (节点 ID: {duplicate_id})。\n"
+                            f"为避免知识图谱碎片化，请不要创建新目录，请直接使用 'readFile' 和 'writeFile' "
+                            f"读取并更新原有的 nexuses/{duplicate_id}/NEXUS.md，或者向其追加 experience。")
+        
         # 确保父目录存在
         file_path.parent.mkdir(parents=True, exist_ok=True)
         
         file_path.write_text(content, encoding='utf-8')
         return f"Written {len(content)} bytes to {file_path.name}"
+    
+    def _check_nexus_duplication(self, new_content: str) -> str | None:
+        """检查新建的 Nexus 是否与现存 Nexus 重复，返回重复的 Nexus ID"""
+        # 1. 提取新 Nexus 的 frontmatter
+        match = re.match(r'^---\s*\n(.*?)\n---\s*\n', new_content, re.DOTALL)
+        if not match:
+            return None
+        
+        new_meta = {}
+        if HAS_YAML:
+            try:
+                new_meta = yaml.safe_load(match.group(1)) or {}
+            except Exception:
+                pass
+        else:
+            for line in match.group(1).split('\n'):
+                m = re.match(r'^(\w+)\s*:\s*(.+)$', line.strip())
+                if m:
+                    new_meta[m.group(1)] = m.group(2).strip()
+        
+        new_name = str(new_meta.get('name', ''))
+        new_desc = str(new_meta.get('description', ''))
+        if not new_name and not new_desc:
+            return None
+        
+        new_text = f"{new_name} {new_desc}"
+        
+        # 2. 遍历现有 Nexus 进行对比
+        nexuses_dir = self.clawd_path / 'nexuses'
+        if not nexuses_dir.exists():
+            return None
+        
+        best_match = None
+        highest_score = 0.0
+        
+        for nexus_md in nexuses_dir.rglob('NEXUS.md'):
+            existing_meta = parse_nexus_frontmatter(nexus_md)
+            ext_name = str(existing_meta.get('name', ''))
+            ext_desc = str(existing_meta.get('description', ''))
+            
+            ext_text = f"{ext_name} {ext_desc}"
+            score = calculate_text_similarity(new_text, ext_text)
+            
+            if score > highest_score:
+                highest_score = score
+                best_match = nexus_md.parent.name
+        
+        # 阈值：超过 55% 的特征重合即判定为重复
+        if highest_score >= 0.55:
+            return best_match
+        
+        return None
     
     def _tool_append_file(self, args: dict) -> str:
         """追加内容到文件"""
@@ -1395,6 +1491,7 @@ curl -X POST http://localhost:3001/api/tools/execute \\
             manifest_path = skill_dir / 'manifest.json'
 
             skill_data = {
+                'id': skill_dir.name,  # 添加id字段，用于前端匹配
                 'name': frontmatter.get('name', skill_dir.name),
                 'description': frontmatter.get('description', ''),
                 'location': 'local',
@@ -1433,6 +1530,7 @@ curl -X POST http://localhost:3001/api/tools/execute \\
                 continue
 
             skill_data = {
+                'id': skill_dir.name,  # 添加id字段，用于前端匹配
                 'name': manifest.get('name', skill_dir.name),
                 'description': manifest.get('description', ''),
                 'location': 'local',
@@ -1652,6 +1750,28 @@ curl -X POST http://localhost:3001/api/tools/execute \\
             'status': 'ok',
             'nexusId': nexus_name,
             'skillDependencies': deps,
+        })
+
+    def handle_nexus_update_meta(self, nexus_name: str, data: dict):
+        """POST /nexuses/{name}/meta - 更新 Nexus 元数据(名称等)"""
+        nexus_dir = self.clawd_path / 'nexuses' / nexus_name
+        nexus_md = nexus_dir / 'NEXUS.md'
+        
+        if not nexus_md.exists():
+            self.send_error_json(f"Nexus '{nexus_name}' not found", 404)
+            return
+
+        new_name = data.get('name', '').strip()
+        if not new_name:
+            self.send_error_json('Invalid: name is required', 400)
+            return
+            
+        update_nexus_frontmatter(nexus_md, {'name': new_name})
+
+        self.send_json({
+            'status': 'ok',
+            'nexusId': nexus_name,
+            'name': new_name
         })
 
     def handle_add_experience(self, nexus_name: str, data: dict):

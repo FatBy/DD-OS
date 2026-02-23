@@ -5,6 +5,7 @@ import type {
   BuildProposal, 
   NexusArchetype,
   VisualDNA,
+  BuildingConfig,
   ExecTrace
 } from '@/types'
 import { chat, getLLMConfig } from '@/services/llmService'
@@ -86,6 +87,9 @@ function generateVisualDNA(id: string, archetype: NexusArchetype): VisualDNA {
   }
   const h = Math.abs(hash)
   
+  // 根据 Archetype 生成对应的建筑配置
+  const buildingConfig = generateBuildingConfig(archetype, h)
+  
   return {
     primaryHue: h % 360,
     primarySaturation: 50 + (h >> 8) % 40,
@@ -95,6 +99,61 @@ function generateVisualDNA(id: string, archetype: NexusArchetype): VisualDNA {
     textureMode: 'solid',
     glowIntensity: 0.5 + (h % 50) / 100,
     geometryVariant: h % 4,
+    buildingConfig,
+  }
+}
+
+/**
+ * 根据 Archetype 生成建筑配置 (用于城市主题)
+ */
+function generateBuildingConfig(archetype: NexusArchetype, hashSeed: number): BuildingConfig {
+  // 基础材料选项
+  const bases = ['concrete', 'steel', 'glass', 'stone']
+  const baseIdx = hashSeed % bases.length
+  
+  // Archetype 特定的建筑配置
+  const archetypeConfigs: Record<NexusArchetype, { body: string; roof: string; props: string[]; color: string }> = {
+    MONOLITH: {
+      body: 'library',      // 知识中心 → 图书馆样式
+      roof: 'dome',         // 圆顶
+      props: ['signs', 'lights'],
+      color: '#38bdf8',     // 天蓝色 (知识/信息)
+    },
+    SPIRE: {
+      body: 'lab',          // 推理塔 → 实验室样式
+      roof: 'antenna',      // 天线 (信号/分析)
+      props: ['wires', 'lights'],
+      color: '#a78bfa',     // 紫色 (智能/推理)
+    },
+    REACTOR: {
+      body: 'factory',      // 执行核 → 工厂样式
+      roof: 'chimney',      // 烟囱 (输出/执行)
+      props: ['machines', 'wires'],
+      color: '#fb923c',     // 橙色 (能量/执行)
+    },
+    VAULT: {
+      body: 'warehouse',    // 记忆库 → 仓库样式
+      roof: 'flat',         // 平顶 (稳定/存储)
+      props: ['lights'],
+      color: '#34d399',     // 绿色 (存储/安全)
+    },
+  }
+  
+  const config = archetypeConfigs[archetype]
+  
+  // 根据 hash 添加一些随机变化
+  const extraProps = ['plants', 'satellite', 'signs']
+  const hasExtraProp = (hashSeed >> 4) % 3 === 0
+  const props = hasExtraProp 
+    ? [...config.props, extraProps[(hashSeed >> 6) % extraProps.length]]
+    : config.props
+  
+  return {
+    base: bases[baseIdx],
+    body: config.body,
+    roof: config.roof,
+    props,
+    themeColor: config.color,
   }
 }
 
@@ -203,6 +262,8 @@ const ANALYST_SYSTEM_PROMPT = `你是 DD-OS 系统的"观察者"。分析用户�
   "summary": "简短描述这个模式（10-20字）",
   "reasoning": "为什么需要固化这个模式",
   "suggestedName": "建议的 Nexus 名称（2-5个中文字，体现功能特点，如'文档助手'、'代码审查'、'日志分析'）",
+  "suggestedSkills": ["工具名1", "工具名2"],
+  "suggestedSOP": "为这个 Nexus 编写系统提示词，告诉它如何处理此类任务。必须是可执行的指令说明，50-150字。",
   "confidence": 0.1 ~ 1.0
 }
 
@@ -367,6 +428,7 @@ export const createObserverSlice: StateCreator<
     if (topTools.length > 0) {
       const [toolName, count] = topTools[0]
       const confidence = Math.min(0.5 + (count - RULE_ENGINE.FREQUENCY_THRESHOLD) * 0.1, 0.9)
+      const suggestedSkills = topTools.slice(0, 3).map(([t]) => t)
       
       console.log(`[Observer/Rule] Frequency trigger: ${toolName} used ${count} times`)
       
@@ -379,6 +441,8 @@ export const createObserverSlice: StateCreator<
         ],
         suggestedArchetype: inferArchetypeFromTools(topTools.map(([t]) => t)),
         detectedAt: Date.now(),
+        suggestedSkills,
+        suggestedSOP: `你的核心任务是熟练使用 ${suggestedSkills.join('、')} 工具。请根据用户的自然语言需求，选择合适的工具完成操作。优先使用 ${toolName}，它是用户最常用的工具。`,
       }
     }
 
@@ -387,6 +451,18 @@ export const createObserverSlice: StateCreator<
     if (complexTraces.length >= 2) {
       const avgTurns = complexTraces.reduce((sum, t) => sum + (t.turnCount || 0), 0) / complexTraces.length
       const confidence = Math.min(0.5 + (avgTurns - RULE_ENGINE.COMPLEXITY_TURNS) * 0.05, 0.85)
+      
+      // 从复杂任务中提取常用工具
+      const complexToolFreq: Record<string, number> = {}
+      for (const trace of complexTraces) {
+        for (const tool of trace.tools) {
+          complexToolFreq[tool.name] = (complexToolFreq[tool.name] || 0) + 1
+        }
+      }
+      const suggestedSkills = Object.entries(complexToolFreq)
+        .sort(([, a], [, b]) => b - a)
+        .slice(0, 5)
+        .map(([t]) => t)
       
       console.log(`[Observer/Rule] Complexity trigger: ${complexTraces.length} complex executions`)
       
@@ -399,6 +475,8 @@ export const createObserverSlice: StateCreator<
         ],
         suggestedArchetype: 'SPIRE',
         detectedAt: Date.now(),
+        suggestedSkills,
+        suggestedSOP: `你是一个复杂任务处理专家。当用户提出多步骤任务时，先分析任务结构，制定执行计划，然后逐步完成。常用工具: ${suggestedSkills.join('、')}。遇到问题时主动反思并调整策略。`,
       }
     }
 
@@ -431,6 +509,8 @@ export const createObserverSlice: StateCreator<
         ],
         suggestedArchetype: inferArchetypeFromTools(tools),
         detectedAt: Date.now(),
+        suggestedSkills: tools,
+        suggestedSOP: `你的标准作业流程(SOP)是执行以下工具链：${tools.join(' → ')}。请按顺序规划并调用这些工具完成任务。在每一步完成后验证结果，确保下一步有正确的输入。`,
       }
     }
 
@@ -501,6 +581,8 @@ ${summaryData.recentTasks.map((t, i) =>
           ].filter(Boolean),
           suggestedArchetype: result.archetype,
           detectedAt: Date.now(),
+          suggestedSkills: result.suggestedSkills || [],
+          suggestedSOP: result.suggestedSOP || '',
         }
       }
 
@@ -537,6 +619,10 @@ ${summaryData.recentTasks.map((t, i) =>
     // 生成功能目标概述
     const purposeSummary = generatePurposeSummary(trigger, archetype)
     
+    // 从 trigger 提取技能和 SOP
+    const boundSkillIds = trigger.suggestedSkills || []
+    const sopContent = trigger.suggestedSOP || ''
+    
     const proposal: BuildProposal = {
       id: proposalId,
       triggerPattern: trigger,
@@ -544,6 +630,8 @@ ${summaryData.recentTasks.map((t, i) =>
       suggestedArchetype: archetype,
       previewVisualDNA: generateVisualDNA(proposalId, archetype),
       purposeSummary,
+      boundSkillIds,           // 新增：技能列表
+      sopContent,              // 新增：SOP 内容
       status: 'pending',
       createdAt: Date.now(),
     }

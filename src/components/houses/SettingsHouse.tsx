@@ -401,7 +401,8 @@ export function SettingsHouse() {
               <div className="grid grid-cols-3 gap-2">
                 {WORLD_THEME_OPTIONS.map((option) => {
                   const isActive = worldTheme === option.id
-                  const isAvailable = option.id === 'cosmos'
+                  // cosmos 和 cityscape 已实现，wildlife 开发中
+                  const isAvailable = option.id === 'cosmos' || option.id === 'cityscape'
                   return (
                     <button
                       key={option.id}

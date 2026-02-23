@@ -38,7 +38,7 @@ export function HouseContainer({ house, children }: HouseContainerProps) {
         className="w-full max-w-6xl h-[85vh] flex flex-col overflow-hidden"
       >
         {/* Title bar */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-white/10 shrink-0">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-skin-border/10 shrink-0">
           <div className="flex items-center gap-3">
             <Icon className={`w-5 h-5 ${textColor}`} />
             <h2 className={`font-mono font-bold text-lg tracking-wider ${textColor}`}>
@@ -47,7 +47,7 @@ export function HouseContainer({ house, children }: HouseContainerProps) {
           </div>
           <button
             onClick={() => setView('world')}
-            className="p-2 rounded-lg hover:bg-white/10 transition-colors text-white/50 hover:text-white"
+            className="p-2 rounded-lg hover:bg-skin-bg-elevated/50 transition-colors text-skin-text-muted hover:text-skin-text-primary"
           >
             <X className="w-5 h-5" />
           </button>

@@ -242,36 +242,69 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
         }))
 
         // 2. 创建实时任务 (在 TaskHouse 显示，含执行步骤)
+        // 注意：Quest 模式下，任务由 sendMessageWithQuestPlan 创建，这里先不创建
         const fullState = get() as any
-        fullState.addActiveExecution?.({
-          id: execId,
-          title: message.slice(0, 50),
-          description: message,
-          status: 'executing',
-          priority: 'high',
-          timestamp: new Date().toISOString(),
-          executionSteps: [],
-        })
+        const activeNexusId = fullState.activeNexusId
+        
+        // 提前计算 Quest 模式条件
+        const useQuestMode = message.includes('/quest') || !!activeNexusId || message.length > 50
+        
+        // 仅在传统模式下预先创建任务
+        if (!useQuestMode) {
+          fullState.addActiveExecution?.({
+            id: execId,
+            title: message.slice(0, 50),
+            description: message,
+            status: 'executing',
+            priority: 'high',
+            timestamp: new Date().toISOString(),
+            executionSteps: [],
+          })
+        }
 
         // 2.5. 启动 Nexus 执行状态 (如果有激活的 Nexus)
-        const activeNexusId = fullState.activeNexusId
         if (activeNexusId) {
           fullState.startNexusExecution?.(activeNexusId)
         }
 
-        // 3. 直接调用 ReAct 循环
+        // 3. 选择执行模式：Quest 模式（有 Nexus 或复杂任务）vs 传统 ReAct 模式
+        // Quest 模式触发条件（放宽）：
+        // - 消息包含 /quest 命令
+        // - 或者有激活的 Nexus（无论消息长度）
+        // - 或者消息长度超过 50 字符（可能需要分解任务）
+        
         try {
-          const result = await localClawService.sendMessage(
-            message,
-            // onUpdate: 仅更新流式内容指示
-            (_content) => {
-              set({ chatStreamContent: '...' })
-            },
-            // onStep: 将执行步骤追加到任务屋
-            (step) => {
-              (get() as any).appendExecutionStep?.(execId, step)
-            }
-          )
+          let result: string
+          
+          if (useQuestMode) {
+            // Quest 模式：使用分步骤任务计划
+            console.log('[AI] Using Quest mode for execution')
+            
+            // 移除 /quest 标记
+            const cleanMessage = message.replace(/\/quest\s*/gi, '').trim()
+            
+            result = await localClawService.sendMessageWithQuestPlan(
+              cleanMessage,
+              activeNexusId || undefined,
+              // onStep: 将执行步骤追加到任务屋
+              (step) => {
+                (get() as any).appendExecutionStep?.(execId, step)
+              }
+            )
+          } else {
+            // 传统 ReAct 模式
+            result = await localClawService.sendMessage(
+              message,
+              // onUpdate: 仅更新流式内容指示
+              (_content) => {
+                set({ chatStreamContent: '...' })
+              },
+              // onStep: 将执行步骤追加到任务屋
+              (step) => {
+                (get() as any).appendExecutionStep?.(execId, step)
+              }
+            )
+          }
 
           // 4. 完成 - 聊天面板显示最终结果（普通文本消息）
           const execDuration = Date.now() - execStartTime

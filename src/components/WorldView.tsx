@@ -139,13 +139,7 @@ export function WorldView() {
   }, [])
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
-    // 始终追踪鼠标位置（视差效果）
-    const rect = canvasRef.current?.getBoundingClientRect()
-    if (rect) {
-      const normX = (e.clientX - rect.left) / rect.width * 2 - 1
-      const normY = (e.clientY - rect.top) / rect.height * 2 - 1
-      engineRef.current?.setMousePosition(normX, normY)
-    }
+    // 鼠标位置追踪已移除（核心渲染已禁用）
 
     if (!isDragging.current) return
     const dx = (e.clientX - lastMouse.current.x) / camera.zoom

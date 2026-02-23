@@ -1,5 +1,5 @@
 import type { StateCreator } from 'zustand'
-import type { NexusEntity, CameraState, GridPosition, RenderSettings, NexusArchetype, VisualDNA } from '@/types'
+import type { NexusEntity, CameraState, GridPosition, RenderSettings, NexusArchetype, VisualDNA, BuildingConfig } from '@/types'
 import type { WorldTheme } from '@/rendering/types'
 
 // XP 等级阈值
@@ -54,6 +54,10 @@ export function simpleVisualDNA(id: string, archetype: NexusArchetype): VisualDN
     hash = ((hash << 5) - hash + id.charCodeAt(i)) | 0
   }
   const h = Math.abs(hash)
+  
+  // 根据 Archetype 生成对应的建筑配置
+  const buildingConfig = generateBuildingConfigFromArchetype(archetype, h)
+  
   return {
     primaryHue: h % 360,
     primarySaturation: 50 + (h >> 8) % 40,
@@ -63,6 +67,35 @@ export function simpleVisualDNA(id: string, archetype: NexusArchetype): VisualDN
     textureMode: 'solid',
     glowIntensity: 0.5 + ((h >> 4) % 50) / 100,
     geometryVariant: h % 4,
+    buildingConfig,
+  }
+}
+
+/**
+ * 根据 Archetype 生成建筑配置 (用于城市主题)
+ */
+function generateBuildingConfigFromArchetype(archetype: NexusArchetype, hashSeed: number): BuildingConfig {
+  const bases = ['concrete', 'steel', 'glass', 'stone']
+  const baseIdx = hashSeed % bases.length
+  
+  // Archetype 特定配置
+  const configs: Record<NexusArchetype, { body: string; roof: string; props: string[]; color: string }> = {
+    MONOLITH: { body: 'library', roof: 'dome', props: ['signs', 'lights'], color: '#38bdf8' },
+    SPIRE: { body: 'lab', roof: 'antenna', props: ['wires', 'lights'], color: '#a78bfa' },
+    REACTOR: { body: 'factory', roof: 'chimney', props: ['machines', 'wires'], color: '#fb923c' },
+    VAULT: { body: 'warehouse', roof: 'flat', props: ['lights'], color: '#34d399' },
+  }
+  
+  const cfg = configs[archetype]
+  const extraProps = ['plants', 'satellite', 'signs']
+  const hasExtra = (hashSeed >> 4) % 3 === 0
+  
+  return {
+    base: bases[baseIdx],
+    body: cfg.body,
+    roof: cfg.roof,
+    props: hasExtra ? [...cfg.props, extraProps[(hashSeed >> 6) % extraProps.length]] : cfg.props,
+    themeColor: cfg.color,
   }
 }
 
@@ -172,7 +205,7 @@ export const createWorldSlice: StateCreator<WorldSlice> = (set, get) => ({
     showLabels: true,
     enableGlow: true,
   },
-  worldTheme: 'cosmos' as WorldTheme,
+  worldTheme: 'cityscape' as WorldTheme,
   // 执行状态初始值
   executingNexusId: null,
   executionStartTime: null,

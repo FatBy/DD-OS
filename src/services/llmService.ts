@@ -94,11 +94,58 @@ export function saveLLMConfig(config: Partial<LLMConfig>) {
   if (config.apiKey !== undefined) localStorage.setItem(STORAGE_KEYS.API_KEY, config.apiKey)
   if (config.baseUrl !== undefined) localStorage.setItem(STORAGE_KEYS.BASE_URL, config.baseUrl)
   if (config.model !== undefined) localStorage.setItem(STORAGE_KEYS.MODEL, config.model)
+  
+  // 同时保存到后端文件系统（跨端口/域名持久化）
+  persistLLMConfigToServer(getLLMConfig())
 }
 
 export function isLLMConfigured(): boolean {
   const config = getLLMConfig()
   return !!(config.apiKey && config.baseUrl && config.model)
+}
+
+/**
+ * 将LLM配置持久化到后端服务器
+ * 用于解决不同端口访问时localStorage不共享的问题
+ */
+async function persistLLMConfigToServer(config: LLMConfig) {
+  try {
+    const serverUrl = localStorage.getItem('ddos_server_url') || 'http://localhost:3001'
+    await fetch(`${serverUrl}/data/llm_config`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value: config })
+    })
+  } catch (e) {
+    // 静默失败，后端可能未运行
+    console.debug('[LLM] Failed to persist config to server:', e)
+  }
+}
+
+/**
+ * 从后端服务器恢复LLM配置
+ * 应在应用初始化时调用
+ */
+export async function restoreLLMConfigFromServer(): Promise<LLMConfig | null> {
+  try {
+    const serverUrl = localStorage.getItem('ddos_server_url') || 'http://localhost:3001'
+    const res = await fetch(`${serverUrl}/data/llm_config`)
+    if (!res.ok) return null
+    
+    const data = await res.json()
+    if (data.exists && data.value) {
+      const config = data.value as LLMConfig
+      // 恢复到localStorage
+      if (config.apiKey) localStorage.setItem(STORAGE_KEYS.API_KEY, config.apiKey)
+      if (config.baseUrl) localStorage.setItem(STORAGE_KEYS.BASE_URL, config.baseUrl)
+      if (config.model) localStorage.setItem(STORAGE_KEYS.MODEL, config.model)
+      console.log('[LLM] Config restored from server')
+      return config
+    }
+  } catch (e) {
+    console.debug('[LLM] Failed to restore config from server:', e)
+  }
+  return null
 }
 
 // ============================================
