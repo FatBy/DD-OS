@@ -190,6 +190,9 @@ export interface GridRenderer {
   /** 渲染网格 */
   render(ctx: RenderContext): void
   
+  /** 更新建筑位置（用于生成道路网络等） */
+  updateNexusPositions?(positions: GridPosition[]): void
+  
   /** 清理资源 (可选) */
   dispose?(): void
 }
@@ -198,9 +201,27 @@ export interface GridRenderer {
 // 渲染器集合 (完整主题包)
 // ============================================
 
+/**
+ * 装饰层渲染器
+ * 负责渲染空地上的树木/灌木等装饰
+ */
+export interface DecoLayerRenderer {
+  readonly id: string
+  
+  /** 更新建筑位置（用于避开建筑区域） */
+  updateNexusPositions?(positions: GridPosition[]): void
+  
+  /** 渲染装饰层 */
+  render(ctx: RenderContext): void
+  
+  /** 清理资源 (可选) */
+  dispose?(): void
+}
+
 export interface RendererSet {
   background: BackgroundRenderer
   grid: GridRenderer
+  decorations?: DecoLayerRenderer    // 装饰层（树木/灌木，在建筑之前渲染）
   entities: EntityRenderer[]
   particles: ParticleRenderer[]
   core?: EnergyCoreRenderer          // 可选，不再强制渲染中心核心

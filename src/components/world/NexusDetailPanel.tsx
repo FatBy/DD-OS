@@ -9,57 +9,40 @@ import {
 import { useStore } from '@/store'
 import { cn } from '@/utils/cn'
 import { useT } from '@/i18n'
-import type { NexusArchetype, NexusExperience } from '@/types'
+import type { NexusEntity, NexusExperience } from '@/types'
 
 // 建造总时长（与 worldSlice tickConstructionAnimations 中的 3000ms 一致）
 const CONSTRUCTION_DURATION_MS = 3000
 
-// Archetype config - 支持双主题标签
-const ARCHETYPE_CONFIG: Record<NexusArchetype, { 
-  label: string 
-  typeLabel: string       // 宇宙主题
-  typeLabelCity: string   // 城市主题
-  color: string
-  bgClass: string
-  borderClass: string
-  textClass: string
-}> = {
-  MONOLITH: {
-    label: 'Knowledge Storage',
-    typeLabel: '知识星球',
-    typeLabelCity: '知识大厦',
-    color: 'amber',
-    bgClass: 'bg-amber-500/20',
-    borderClass: 'border-amber-500/30',
-    textClass: 'text-amber-300',
-  },
-  SPIRE: {
-    label: 'Reasoning Engine',
-    typeLabel: '推理星球',
-    typeLabelCity: '分析塔',
-    color: 'purple',
-    bgClass: 'bg-purple-500/20',
-    borderClass: 'border-purple-500/30',
-    textClass: 'text-purple-300',
-  },
-  REACTOR: {
-    label: 'Execution Core',
-    typeLabel: '执行星球',
-    typeLabelCity: '执行中心',
-    color: 'cyan',
-    bgClass: 'bg-cyan-500/20',
-    borderClass: 'border-cyan-500/30',
-    textClass: 'text-cyan-300',
-  },
-  VAULT: {
-    label: 'Memory Crystal',
-    typeLabel: '记忆星球',
-    typeLabelCity: '档案馆',
-    color: 'emerald',
-    bgClass: 'bg-emerald-500/20',
-    borderClass: 'border-emerald-500/30',
-    textClass: 'text-emerald-300',
-  },
+/**
+ * 基于 visualDNA 动态生成颜色配置
+ */
+function getDynamicConfig(nexus: NexusEntity | undefined) {
+  if (!nexus) {
+    return {
+      label: 'Nexus',
+      typeLabel: 'Nexus',
+      typeLabelCity: 'Building',
+      bgClass: 'bg-slate-500/20',
+      borderClass: 'border-slate-500/30',
+      textClass: 'text-slate-300',
+      hue: 180,
+    }
+  }
+  
+  const hue = nexus.visualDNA?.primaryHue ?? 180
+  
+  // 动态生成 CSS 类名（使用 HSL 内联样式）
+  return {
+    label: nexus.flavorText?.slice(0, 20) || 'Nexus',
+    typeLabel: nexus.label || 'Nexus',
+    typeLabelCity: nexus.label || 'Building',
+    // 使用 Tailwind 兼容的动态样式
+    bgClass: '', // 将改用内联样式
+    borderClass: '', // 将改用内联样式
+    textClass: '', // 将改用内联样式
+    hue,
+  }
 }
 
 const XP_THRESHOLDS = [0, 20, 100, 500] as const
@@ -201,7 +184,12 @@ export function NexusDetailPanel() {
   
   if (!nexus) return null
   
-  const archConfig = ARCHETYPE_CONFIG[nexus.archetype]
+  const archConfig = getDynamicConfig(nexus)
+  const hue = archConfig.hue
+  // 动态颜色样式
+  const dynamicBg = { backgroundColor: `hsla(${hue}, 70%, 50%, 0.2)` }
+  const dynamicBorder = { borderColor: `hsla(${hue}, 70%, 50%, 0.3)` }
+  const dynamicText = { color: `hsl(${hue}, 80%, 70%)` }
   const progress = xpProgress(nexus.xp, nexus.level)
   
   // 保存名称修改
@@ -322,7 +310,7 @@ export function NexusDetailPanel() {
             {/* Header */}
             <div className="flex items-center justify-between px-6 py-4 border-b border-white/10 bg-white/[0.02]">
               <div className="flex items-center gap-3">
-                <Globe2 className={cn('w-5 h-5', archConfig.textClass)} />
+                <Globe2 className="w-5 h-5" style={dynamicText} />
                 <div>
                   {/* 名称编辑 */}
                   <div className="flex items-center gap-2 group">
@@ -351,7 +339,7 @@ export function NexusDetailPanel() {
                     )}
                   </div>
                   <p className="text-xs font-mono text-white/40 mt-0.5">
-                    LV.{nexus.level} {worldTheme === 'cityscape' ? archConfig.typeLabelCity : archConfig.typeLabel}
+                    LV.{nexus.level} {nexus.label || 'Nexus'}
                   </p>
                 </div>
               </div>
@@ -374,25 +362,27 @@ export function NexusDetailPanel() {
                   <div className="relative w-32 h-32">
                     {/* 外层旋转光环 */}
                     <motion.div 
-                      className={cn('absolute inset-0 rounded-full border-2 border-dashed', archConfig.borderClass)}
+                      className="absolute inset-0 rounded-full border-2 border-dashed"
+                      style={dynamicBorder}
                       animate={{ rotate: 360 }}
                       transition={{ duration: 8, repeat: Infinity, ease: 'linear' }}
                     />
                     {/* 中层脉冲 */}
                     <motion.div 
-                      className={cn('absolute inset-4 rounded-full', archConfig.bgClass)}
+                      className="absolute inset-4 rounded-full"
+                      style={dynamicBg}
                       animate={{ scale: [1, 1.1, 1], opacity: [0.3, 0.6, 0.3] }}
                       transition={{ duration: 2, repeat: Infinity }}
                     />
                     {/* 核心 */}
-                    <div className={cn('absolute inset-8 rounded-full flex items-center justify-center', archConfig.bgClass)}>
+                    <div className="absolute inset-8 rounded-full flex items-center justify-center" style={dynamicBg}>
                       <span className="text-2xl">🔨</span>
                     </div>
                   </div>
                   
                   {/* 进度文字 */}
                   <div className="text-center space-y-2">
-                    <p className={cn('text-lg font-mono font-semibold', archConfig.textClass)}>
+                    <p className="text-lg font-mono font-semibold" style={dynamicText}>
                       {t('nexus.constructing')}
                     </p>
                     <p className="text-sm font-mono text-white/40">
@@ -411,7 +401,8 @@ export function NexusDetailPanel() {
                         initial={{ width: 0 }}
                         animate={{ width: `${nexus.constructionProgress * 100}%` }}
                         transition={{ duration: 0.5, ease: 'easeOut' }}
-                        className={cn('h-full rounded-full', archConfig.bgClass)}
+                        className="h-full rounded-full"
+                        style={dynamicBg}
                       />
                     </div>
                     {/* 预估剩余时间 */}
@@ -419,7 +410,7 @@ export function NexusDetailPanel() {
                       <Timer className="w-3 h-3 text-white/30" />
                       <span className="text-xs font-mono text-white/40">
                         {t('nexus.constructing_eta')}{' '}
-                        <span className={archConfig.textClass}>
+                        <span style={dynamicText}>
                           {Math.max(0, Math.ceil((1 - nexus.constructionProgress) * CONSTRUCTION_DURATION_MS / 1000))}
                         </span>
                         {t('nexus.constructing_eta_seconds')}
@@ -446,9 +437,9 @@ export function NexusDetailPanel() {
                 />
                 <div className="flex-1 space-y-2">
                   <div className="flex items-center gap-2">
-                    <Star className={cn('w-4 h-4', archConfig.textClass)} />
+                    <Star className="w-4 h-4" style={dynamicText} />
                     <span className="text-xs font-mono text-white/50 uppercase">Level</span>
-                    <span className={cn('text-3xl font-bold font-mono', archConfig.textClass)}>
+                    <span className="text-3xl font-bold font-mono" style={dynamicText}>
                       {nexus.level}
                     </span>
                   </div>
@@ -462,12 +453,13 @@ export function NexusDetailPanel() {
                         initial={{ width: 0 }}
                         animate={{ width: `${progress}%` }}
                         transition={{ duration: 0.8, ease: 'easeOut' }}
-                        className={cn('h-full rounded-full', archConfig.bgClass)}
+                        className="h-full rounded-full"
+                        style={dynamicBg}
                       />
                     </div>
                   </div>
                   <div className="text-xs font-mono text-white/30">
-                    Type: {archConfig.label}
+                    {nexus.flavorText?.slice(0, 30) || 'Nexus'}
                   </div>
                 </div>
               </div>
@@ -481,16 +473,17 @@ export function NexusDetailPanel() {
                   'text-base font-mono font-semibold tracking-wider uppercase transition-all',
                   'group relative overflow-hidden',
                   canExecute
-                    ? `${archConfig.bgClass} border ${archConfig.borderClass} ${archConfig.textClass} hover:brightness-125 active:scale-[0.98]`
+                    ? 'border hover:brightness-125 active:scale-[0.98]'
                     : 'bg-white/5 border border-white/10 text-white/20 cursor-not-allowed'
                 )}
+                style={canExecute ? { ...dynamicBg, ...dynamicBorder, ...dynamicText } : undefined}
               >
                 {/* Glow effect on hover */}
                 {canExecute && (
-                  <div className={cn(
-                    'absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity',
-                    archConfig.bgClass, 'blur-xl'
-                  )} />
+                  <div 
+                    className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity blur-xl"
+                    style={dynamicBg}
+                  />
                 )}
                 <Play className="w-5 h-5 relative z-10" />
                 <span className="relative z-10">
@@ -501,7 +494,7 @@ export function NexusDetailPanel() {
               {/* ==================== Bound Skills ==================== */}
               <div className="p-5 rounded-xl bg-white/[0.03] border border-white/[0.06]">
                 <div className="flex items-center gap-2 mb-3">
-                  <Puzzle className={cn('w-4 h-4', archConfig.textClass)} />
+                  <Puzzle className="w-4 h-4" style={dynamicText} />
                   <span className="text-xs font-mono text-white/50 uppercase tracking-wider">
                     Bound Skills
                   </span>
@@ -547,7 +540,7 @@ export function NexusDetailPanel() {
               {(nexus.objective || nexus.metrics || nexus.strategy) && (
                 <div className="p-5 rounded-xl bg-white/[0.03] border border-white/[0.06]">
                   <div className="flex items-center gap-2 mb-3">
-                    <Target className={cn('w-4 h-4', archConfig.textClass)} />
+                    <Target className="w-4 h-4" style={dynamicText} />
                     <span className="text-xs font-mono text-white/50 uppercase tracking-wider">
                       Objective Function
                     </span>
@@ -717,7 +710,7 @@ export function NexusDetailPanel() {
                     onClick={() => setShowSOP(!showSOP)}
                     className="w-full flex items-center gap-2"
                   >
-                    <BookOpen className={cn('w-4 h-4', archConfig.textClass)} />
+                    <BookOpen className="w-4 h-4" style={dynamicText} />
                     <span className="text-xs font-mono text-white/50 uppercase tracking-wider">
                       Mission & SOP
                     </span>
@@ -754,7 +747,7 @@ export function NexusDetailPanel() {
               {experiences.length > 0 && (
                 <div className="p-5 rounded-xl bg-white/[0.03] border border-white/[0.06]">
                   <div className="flex items-center gap-2 mb-3">
-                    <Star className={cn('w-4 h-4', archConfig.textClass)} />
+                    <Star className="w-4 h-4" style={dynamicText} />
                     <span className="text-xs font-mono text-white/50 uppercase tracking-wider">
                       Experience Log
                     </span>

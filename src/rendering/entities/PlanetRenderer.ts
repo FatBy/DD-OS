@@ -10,12 +10,17 @@ import { createBufferCanvas, getBufferContext, RenderCacheManager } from '../uti
 // 星球基础尺寸 (按等级 1-4)
 const NEXUS_BASE_SIZE = [40, 56, 72, 90] as const
 
-// Archetype → 星球视觉配置
-const ARCHETYPE_PLANET_STYLE: Record<string, PlanetStyle> = {
-  MONOLITH: { ringCount: 2, ringTilts: [0.15, -0.3], textureType: 'bands', atmosphereScale: 1.6 },
-  SPIRE:    { ringCount: 1, ringTilts: [0.5],         textureType: 'storm', atmosphereScale: 1.4 },
-  REACTOR:  { ringCount: 3, ringTilts: [0, 0.5, -0.4], textureType: 'core', atmosphereScale: 1.8 },
-  VAULT:    { ringCount: 1, ringTilts: [0.2],         textureType: 'crystal', atmosphereScale: 1.5 },
+/**
+ * 从 visualDNA 获取星球样式参数
+ */
+function getPlanetStyle(nexus: NexusEntity): PlanetStyle {
+  const dna = nexus.visualDNA
+  return {
+    ringCount: dna?.ringCount ?? 2,
+    ringTilts: dna?.ringTilts ?? [0.15, -0.3],
+    textureType: dna?.planetTexture ?? 'bands',
+    atmosphereScale: 1.4 + (dna?.glowIntensity ?? 0.5) * 0.6,  // 1.4 - 2.0 基于 glowIntensity
+  }
 }
 
 export class PlanetRenderer implements EntityRenderer {
@@ -346,7 +351,7 @@ export class PlanetRenderer implements EntityRenderer {
       ctx.scale(dpr, dpr)
 
       const { primaryHue: h, primarySaturation: s, primaryLightness: l, accentHue: ah, glowIntensity } = nexus.visualDNA
-      const style = ARCHETYPE_PLANET_STYLE[nexus.archetype] || ARCHETYPE_PLANET_STYLE.REACTOR
+      const style = getPlanetStyle(nexus)
       const cx = pxSize / 2
       const cy = pxSize / 2
       const r = pxSize * 0.28

@@ -85,6 +85,7 @@ export class RendererRegistry {
   private disposeRendererSet(renderers: RendererSet): void {
     renderers.background.dispose?.()
     renderers.grid.dispose?.()
+    renderers.decorations?.dispose?.()
     renderers.core?.dispose?.()
     renderers.ripple.dispose?.()
     
@@ -140,6 +141,7 @@ export function mergeRendererSets(
   return {
     background: override.background ?? base.background,
     grid: override.grid ?? base.grid,
+    decorations: override.decorations ?? base.decorations,
     entities: override.entities ?? base.entities,
     particles: override.particles ?? base.particles,
     core: override.core ?? base.core,

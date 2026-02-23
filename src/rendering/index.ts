@@ -13,6 +13,7 @@ import { PlanetRenderer } from './entities/PlanetRenderer'
 import { CityBackground } from './backgrounds/CityBackground'
 import { CityGrid } from './backgrounds/CityGrid'
 import { BuildingRenderer } from './entities/BuildingRenderer'
+import { DecorationRenderer } from './entities/DecorationRenderer'
 
 /**
  * 创建 Cosmos 主题渲染器集合
@@ -35,6 +36,7 @@ export function createCityscapeRenderers(): RendererSet {
   return {
     background: new CityBackground(),
     grid: new CityGrid(),
+    decorations: new DecorationRenderer(),
     entities: [new BuildingRenderer()],
     particles: [], // 城市主题暂无粒子效果
     // core 已移除 - 不再渲染中心能量核心
@@ -62,3 +64,4 @@ export { CosmosCoreRenderer } from './cores/CosmosCore'
 export { CityBackground } from './backgrounds/CityBackground'
 export { CityGrid } from './backgrounds/CityGrid'
 export { BuildingRenderer } from './entities/BuildingRenderer'
+export { DecorationRenderer } from './entities/DecorationRenderer'

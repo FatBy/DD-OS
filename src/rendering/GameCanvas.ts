@@ -134,6 +134,19 @@ export class GameCanvas {
       rippleRenderer.setCoreState(state.energyCore)
     }
     
+    // 更新网格渲染器的建筑位置（用于道路网络生成）
+    const renderers = this.registry.getCurrent()
+    if (renderers?.grid?.updateNexusPositions && state.nexuses) {
+      const positions = [...state.nexuses.values()].map(n => n.position)
+      renderers.grid.updateNexusPositions(positions)
+    }
+    
+    // 更新装饰层的建筑位置（用于避开建筑区域）
+    if (renderers?.decorations?.updateNexusPositions && state.nexuses) {
+      const positions = [...state.nexuses.values()].map(n => n.position)
+      renderers.decorations.updateNexusPositions(positions)
+    }
+    
     this.state = state
   }
 
@@ -278,6 +291,11 @@ export class GameCanvas {
     // Layer 2: ISO Grid
     if (renderSettings.showGrid) {
       renderers.grid.render(renderCtx)
+    }
+
+    // Layer 2.5: Decorations (树木/灌木，在建筑之前渲染以被建筑遮挡)
+    if (renderers.decorations) {
+      renderers.decorations.render(renderCtx)
     }
 
     // Layer 3: Entities (星球/建筑/生物)

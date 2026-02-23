@@ -1,41 +1,6 @@
 import { motion, AnimatePresence } from 'framer-motion'
 import { X, Sparkles, Building2 } from 'lucide-react'
 import { useStore } from '@/store'
-import { cn } from '@/utils/cn'
-import type { NexusArchetype } from '@/types'
-
-// Archetype 图标和描述
-const ARCHETYPE_INFO: Record<NexusArchetype, { 
-  icon: string
-  label: string 
-  description: string
-  color: string
-}> = {
-  MONOLITH: {
-    icon: '🏛️',
-    label: '知识巨碑',
-    description: '存储与知识积累',
-    color: 'amber',
-  },
-  SPIRE: {
-    icon: '🗼',
-    label: '推理尖塔',
-    description: '复杂流程与推理',
-    color: 'purple',
-  },
-  REACTOR: {
-    icon: '⚛️',
-    label: '执行反应堆',
-    description: '执行与集成',
-    color: 'cyan',
-  },
-  VAULT: {
-    icon: '💎',
-    label: '记忆水晶库',
-    description: '频繁访问与记忆',
-    color: 'emerald',
-  },
-}
 
 export function BuildProposalModal() {
   const currentProposal = useStore((s) => s.currentProposal)
@@ -57,7 +22,6 @@ export function BuildProposalModal() {
       
       addNexus({
         id: nexusId,
-        archetype: accepted.suggestedArchetype,
         position: { gridX, gridY },
         level: 1,
         xp: 0,
@@ -75,7 +39,12 @@ export function BuildProposalModal() {
   
   if (!currentProposal) return null
   
-  const archInfo = ARCHETYPE_INFO[currentProposal.suggestedArchetype]
+  // 从 previewVisualDNA 获取动态颜色
+  const hue = currentProposal.previewVisualDNA?.primaryHue ?? 180
+  const dynamicBg = { backgroundColor: `hsla(${hue}, 70%, 50%, 0.1)` }
+  const dynamicBorder = { borderColor: `hsla(${hue}, 70%, 50%, 0.3)` }
+  const dynamicText = { color: `hsl(${hue}, 80%, 65%)` }
+  const dynamicBgHover = { backgroundColor: `hsla(${hue}, 70%, 50%, 0.2)` }
   
   return (
     <AnimatePresence>
@@ -119,33 +88,33 @@ export function BuildProposalModal() {
                 指挥官，我检测到您的行为模式。是否将此固化为 Nexus？
               </p>
               
-              {/* Archetype 预览 */}
+              {/* 预览 - 使用动态颜色 */}
               <div className="flex items-center gap-6 mb-4">
-                <div className={cn(
-                  'w-24 h-24 rounded-lg flex items-center justify-center flex-shrink-0',
-                  `bg-${archInfo.color}-500/10 border border-${archInfo.color}-500/30`
-                )}>
-                  <span className="text-4xl">{archInfo.icon}</span>
+                <div 
+                  className="w-24 h-24 rounded-lg flex items-center justify-center flex-shrink-0 border"
+                  style={{ ...dynamicBg, ...dynamicBorder }}
+                >
+                  <span className="text-4xl">🏗️</span>
                 </div>
                 
                 <div className="flex-1 min-w-0">
                   <h3 className="font-mono text-lg text-white/90 mb-1">
                     {currentProposal.suggestedName}
                   </h3>
-                  <p className={cn('text-xs font-mono', `text-${archInfo.color}-400`)}>
-                    {archInfo.label}
+                  <p className="text-xs font-mono" style={dynamicText}>
+                    Nexus
                   </p>
                   <p className="text-xs text-white/50 mt-1">
-                    {archInfo.description}
+                    基于行为模式创建
                   </p>
                 </div>
               </div>
               
               {/* 功能目标概述 */}
-              <div className={cn(
-                'mb-6 p-3 rounded-lg border-l-2',
-                `border-${archInfo.color}-400/50 bg-${archInfo.color}-500/5`
-              )}>
+              <div 
+                className="mb-6 p-3 rounded-lg border-l-2"
+                style={{ ...dynamicBg, borderLeftColor: `hsla(${hue}, 70%, 50%, 0.5)` }}
+              >
                 <p className="text-xs text-white/70 leading-relaxed">
                   {currentProposal.purposeSummary}
                 </p>
@@ -177,12 +146,11 @@ export function BuildProposalModal() {
                 </button>
                 <button
                   onClick={handleAccept}
-                  className={cn(
-                    'flex-1 py-2.5 px-4 rounded-lg flex items-center justify-center gap-2',
-                    'text-sm font-mono transition-colors',
-                    `bg-${archInfo.color}-500/20 border border-${archInfo.color}-500/30`,
-                    `text-${archInfo.color}-400 hover:bg-${archInfo.color}-500/30`
-                  )}
+                  className="flex-1 py-2.5 px-4 rounded-lg flex items-center justify-center gap-2
+                           text-sm font-mono transition-colors border"
+                  style={{ ...dynamicBg, ...dynamicBorder, ...dynamicText }}
+                  onMouseOver={(e) => Object.assign(e.currentTarget.style, dynamicBgHover)}
+                  onMouseOut={(e) => Object.assign(e.currentTarget.style, dynamicBg)}
                 >
                   <Building2 className="w-4 h-4" />
                   建造

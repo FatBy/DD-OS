@@ -1,63 +1,112 @@
 // ============================================
 // DD-OS 建筑渲染器 (城市主题)
 // 使用 Kenney 素材包的等距建筑图片
+// 支持 50+ 种建筑变体、地面阴影、执行悬浮动画
 // ============================================
 
-import type { NexusEntity, NexusArchetype } from '@/types'
+import type { NexusEntity } from '@/types'
 import type { EntityRenderer, RenderContext, Point, BufferCanvas } from '../types'
 
-// 建筑素材映射 (Archetype -> 素材文件)
-// 使用 Kenney isometric-buildings-1 素材
-const BUILDING_SPRITES: Record<NexusArchetype, string[]> = {
-  // MONOLITH: 高大的办公楼/图书馆 (多层建筑)
-  MONOLITH: [
-    '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_001.png',  // 基础带土地
-    '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_009.png',  // 办公楼
-    '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_017.png',  // 简洁办公楼
-    '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_100.png',  // 小商店
-  ],
-  // SPIRE: 高塔/尖顶建筑
-  SPIRE: [
-    '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_003.png',
-    '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_124.png',
-    '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_116.png',
-    '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_117.png',
-  ],
-  // REACTOR: 工厂/工业建筑 (矮胖带烟囱)
-  REACTOR: [
-    '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_002.png',  // 红色遮阳篷
-    '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_010.png',
-    '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_018.png',
-    '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_026.png',
-  ],
-  // VAULT: 仓库/存储建筑 (方正)
-  VAULT: [
-    '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_000.png',
-    '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_008.png',
-    '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_016.png',
-    '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_024.png',
-  ],
-}
+// 可用的建筑素材列表（从 Kenney 素材包筛选出的完整建筑）
+// 排除了: 地面板(x*8+5, x*8+6), 屋顶片(064-096范围)
+const ALL_BUILDING_SPRITES = [
+  // ---- 商业建筑 (Row 0-1) ----
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_000.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_001.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_002.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_003.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_004.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_007.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_008.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_009.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_010.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_011.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_012.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_015.png',
+  // ---- 办公建筑 (Row 2-3) ----
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_016.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_017.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_018.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_019.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_020.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_023.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_024.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_025.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_026.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_027.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_028.png',
+  // ---- 多样风格 (Row 4-7) ----
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_030.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_031.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_032.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_033.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_034.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_035.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_036.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_039.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_040.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_041.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_042.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_043.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_044.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_047.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_048.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_049.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_050.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_051.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_052.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_055.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_056.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_057.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_058.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_059.png',
+  // ---- 高级建筑 (Row 12-15, 带底座) ----
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_100.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_101.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_102.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_103.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_108.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_109.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_110.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_111.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_116.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_117.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_118.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_119.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_124.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_125.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_126.png',
+  '/assets/kenney/isometric-buildings-1/PNG/buildingTiles_127.png',
+]
 
-// 地面/土地瓦片
-const GROUND_TILE = '/assets/kenney/isometric-city/PNG/cityTiles_066.png'
+// 阴影配置
+const SHADOW_ALPHA = 0.18
+const SHADOW_RX = 40    // 椭圆阴影 X 半径
+const SHADOW_RY = 12    // 椭圆阴影 Y 半径
 
-// Archetype 发光颜色
-const ARCHETYPE_GLOW: Record<NexusArchetype, string> = {
-  MONOLITH: '#d4af37',  // 金色
-  SPIRE: '#00d9ff',     // 青色
-  REACTOR: '#ff6b35',   // 橙色
-  VAULT: '#00ff88',     // 绿色
+// 悬浮动画配置
+const FLOAT_AMPLITUDE = 5   // 悬浮最大像素偏移
+const FLOAT_SPEED = 300     // 悬浮周期（ms 单位的 sin 分母）
+
+/**
+ * 从 visualDNA 的 primaryHue 生成发光颜色
+ */
+function getGlowColor(nexus: NexusEntity): string {
+  const hue = nexus.visualDNA?.primaryHue ?? 180
+  return `hsl(${hue}, 80%, 60%)`
 }
 
 /**
  * 基于图片素材的建筑渲染器
+ * - 60+ 种建筑变体
+ * - 地面椭圆阴影
+ * - 执行时悬浮动画（建筑上浮 + 阴影缩小）
+ * - 按素材比例自动对齐底部
  */
 export class BuildingRenderer implements EntityRenderer {
   readonly id = 'building-renderer'
   
   private sprites: Map<string, HTMLImageElement> = new Map()
-  private groundTile: HTMLImageElement | null = null
   private cache: Map<string, BufferCanvas> = new Map()
   private dpr = 1
   private executingNexusId: string | null = null
@@ -72,25 +121,7 @@ export class BuildingRenderer implements EntityRenderer {
    * 预加载所有建筑素材
    */
   private preloadSprites(): void {
-    // 收集所有需要加载的素材
-    const allSprites = new Set<string>()
-    allSprites.add(GROUND_TILE)
-    
-    for (const sprites of Object.values(BUILDING_SPRITES)) {
-      for (const sprite of sprites) {
-        allSprites.add(sprite)
-      }
-    }
-    
-    // 加载地面瓦片
-    this.groundTile = new Image()
-    this.groundTile.src = GROUND_TILE
-    this.groundTile.onload = () => this.loadedCount++
-    this.groundTile.onerror = () => this.loadedCount++
-    
-    // 加载建筑素材
-    for (const src of allSprites) {
-      if (src === GROUND_TILE) continue
+    for (const src of ALL_BUILDING_SPRITES) {
       const img = new Image()
       img.src = src
       img.onload = () => this.loadedCount++
@@ -131,7 +162,6 @@ export class BuildingRenderer implements EntityRenderer {
     // 获取建筑图片
     const sprite = this.getBuildingSprite(nexus)
     if (!sprite || !sprite.complete || sprite.naturalWidth === 0) {
-      // 回退到程序化渲染
       this.renderFallback(c, screenPos, nexus, isSelected, isExecuting, timestamp)
       return
     }
@@ -141,11 +171,36 @@ export class BuildingRenderer implements EntityRenderer {
     const drawWidth = sprite.naturalWidth * scale
     const drawHeight = sprite.naturalHeight * scale
 
+    // --- 悬浮动画 ---
+    let yOffset = 0
+    let shadowScale = 1
+    if (isExecuting) {
+      yOffset = -Math.sin(timestamp / FLOAT_SPEED) * FLOAT_AMPLITUDE
+      // 悬浮越高阴影越小（0.7~1.0）
+      shadowScale = 1 - Math.abs(Math.sin(timestamp / FLOAT_SPEED)) * 0.3
+    }
+
+    // --- 地面阴影（在建筑之前绘制）---
+    c.save()
+    c.globalAlpha = SHADOW_ALPHA * shadowScale
+    c.fillStyle = '#000'
+    c.beginPath()
+    c.ellipse(
+      screenPos.x,
+      screenPos.y + 4, // 略低于锚点
+      SHADOW_RX * shadowScale,
+      SHADOW_RY * shadowScale,
+      0, 0, Math.PI * 2,
+    )
+    c.fill()
+    c.restore()
+
+    // --- 建筑主体 ---
     c.save()
 
     // 选中/执行时的发光效果
     if (isSelected || isExecuting) {
-      const glowColor = ARCHETYPE_GLOW[nexus.archetype]
+      const glowColor = getGlowColor(nexus)
       const pulse = isExecuting 
         ? 0.6 + 0.4 * Math.sin(timestamp / 200)
         : 0.8
@@ -158,44 +213,40 @@ export class BuildingRenderer implements EntityRenderer {
     const buildProgress = nexus.constructionProgress ?? 1
     c.globalAlpha = 0.3 + 0.7 * buildProgress
 
-    // 绘制建筑图片
+    // 底部对齐：用素材自身高度的 12% 作为底部偏移量
+    const baseOffset = sprite.naturalHeight * scale * 0.12
     c.drawImage(
       sprite,
       screenPos.x - drawWidth / 2,
-      screenPos.y - drawHeight + 20, // 底部对齐
+      screenPos.y - drawHeight + baseOffset + yOffset,
       drawWidth,
-      drawHeight
+      drawHeight,
     )
 
     c.globalAlpha = 1
     c.restore()
 
-    // 绘制标签
+    // 标签（不受悬浮影响，始终在锚点下方）
     if (nexus.label) {
       this.drawLabel(c, nexus, screenPos, isSelected)
     }
 
-    // 执行中指示器
+    // 执行中旋转指示器
     if (isExecuting && this.executionStartTime) {
-      this.drawExecutionIndicator(c, screenPos, timestamp, nexus.archetype)
+      this.drawExecutionIndicator(c, screenPos, timestamp, nexus, yOffset)
     }
   }
 
   /**
-   * 根据 Nexus 获取对应的建筑素材
+   * 根据 Nexus 获取对应的建筑素材（基于 ID 哈希）
    */
   private getBuildingSprite(nexus: NexusEntity): HTMLImageElement | null {
-    const sprites = BUILDING_SPRITES[nexus.archetype]
-    if (!sprites || sprites.length === 0) return null
-    
-    // 使用 nexus.id 的 hash 来确定使用哪个变体
     let hash = 0
     for (let i = 0; i < nexus.id.length; i++) {
       hash = ((hash << 5) - hash + nexus.id.charCodeAt(i)) | 0
     }
-    const variantIndex = Math.abs(hash) % sprites.length
-    
-    return this.sprites.get(sprites[variantIndex]) || null
+    const spriteIndex = Math.abs(hash) % ALL_BUILDING_SPRITES.length
+    return this.sprites.get(ALL_BUILDING_SPRITES[spriteIndex]) || null
   }
 
   /**
@@ -209,78 +260,84 @@ export class BuildingRenderer implements EntityRenderer {
     isExecuting: boolean,
     timestamp: number,
   ): void {
-    const colors = {
-      MONOLITH: '#8B7355',
-      SPIRE: '#6B8E9F',
-      REACTOR: '#9F6B6B',
-      VAULT: '#6B9F6B',
-    }
+    const hue = nexus.visualDNA?.primaryHue ?? 180
+    const sat = nexus.visualDNA?.primarySaturation ?? 60
+    const light = nexus.visualDNA?.primaryLightness ?? 45
+    const color = `hsl(${hue}, ${sat}%, ${light}%)`
     
-    const size = {
-      MONOLITH: { w: 50, h: 70 },
-      SPIRE: { w: 35, h: 90 },
-      REACTOR: { w: 60, h: 50 },
-      VAULT: { w: 50, h: 45 },
-    }
-
-    const { w, h } = size[nexus.archetype]
-    const color = colors[nexus.archetype]
+    const variant = nexus.visualDNA?.geometryVariant ?? 0
+    const sizes = [
+      { w: 50, h: 70 },
+      { w: 35, h: 90 },
+      { w: 60, h: 50 },
+      { w: 50, h: 45 },
+    ]
+    const { w, h } = sizes[variant % sizes.length]
     const isoW = w * 0.5
     const isoD = w * 0.3
+
+    // 悬浮偏移
+    let yOff = 0
+    let shadowSc = 1
+    if (isExecuting) {
+      yOff = -Math.sin(timestamp / FLOAT_SPEED) * FLOAT_AMPLITUDE
+      shadowSc = 1 - Math.abs(Math.sin(timestamp / FLOAT_SPEED)) * 0.3
+    }
+
+    // 地面阴影
+    c.save()
+    c.globalAlpha = SHADOW_ALPHA * shadowSc
+    c.fillStyle = '#000'
+    c.beginPath()
+    c.ellipse(pos.x, pos.y + 4, SHADOW_RX * shadowSc, SHADOW_RY * shadowSc, 0, 0, Math.PI * 2)
+    c.fill()
+    c.restore()
 
     c.save()
 
     if (isSelected || isExecuting) {
       const pulse = isExecuting ? 0.6 + 0.4 * Math.sin(timestamp / 200) : 0.8
-      c.shadowColor = ARCHETYPE_GLOW[nexus.archetype]
+      c.shadowColor = getGlowColor(nexus)
       c.shadowBlur = 20 * pulse
     }
 
-    // 简化的等距建筑
+    const py = pos.y + yOff
+
     // 左面
     c.fillStyle = color
     c.beginPath()
-    c.moveTo(pos.x, pos.y)
-    c.lineTo(pos.x - isoW, pos.y - isoD)
-    c.lineTo(pos.x - isoW, pos.y - isoD - h)
-    c.lineTo(pos.x, pos.y - h)
+    c.moveTo(pos.x, py)
+    c.lineTo(pos.x - isoW, py - isoD)
+    c.lineTo(pos.x - isoW, py - isoD - h)
+    c.lineTo(pos.x, py - h)
     c.closePath()
     c.fill()
 
     // 右面
-    c.fillStyle = this.lighten(color, 0.2)
+    c.fillStyle = `hsl(${hue}, ${sat}%, ${Math.min(100, light + 15)}%)`
     c.beginPath()
-    c.moveTo(pos.x, pos.y)
-    c.lineTo(pos.x + isoW, pos.y - isoD)
-    c.lineTo(pos.x + isoW, pos.y - isoD - h)
-    c.lineTo(pos.x, pos.y - h)
+    c.moveTo(pos.x, py)
+    c.lineTo(pos.x + isoW, py - isoD)
+    c.lineTo(pos.x + isoW, py - isoD - h)
+    c.lineTo(pos.x, py - h)
     c.closePath()
     c.fill()
 
     // 顶面
-    c.fillStyle = this.lighten(color, 0.4)
+    c.fillStyle = `hsl(${hue}, ${sat}%, ${Math.min(100, light + 25)}%)`
     c.beginPath()
-    c.moveTo(pos.x, pos.y - h)
-    c.lineTo(pos.x - isoW, pos.y - isoD - h)
-    c.lineTo(pos.x, pos.y - isoD * 2 - h)
-    c.lineTo(pos.x + isoW, pos.y - isoD - h)
+    c.moveTo(pos.x, py - h)
+    c.lineTo(pos.x - isoW, py - isoD - h)
+    c.lineTo(pos.x, py - isoD * 2 - h)
+    c.lineTo(pos.x + isoW, py - isoD - h)
     c.closePath()
     c.fill()
 
     c.restore()
 
-    // 标签
     if (nexus.label) {
       this.drawLabel(c, nexus, pos, isSelected)
     }
-  }
-
-  private lighten(color: string, amount: number): string {
-    const num = parseInt(color.replace('#', ''), 16)
-    const r = Math.min(255, ((num >> 16) & 0xff) + Math.floor(255 * amount))
-    const g = Math.min(255, ((num >> 8) & 0xff) + Math.floor(255 * amount))
-    const b = Math.min(255, (num & 0xff) + Math.floor(255 * amount))
-    return `rgb(${r},${g},${b})`
   }
 
   private drawLabel(
@@ -295,7 +352,6 @@ export class BuildingRenderer implements EntityRenderer {
     ctx.textAlign = 'center'
     ctx.textBaseline = 'top'
     
-    // 背景
     const metrics = ctx.measureText(label)
     const padding = 6
     const bgWidth = metrics.width + padding * 2
@@ -308,7 +364,6 @@ export class BuildingRenderer implements EntityRenderer {
     ctx.roundRect(bgX, bgY, bgWidth, bgHeight, 4)
     ctx.fill()
     
-    // 文字
     ctx.fillStyle = isSelected ? '#fff' : 'rgba(255,255,255,0.85)'
     ctx.fillText(label, pos.x, bgY + 3)
   }
@@ -317,15 +372,15 @@ export class BuildingRenderer implements EntityRenderer {
     ctx: CanvasRenderingContext2D,
     pos: Point,
     timestamp: number,
-    archetype: NexusArchetype,
+    nexus: NexusEntity,
+    yOffset: number,
   ): void {
-    const glowColor = ARCHETYPE_GLOW[archetype]
+    const glowColor = getGlowColor(nexus)
     const elapsed = timestamp - (this.executionStartTime || timestamp)
     const pulse = 0.5 + 0.5 * Math.sin(elapsed / 150)
     
-    // 旋转进度环
     ctx.save()
-    ctx.translate(pos.x, pos.y - 80)
+    ctx.translate(pos.x, pos.y - 80 + yOffset)
     ctx.rotate(elapsed / 500)
     
     ctx.strokeStyle = glowColor
@@ -352,6 +407,5 @@ export class BuildingRenderer implements EntityRenderer {
   dispose(): void {
     this.cache.clear()
     this.sprites.clear()
-    this.groundTile = null
   }
 }

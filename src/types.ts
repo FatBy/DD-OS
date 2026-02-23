@@ -483,7 +483,9 @@ export interface ToolInfo {
 // World Genesis 类型
 // ============================================
 
-export type NexusArchetype = 'MONOLITH' | 'SPIRE' | 'REACTOR' | 'VAULT'
+// [已废弃] 固定类型限制已移除，改为基于 ID 动态生成视觉样式
+// 保留类型别名仅用于向后兼容
+export type NexusArchetype = string
 
 // 建筑配置 (城市主题)
 export interface BuildingConfig {
@@ -499,8 +501,12 @@ export interface VisualDNA {
   primarySaturation: number // 40-100
   primaryLightness: number  // 30-70
   accentHue: number         // 0-360
-  archetype: NexusArchetype
+  archetype?: string            // [已废弃] 保留仅用于向后兼容
   textureMode: 'solid' | 'wireframe' | 'gradient'
+  // 星球纹理配置 (cosmos 主题)
+  planetTexture?: 'bands' | 'storm' | 'core' | 'crystal'
+  ringCount?: number            // 1-3
+  ringTilts?: number[]          // 环倾角数组
   glowIntensity: number     // 0-1
   geometryVariant: number   // 0-3 (sub-variant within archetype)
   // 城市主题：建筑配置 (用于 cityscape 主题)
@@ -516,7 +522,7 @@ export interface GridPosition {
 
 export interface NexusEntity {
   id: string
-  archetype: NexusArchetype
+  archetype?: string            // [已废弃] 保留仅用于向后兼容
   position: GridPosition
   level: number             // 1-4
   xp: number
@@ -578,7 +584,7 @@ export interface TriggerPattern {
   type: TriggerType
   confidence: number           // 0-1 置信度
   evidence: string[]           // 证据摘要（相关消息片段）
-  suggestedArchetype: NexusArchetype
+  suggestedArchetype?: string   // [已废弃] 不再使用
   detectedAt: number
   // 新增：技能和SOP推荐
   suggestedSkills?: string[]   // 建议绑定的工具/技能名列表
@@ -589,7 +595,7 @@ export interface BuildProposal {
   id: string
   triggerPattern: TriggerPattern
   suggestedName: string        // 建议的 Nexus 名称
-  suggestedArchetype: NexusArchetype
+  suggestedArchetype?: string  // [已废弃] 不再使用
   previewVisualDNA: VisualDNA
   boundSkillId?: string        // 兼容旧字段：单个 Skill
   boundSkillIds?: string[]     // 新增：多技能绑定列表

@@ -171,11 +171,10 @@ function App() {
         const seedNexusId = 'skill-scout'
         useStore.getState().addNexus({
           id: seedNexusId,
-          archetype: 'REACTOR',
           position: { gridX: 3, gridY: -2 },
           level: 2,
           xp: 80,
-          visualDNA: simpleVisualDNA(seedNexusId, 'REACTOR'),
+          visualDNA: simpleVisualDNA(seedNexusId),
           label: 'Skill Scout',
           constructionProgress: 1,
           createdAt: Date.now(),

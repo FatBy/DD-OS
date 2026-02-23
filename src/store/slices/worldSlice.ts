@@ -1,5 +1,5 @@
 import type { StateCreator } from 'zustand'
-import type { NexusEntity, CameraState, GridPosition, RenderSettings, NexusArchetype, VisualDNA, BuildingConfig } from '@/types'
+import type { NexusEntity, CameraState, GridPosition, RenderSettings, VisualDNA, BuildingConfig } from '@/types'
 import type { WorldTheme } from '@/rendering/types'
 
 // XP 等级阈值
@@ -47,55 +47,43 @@ function loadNexusesFromStorage(): Map<string, NexusEntity> {
 const TILE_WIDTH = 128
 const TILE_HEIGHT = 64
 
+// 建筑配置生成数组
+const BODY_TYPES = ['office', 'lab', 'factory', 'library', 'tower', 'warehouse']
+const ROOF_TYPES = ['flat', 'dome', 'antenna', 'satellite', 'chimney', 'garden']
+const BASE_TYPES = ['concrete', 'steel', 'glass', 'stone']
+const PLANET_TEXTURES = ['bands', 'storm', 'core', 'crystal'] as const
+
 // 简易同步哈希 -> VisualDNA (不依赖 crypto.subtle)
-export function simpleVisualDNA(id: string, archetype: NexusArchetype): VisualDNA {
+export function simpleVisualDNA(id: string): VisualDNA {
   let hash = 0
   for (let i = 0; i < id.length; i++) {
     hash = ((hash << 5) - hash + id.charCodeAt(i)) | 0
   }
   const h = Math.abs(hash)
   
-  // 根据 Archetype 生成对应的建筑配置
-  const buildingConfig = generateBuildingConfigFromArchetype(archetype, h)
+  const primaryHue = h % 360
+  const geometryVariant = h % 4
+  
+  // 动态生成建筑配置
+  const buildingConfig: BuildingConfig = {
+    base: BASE_TYPES[h % BASE_TYPES.length],
+    body: BODY_TYPES[(h >> 2) % BODY_TYPES.length],
+    roof: ROOF_TYPES[(h >> 4) % ROOF_TYPES.length],
+    themeColor: `hsl(${primaryHue}, 70%, 50%)`,
+  }
   
   return {
-    primaryHue: h % 360,
+    primaryHue,
     primarySaturation: 50 + (h >> 8) % 40,
     primaryLightness: 35 + (h >> 16) % 30,
-    accentHue: (h % 360 + 60) % 360,
-    archetype,
+    accentHue: (primaryHue + 60) % 360,
     textureMode: 'solid',
     glowIntensity: 0.5 + ((h >> 4) % 50) / 100,
-    geometryVariant: h % 4,
+    geometryVariant,
+    planetTexture: PLANET_TEXTURES[geometryVariant],
+    ringCount: 1 + (h >> 6) % 3,
+    ringTilts: [0.15, -0.3, 0.1].slice(0, 1 + (h >> 6) % 3),
     buildingConfig,
-  }
-}
-
-/**
- * 根据 Archetype 生成建筑配置 (用于城市主题)
- */
-function generateBuildingConfigFromArchetype(archetype: NexusArchetype, hashSeed: number): BuildingConfig {
-  const bases = ['concrete', 'steel', 'glass', 'stone']
-  const baseIdx = hashSeed % bases.length
-  
-  // Archetype 特定配置
-  const configs: Record<NexusArchetype, { body: string; roof: string; props: string[]; color: string }> = {
-    MONOLITH: { body: 'library', roof: 'dome', props: ['signs', 'lights'], color: '#38bdf8' },
-    SPIRE: { body: 'lab', roof: 'antenna', props: ['wires', 'lights'], color: '#a78bfa' },
-    REACTOR: { body: 'factory', roof: 'chimney', props: ['machines', 'wires'], color: '#fb923c' },
-    VAULT: { body: 'warehouse', roof: 'flat', props: ['lights'], color: '#34d399' },
-  }
-  
-  const cfg = configs[archetype]
-  const extraProps = ['plants', 'satellite', 'signs']
-  const hasExtra = (hashSeed >> 4) % 3 === 0
-  
-  return {
-    base: bases[baseIdx],
-    body: cfg.body,
-    roof: cfg.roof,
-    props: hasExtra ? [...cfg.props, extraProps[(hashSeed >> 6) % extraProps.length]] : cfg.props,
-    themeColor: cfg.color,
   }
 }
 
@@ -258,7 +246,6 @@ export const createWorldSlice: StateCreator<WorldSlice> = (set, get) => ({
     const next = new Map(state.nexuses)
     for (const serverNexus of nexuses) {
       const existing = next.get(serverNexus.id)
-      const archetype = (serverNexus.archetype || 'REACTOR') as NexusArchetype
       const xp = serverNexus.xp || 0
 
       // 构建 VisualDNA：优先使用服务器提供的 visual_dna，否则从 ID 生成
@@ -270,13 +257,12 @@ export const createWorldSlice: StateCreator<WorldSlice> = (set, get) => ({
           primarySaturation: serverVDNA.primarySaturation ?? 70,
           primaryLightness: serverVDNA.primaryLightness ?? 50,
           accentHue: serverVDNA.accentHue ?? 240,
-          archetype,
           textureMode: serverVDNA.textureMode ?? 'solid',
           glowIntensity: serverVDNA.glowIntensity ?? 0.7,
           geometryVariant: serverVDNA.geometryVariant ?? 0,
         }
       } else {
-        visualDNA = existing?.visualDNA || simpleVisualDNA(serverNexus.id, archetype)
+        visualDNA = existing?.visualDNA || simpleVisualDNA(serverNexus.id)
       }
 
       next.set(serverNexus.id, {
@@ -284,7 +270,6 @@ export const createWorldSlice: StateCreator<WorldSlice> = (set, get) => ({
         ...existing,
         // 从服务器合并的数据
         id: serverNexus.id,
-        archetype,
         position: existing?.position || assignGridPosition(next),
         level: xpToLevel(xp),
         xp,
