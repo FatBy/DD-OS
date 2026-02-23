@@ -43,7 +43,9 @@ const en: Record<TranslationKey, string> = {
   'settings.world_cosmos': 'Cosmos',
   'settings.world_cosmos_desc': 'Deep space planets',
   'settings.world_cityscape': 'Cityscape',
-  'settings.world_cityscape_desc': 'Cyber buildings',
+  'settings.world_cityscape_desc': 'Isometric city',
+  'settings.world_village': 'Village',
+  'settings.world_village_desc': 'Top-down village',
   'settings.world_minimalist': 'Minimalist',
   'settings.world_minimalist_desc': 'Cozy blocks',
   'settings.world_wildlife': 'Wildlife',
@@ -94,7 +96,13 @@ const en: Record<TranslationKey, string> = {
   'memory.conversations': 'conversations',
   'memory.llm_not_configured': 'AI not configured - Go to Settings to configure LLM API for auto journal generation',
   'memory.llm_hint': 'LLM API must be configured in Settings to generate journals',
-  'memory.instructions': 'Click "Generate Journal" to transform conversations into adventure stories. Click a card to read the full story.',
+  'memory.instructions': 'Journals auto-generate after new conversations. Click the timeline to view history.',
+  'memory.chronicle': 'Chronicle',
+  'memory.geek_mode': 'Geek Mode',
+  'memory.no_journal_today': 'No journal entry for today',
+  'memory.auto_generate_hint': 'Will auto-generate after new conversations',
+  'memory.auto_generating': 'Auto-generating...',
+  'memory.no_raw_data': 'No raw data',
 
   // ---- Tasks ----
   'task.pending': 'Pending',
@@ -231,6 +239,7 @@ const en: Record<TranslationKey, string> = {
   'nexus.deactivate': 'Deactivate',
   'nexus.sop': 'SOP',
   'nexus.sop_hint': 'Custom system prompt',
+  'nexus.create_new': 'Create New Nexus',
 
   // ---- Common ----
   'common.loading': 'Loading...',

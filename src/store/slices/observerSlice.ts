@@ -13,16 +13,17 @@ import { chat, getLLMConfig } from '@/services/llmService'
 // ============================================
 
 const BEHAVIOR_WINDOW_SIZE = 50        // 保留最近 N 条行为记录
-const ANALYSIS_COOLDOWN_MS = 20000     // 分析冷却 (20秒，原 30秒)
+const ANALYSIS_COOLDOWN_MS = 60000     // 分析冷却 (60秒，原 20秒)
 const CONFIDENCE_THRESHOLD = 0.5       // 触发置信度阈值 (原 0.6)
+const REJECTION_COOLDOWN_MS = 300000   // 拒绝后冷却 5 分钟
 
 // 规则引擎阈值
 const RULE_ENGINE = {
-  FREQUENCY_THRESHOLD: 3,         // 同一工具调用 3+ 次触发 (原 5)
+  FREQUENCY_THRESHOLD: 5,         // 同一工具调用 5+ 次触发 (原 3)
   FREQUENCY_DAYS: 7,              // 在 7 天内 (原 3)
-  COMPLEXITY_TURNS: 8,            // 单次执行超过 8 轮视为复杂 (原 10)
-  DEPENDENCY_MIN_OCCURRENCES: 2,  // 工具链出现 2+ 次 (原 3)
-  MIN_TRACES_FOR_ANALYSIS: 3,     // 至少 3 条执行记录才分析 (原 5)
+  COMPLEXITY_TURNS: 10,           // 单次执行超过 10 轮视为复杂 (原 8)
+  DEPENDENCY_MIN_OCCURRENCES: 3,  // 工具链出现 3+ 次 (原 2)
+  MIN_TRACES_FOR_ANALYSIS: 5,     // 至少 5 条执行记录才分析 (原 3)
 }
 
 // 后端 API
@@ -53,6 +54,9 @@ export interface ObserverSlice {
   lastRuleCheckTime: number
   cachedTraces: ExecTrace[]
   cachedStats: TraceStats | null
+  // 去重状态
+  rejectedPatterns: Map<string, number>  // pattern type → rejection time
+  lastRejectionTime: number
 
   // Actions
   addBehaviorRecord: (record: Omit<BehaviorRecord, 'id' | 'timestamp' | 'keywords'>) => void
@@ -64,6 +68,7 @@ export interface ObserverSlice {
   acceptProposal: () => BuildProposal | null
   rejectProposal: () => void
   clearProposal: () => void
+  checkDuplicateNexus: (suggestedSkills: string[]) => boolean
   
   // Panel Actions
   openNexusPanel: (nexusId: string) => void
@@ -198,6 +203,8 @@ export const createObserverSlice: StateCreator<
   lastRuleCheckTime: 0,
   cachedTraces: [],
   cachedStats: null,
+  rejectedPatterns: new Map(),
+  lastRejectionTime: 0,
 
   // Actions
   addBehaviorRecord: (record) => {
@@ -258,10 +265,16 @@ export const createObserverSlice: StateCreator<
    * 主分析入口 - 双引擎协同
    */
   analyze: async () => {
-    const { isAnalyzing, currentProposal } = get()
+    const { isAnalyzing, currentProposal, lastRejectionTime } = get()
     
     if (isAnalyzing) return null
     if (currentProposal?.status === 'pending') return null
+    
+    // 如果用户最近拒绝过提案，增加冷却时间
+    if (Date.now() - lastRejectionTime < REJECTION_COOLDOWN_MS) {
+      console.log('[Observer] In rejection cooldown period, skipping analysis')
+      return null
+    }
     
     set({ isAnalyzing: true, lastAnalysisTime: Date.now() })
     console.log('[Observer] Starting dual-engine analysis...')
@@ -491,6 +504,23 @@ ${summaryData.recentTasks.map((t, i) =>
   },
 
   createProposal: (trigger) => {
+    // 从 trigger 提取技能
+    const boundSkillIds = trigger.suggestedSkills || []
+    
+    // 检查是否已存在相似的 Nexus
+    if (get().checkDuplicateNexus(boundSkillIds)) {
+      console.log('[Observer] Skipping proposal - duplicate Nexus exists')
+      return
+    }
+    
+    // 检查最近是否拒绝过相同类型的提案
+    const { rejectedPatterns } = get()
+    const lastRejection = rejectedPatterns.get(trigger.type)
+    if (lastRejection && Date.now() - lastRejection < REJECTION_COOLDOWN_MS) {
+      console.log(`[Observer] Skipping proposal - ${trigger.type} was recently rejected`)
+      return
+    }
+    
     const proposalId = generateId()
     
     // 从 evidence 中提取名称建议
@@ -508,8 +538,7 @@ ${summaryData.recentTasks.map((t, i) =>
     // 生成功能目标概述
     const purposeSummary = generatePurposeSummary(trigger)
     
-    // 从 trigger 提取技能和 SOP
-    const boundSkillIds = trigger.suggestedSkills || []
+    // 从 trigger 提取 SOP
     const sopContent = trigger.suggestedSOP || ''
     
     const proposal: BuildProposal = {
@@ -542,15 +571,24 @@ ${summaryData.recentTasks.map((t, i) =>
   },
 
   rejectProposal: () => {
-    const { currentProposal } = get()
+    const { currentProposal, rejectedPatterns } = get()
     if (!currentProposal) return
+    
+    // 记录拒绝的模式类型和时间
+    const patternType = currentProposal.triggerPattern.type
+    const newRejectedPatterns = new Map(rejectedPatterns)
+    newRejectedPatterns.set(patternType, Date.now())
     
     set({
       currentProposal: {
         ...currentProposal,
         status: 'rejected',
       },
+      rejectedPatterns: newRejectedPatterns,
+      lastRejectionTime: Date.now(),
     })
+    
+    console.log(`[Observer] Proposal rejected, pattern "${patternType}" on cooldown for ${REJECTION_COOLDOWN_MS / 1000}s`)
     
     setTimeout(() => {
       set({ currentProposal: null })
@@ -561,6 +599,39 @@ ${summaryData.recentTasks.map((t, i) =>
     set({ currentProposal: null })
   },
 
+  /**
+   * 检查是否已存在相似的 Nexus（基于技能重叠度）
+   */
+  checkDuplicateNexus: (suggestedSkills: string[]) => {
+    // 从 localStorage 获取已有的 Nexus
+    try {
+      const stored = localStorage.getItem('ddos_nexuses')
+      if (!stored) return false
+      
+      const nexuses = JSON.parse(stored) as Array<{ boundSkillIds?: string[]; label?: string }>
+      if (!nexuses || nexuses.length === 0) return false
+      
+      // 检查是否有 Nexus 的技能与建议技能高度重叠
+      for (const nexus of nexuses) {
+        const existingSkills = nexus.boundSkillIds || []
+        if (existingSkills.length === 0) continue
+        
+        // 计算重叠度
+        const overlap = suggestedSkills.filter(s => existingSkills.includes(s)).length
+        const overlapRatio = overlap / Math.max(suggestedSkills.length, 1)
+        
+        if (overlapRatio >= 0.5) {
+          console.log(`[Observer] Found duplicate Nexus "${nexus.label}" with ${Math.round(overlapRatio * 100)}% skill overlap`)
+          return true
+        }
+      }
+      
+      return false
+    } catch {
+      return false
+    }
+  },
+  
   // Panel Actions
   openNexusPanel: (nexusId) => {
     set({

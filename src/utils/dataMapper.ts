@@ -151,9 +151,9 @@ function extractSessionTitle(key: string): string {
 export function sessionsToTasks(sessions: Session[]): TaskItem[] {
   return sessions.map(sessionToTask).sort((a, b) => {
     // 按状态排序: executing > pending > done
-    const statusOrder = { executing: 0, pending: 1, done: 2 }
-    if (statusOrder[a.status] !== statusOrder[b.status]) {
-      return statusOrder[a.status] - statusOrder[b.status]
+    const statusOrder: Record<string, number> = { executing: 0, pending: 1, done: 2, terminated: 3 }
+    if ((statusOrder[a.status] ?? 3) !== (statusOrder[b.status] ?? 3)) {
+      return (statusOrder[a.status] ?? 3) - (statusOrder[b.status] ?? 3)
     }
     // 同状态按时间倒序
     return new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()

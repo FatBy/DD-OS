@@ -1,56 +1,77 @@
 // ============================================
-// DD-OS 俯视角背景渲染器
-// 草地背景 + 道路网格
+// DD-OS 俯视角背景渲染器 v3
+// 简化版：纯色草地背景
 // ============================================
 
-import type { BackgroundRenderer, RenderContext } from '../types'
-import { getTileAtlas, TILE_SIZE, TILES } from './TileAtlas'
-
-const RENDER_SCALE = 3
+import type { BackgroundRenderer, RenderContext, GridPosition } from '../types'
 
 /**
- * 俯视角草地背景渲染器
+ * 俯视角背景渲染器
+ * 使用纯色渲染，不依赖瓦片图集
  */
 export class TopDownBackground implements BackgroundRenderer {
   readonly id = 'topdown-background'
 
-  private atlas = getTileAtlas()
+  /**
+   * 更新 Nexus 位置（保留接口兼容性）
+   */
+  updateNexusPositions(_positions: GridPosition[]): void {
+    // 纯色背景不需要根据 Nexus 位置变化
+  }
 
   resize(_width: number, _height: number): void {
     // 无需缓存
   }
 
   render(ctx: RenderContext): void {
-    const { ctx: c, width, height, camera } = ctx
+    const { ctx: c, width, height } = ctx
 
-    // 先填充纯色背景
-    c.fillStyle = '#7ec850'  // 草绿色
+    // 纯色草地背景
+    c.fillStyle = '#7ec850'
     c.fillRect(0, 0, width, height)
 
-    // 如果图集未加载，只显示纯色
-    if (!this.atlas.isLoaded()) return
+    // 添加一些纹理感
+    this.drawGrassPattern(c, width, height, ctx.camera)
+  }
 
-    const scale = RENDER_SCALE * camera.zoom
-    const tileSize = TILE_SIZE * scale
+  /**
+   * 绘制草地纹理图案
+   */
+  private drawGrassPattern(
+    c: CanvasRenderingContext2D,
+    width: number,
+    height: number,
+    camera: { x: number, y: number, zoom: number }
+  ): void {
+    const gridSize = 48 * camera.zoom
+    const offsetX = (camera.x * camera.zoom) % gridSize
+    const offsetY = (camera.y * camera.zoom) % gridSize
 
-    // 计算可见区域的瓦片范围
-    const offsetX = (width / 2 + camera.x * camera.zoom) % tileSize
-    const offsetY = (height / 2 + camera.y * camera.zoom) % tileSize
+    // 绘制浅色格子图案
+    c.fillStyle = 'rgba(100, 180, 60, 0.3)'
 
-    const startX = -offsetX - tileSize
-    const startY = -offsetY - tileSize
-    const cols = Math.ceil(width / tileSize) + 3
-    const rows = Math.ceil(height / tileSize) + 3
+    for (let y = -gridSize + offsetY; y < height + gridSize; y += gridSize * 2) {
+      for (let x = -gridSize + offsetX; x < width + gridSize; x += gridSize * 2) {
+        c.fillRect(x, y, gridSize, gridSize)
+        c.fillRect(x + gridSize, y + gridSize, gridSize, gridSize)
+      }
+    }
 
-    // 绘制草地瓦片
-    for (let row = 0; row < rows; row++) {
-      for (let col = 0; col < cols; col++) {
-        const x = startX + col * tileSize
-        const y = startY + row * tileSize
+    // 随机小草点缀（基于坐标的确定性随机）
+    c.fillStyle = 'rgba(60, 140, 40, 0.4)'
+    const dotSize = 4 * camera.zoom
 
-        // 交替使用两种草地瓦片增加变化
-        const variant = (col + row) % 2 === 0 ? TILES.GRASS : TILES.GRASS_DARK
-        this.atlas.drawTile(c, variant, x, y, scale)
+    for (let y = 0; y < height; y += 32) {
+      for (let x = 0; x < width; x += 32) {
+        const worldX = (x - width / 2 - camera.x * camera.zoom) / camera.zoom
+        const worldY = (y - height / 2 - camera.y * camera.zoom) / camera.zoom
+        const hash = Math.abs((Math.floor(worldX) * 73856093) ^ (Math.floor(worldY) * 19349663)) % 100
+
+        if (hash < 15) {
+          c.beginPath()
+          c.arc(x, y, dotSize, 0, Math.PI * 2)
+          c.fill()
+        }
       }
     }
   }

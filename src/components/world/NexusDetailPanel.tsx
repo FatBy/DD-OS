@@ -1,14 +1,17 @@
-import { useState, useMemo, useEffect } from 'react'
-import { motion, AnimatePresence } from 'framer-motion'
+import { useState, useMemo, useEffect, useRef } from 'react'
+import { motion, AnimatePresence, useDragControls } from 'framer-motion'
 import { 
   X, Play, Trash2, Star, Clock, Globe2, 
   ChevronDown, ChevronRight, Puzzle, Cpu,
   BookOpen, Zap, CheckCircle2, XCircle, Timer, Target, TrendingUp, AlertCircle,
-  Loader2, Pause, SkipForward, Activity, Edit2
+  Loader2, Pause, SkipForward, Activity, Edit2,
+  Send, Square, MessageSquare, ArrowLeft, GripVertical
 } from 'lucide-react'
 import { useStore } from '@/store'
 import { cn } from '@/utils/cn'
 import { useT } from '@/i18n'
+import { ChatMessage as ChatMessageComponent, StreamingMessage } from '@/components/ai/ChatMessage'
+import { ChatErrorBoundary } from '@/components/ai/ChatErrorBoundary'
 import type { NexusEntity, NexusExperience } from '@/types'
 
 // 建造总时长（与 worldSlice tickConstructionAnimations 中的 3000ms 一致）
@@ -112,11 +115,16 @@ export function NexusDetailPanel() {
   const llmConfig = useStore((s) => s.llmConfig)
   const setActiveNexus = useStore((s) => s.setActiveNexus)
   const activeNexusId = useStore((s) => s.activeNexusId)
-  const setChatOpen = useStore((s) => s.setChatOpen)
-  const addNexusActivationMessage = useStore((s) => s.addNexusActivationMessage)
   const tasks = useStore((s) => s.tasks)
   const activeExecutions = useStore((s) => s.activeExecutions)
   const worldTheme = useStore((s) => s.worldTheme)
+
+  // Nexus 独立对话 (Phase 2)
+  const sendNexusChat = useStore((s) => s.sendNexusChat)
+  const clearNexusChat = useStore((s) => s.clearNexusChat)
+  const nexusChatMap = useStore((s) => s.nexusChatMap)
+  const nexusChatStreaming = useStore((s) => s.nexusChatStreaming)
+  const nexusChatStreamContent = useStore((s) => s.nexusChatStreamContent)
   
   const [showModelConfig, setShowModelConfig] = useState(false)
   const [showSOP, setShowSOP] = useState(true)  // 默认展开 SOP
@@ -128,21 +136,27 @@ export function NexusDetailPanel() {
   // 名称编辑状态
   const [isEditingName, setIsEditingName] = useState(false)
   const [editNameValue, setEditNameValue] = useState('')
+
+  // 执行视图状态: 'info' = 详情视图, 'chat' = 对话视图
+  const [panelMode, setPanelMode] = useState<'info' | 'chat'>('info')
+  const [nexusInput, setNexusInput] = useState('')
+  const nexusMsgEndRef = useRef<HTMLDivElement>(null)
+  const nexusInputRef = useRef<HTMLTextAreaElement>(null)
+  const constraintsRef = useRef<HTMLDivElement>(null)
+  const dragControls = useDragControls()
   
   const nexus = selectedNexusForPanel ? nexuses.get(selectedNexusForPanel) : null
   
-  // Resolve all bound skills (不过滤未加载的技能，标记为 missing)
+  // Resolve all bound skills (标记未加载为 unavailable)
   const boundSkills = useMemo(() => {
     if (!nexus) return []
     const ids = nexus.boundSkillIds || nexus.skillDependencies || (nexus.boundSkillId ? [nexus.boundSkillId] : [])
     return ids.map(id => {
-      // Match by id or name
       const fromStore = skills.find(s => s.id === id || s.name === id)
       const fromOC = openClawSkills.find(s => s.name === id)
       if (fromStore) return fromStore
       if (fromOC) return { id: fromOC.name, name: fromOC.name, description: fromOC.description, status: 'active' as const, unlocked: true }
-      // 技能未加载时，标记为 missing 而不是过滤掉
-      return { id, name: id, description: '等待系统加载...', status: 'missing' as const, unlocked: false }
+      return { id, name: id, description: '', status: 'unavailable' as const, unlocked: false }
     }) as Array<{ id: string; name: string; description?: string; status: string; unlocked?: boolean }>
   }, [nexus, skills, openClawSkills])
 
@@ -179,17 +193,34 @@ export function NexusDetailPanel() {
     if (!nexusPanelOpen) {
       setIsEditingName(false)
       setEditNameValue('')
+      setPanelMode('info')
+      setNexusInput('')
     }
   }, [nexusPanelOpen])
+
+  // Nexus 对话自动滚动
+  const nexusMsgs = selectedNexusForPanel ? (nexusChatMap[selectedNexusForPanel] || []) : []
+  const isNexusStreaming = nexusChatStreaming === selectedNexusForPanel
+
+  useEffect(() => {
+    nexusMsgEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [nexusMsgs, nexusChatStreamContent])
+
+  useEffect(() => {
+    if (panelMode === 'chat') {
+      setTimeout(() => nexusInputRef.current?.focus(), 200)
+    }
+  }, [panelMode])
   
   if (!nexus) return null
   
   const archConfig = getDynamicConfig(nexus)
   const hue = archConfig.hue
   // 动态颜色样式
+  const dynamicColor = `hsl(${hue}, 80%, 70%)`
   const dynamicBg = { backgroundColor: `hsla(${hue}, 70%, 50%, 0.2)` }
   const dynamicBorder = { borderColor: `hsla(${hue}, 70%, 50%, 0.3)` }
-  const dynamicText = { color: `hsl(${hue}, 80%, 70%)` }
+  const dynamicText = { color: dynamicColor }
   const progress = xpProgress(nexus.xp, nexus.level)
   
   // 保存名称修改
@@ -222,18 +253,28 @@ export function NexusDetailPanel() {
     : { label: llmConfig.model || 'Not configured', isCustom: false }
   
   const handleExecute = () => {
-    // Activate this Nexus for the ReAct loop
-    setActiveNexus(nexus.id)
-    // Close panel and open chat for user to input their task
-    closeNexusPanel()
-    setChatOpen(true)
-    // Add activation message to chat
-    addNexusActivationMessage(nexus.label || nexus.id, nexus.flavorText)
-    // The Nexus context (SOP, constraints) will be injected automatically
+    // Phase 1+2: 切换到面板内对话视图，而不是跳到全局聊天
+    setPanelMode('chat')
+    setTimeout(() => nexusInputRef.current?.focus(), 200)
   }
 
   const handleDeactivate = () => {
     setActiveNexus(null)
+  }
+
+  // Nexus 独立对话发送
+  const handleNexusSend = () => {
+    const msg = nexusInput.trim()
+    if (!msg || isNexusStreaming || !nexus) return
+    setNexusInput('')
+    sendNexusChat(nexus.id, msg)
+  }
+
+  const handleNexusKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      handleNexusSend()
+    }
   }
   
   const handleSaveModel = () => {
@@ -266,7 +307,7 @@ export function NexusDetailPanel() {
   }
   
   const handleDelete = () => {
-    const confirmMsg = worldTheme === 'cityscape' 
+    const confirmMsg = (worldTheme === 'cityscape' || worldTheme === 'village')
       ? '确定要拆除这座建筑吗？此操作不可撤销。'
       : '确定要停用这颗星球节点吗？此操作不可撤销。'
     if (confirm(confirmMsg)) {
@@ -294,61 +335,185 @@ export function NexusDetailPanel() {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             onClick={closeNexusPanel}
-            className="fixed inset-0 bg-black/50 backdrop-blur-sm z-40"
+            className="fixed inset-0 bg-black/15 z-40"
           />
+          
+          {/* 拖动约束区域 */}
+          <div ref={constraintsRef} className="fixed inset-0 z-[49] pointer-events-none" />
           
           <motion.div
             initial={{ opacity: 0, x: 480 }}
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: 480 }}
             transition={{ type: 'spring', damping: 25, stiffness: 300 }}
-            className="fixed right-0 top-0 bottom-0 w-[480px] z-50
-                       bg-slate-950/95 backdrop-blur-xl border-l border-white/10
+            drag
+            dragControls={dragControls}
+            dragConstraints={constraintsRef}
+            dragElastic={0.05}
+            dragMomentum={false}
+            className="fixed right-4 top-4 bottom-4 w-[480px] z-50
+                       bg-slate-950/95 backdrop-blur-xl border border-white/10
+                       rounded-2xl
                        flex flex-col overflow-hidden
-                       shadow-[-20px_0_60px_rgba(0,0,0,0.6)]"
+                       shadow-[-20px_0_60px_rgba(0,0,0,0.6)]
+                       pointer-events-auto"
           >
-            {/* Header */}
-            <div className="flex items-center justify-between px-6 py-4 border-b border-white/10 bg-white/[0.02]">
+            {/* Header - 可拖动区域 */}
+            <div 
+              className="flex items-center justify-between px-6 py-4 border-b border-white/10 bg-white/[0.02] cursor-grab active:cursor-grabbing"
+              onPointerDown={(e) => dragControls.start(e)}
+            >
               <div className="flex items-center gap-3">
-                <Globe2 className="w-5 h-5" style={dynamicText} />
-                <div>
-                  {/* 名称编辑 */}
-                  <div className="flex items-center gap-2 group">
-                    {isEditingName ? (
-                      <input 
-                        autoFocus
-                        className="bg-black/40 text-white/90 px-2 py-1 rounded border border-white/20 outline-none font-mono text-base font-semibold w-48 uppercase tracking-wide"
-                        value={editNameValue}
-                        onChange={e => setEditNameValue(e.target.value)}
-                        onKeyDown={e => e.key === 'Enter' && handleSaveName()}
-                        onBlur={handleSaveName}
-                      />
-                    ) : (
-                      <>
-                        <h2 className="font-mono text-base font-semibold text-white/90 tracking-wide uppercase">
-                          {nexus.label || `Node-${nexus.id.slice(-6)}`}
-                        </h2>
-                        <button 
-                          onClick={() => { setIsEditingName(true); setEditNameValue(nexus.label || nexus.id) }}
-                          className="opacity-0 group-hover:opacity-100 p-1 text-white/40 hover:text-white/80 transition-opacity rounded hover:bg-white/10"
-                          title="编辑名称"
-                        >
-                          <Edit2 className="w-3.5 h-3.5" />
-                        </button>
-                      </>
-                    )}
-                  </div>
-                  <p className="text-xs font-mono text-white/40 mt-0.5">
-                    LV.{nexus.level} {nexus.label || 'Nexus'}
-                  </p>
-                </div>
+                {panelMode === 'chat' ? (
+                  <>
+                    <button
+                      onClick={() => setPanelMode('info')}
+                      className="p-1 text-white/40 hover:text-white/70 transition-colors rounded hover:bg-white/10"
+                    >
+                      <ArrowLeft className="w-4 h-4" />
+                    </button>
+                    <div>
+                      <h2 className="font-mono text-sm font-semibold text-white/90 tracking-wide uppercase flex items-center gap-2">
+                        <MessageSquare className="w-4 h-4" style={dynamicText} />
+                        {nexus.label || `Node-${nexus.id.slice(-6)}`}
+                      </h2>
+                      <p className="text-[11px] font-mono text-white/30 mt-0.5">
+                        {isNexusStreaming ? '执行中...' : `${nexusMsgs.filter(m => m.role !== 'system').length} 条消息`}
+                      </p>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <GripVertical className="w-4 h-4 text-white/20" />
+                    <Globe2 className="w-5 h-5" style={dynamicText} />
+                    <div>
+                      {/* 名称编辑 */}
+                      <div className="flex items-center gap-2 group">
+                        {isEditingName ? (
+                          <input 
+                            autoFocus
+                            className="bg-black/40 text-white/90 px-2 py-1 rounded border border-white/20 outline-none font-mono text-base font-semibold w-48 uppercase tracking-wide"
+                            value={editNameValue}
+                            onChange={e => setEditNameValue(e.target.value)}
+                            onKeyDown={e => e.key === 'Enter' && handleSaveName()}
+                            onBlur={handleSaveName}
+                          />
+                        ) : (
+                          <>
+                            <h2 className="font-mono text-base font-semibold text-white/90 tracking-wide uppercase">
+                              {nexus.label || `Node-${nexus.id.slice(-6)}`}
+                            </h2>
+                            <button 
+                              onClick={() => { setIsEditingName(true); setEditNameValue(nexus.label || nexus.id) }}
+                              className="opacity-0 group-hover:opacity-100 p-1 text-white/40 hover:text-white/80 transition-opacity rounded hover:bg-white/10"
+                              title="编辑名称"
+                            >
+                              <Edit2 className="w-3.5 h-3.5" />
+                            </button>
+                          </>
+                        )}
+                      </div>
+                      <p className="text-xs font-mono text-white/40 mt-0.5">
+                        LV.{nexus.level} {nexus.label || 'Nexus'}
+                      </p>
+                    </div>
+                  </>
+                )}
               </div>
-              <button onClick={closeNexusPanel} className="p-1.5 text-white/30 hover:text-white/60 transition-colors">
-                <X className="w-5 h-5" />
-              </button>
+              <div className="flex items-center gap-1">
+                {panelMode === 'chat' && nexusMsgs.length > 0 && (
+                  <button
+                    onClick={() => nexus && clearNexusChat(nexus.id)}
+                    className="p-1.5 text-white/25 hover:text-red-400 transition-colors"
+                    title="清空对话"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                )}
+                <button onClick={closeNexusPanel} className="p-1.5 text-white/30 hover:text-white/60 transition-colors">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
             </div>
             
-            {/* Content */}
+            {/* Content: 根据 panelMode 切换 info / chat */}
+            {panelMode === 'chat' ? (
+              /* ====== 对话视图 ====== */
+              <>
+                <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                  <ChatErrorBoundary onReset={() => nexus && clearNexusChat(nexus.id)}>
+                    {nexusMsgs.length === 0 && !isNexusStreaming ? (
+                      <div className="flex flex-col items-center justify-center h-full text-center">
+                        <MessageSquare className="w-10 h-10 text-white/10 mb-3" />
+                        <p className="text-sm font-mono text-white/40 mb-2">
+                          输入任务，{nexus.label || 'Nexus'} 将按 SOP 执行
+                        </p>
+                        {nexus.flavorText && (
+                          <p className="text-xs font-mono text-white/25 italic">
+                            "{nexus.flavorText}"
+                          </p>
+                        )}
+                      </div>
+                    ) : (
+                      <>
+                        {nexusMsgs.filter(m => m.role !== 'system').map((msg) => (
+                          <ChatMessageComponent key={msg.id} message={msg} />
+                        ))}
+                        {isNexusStreaming && nexusChatStreamContent && (
+                          <StreamingMessage content={nexusChatStreamContent} />
+                        )}
+                      </>
+                    )}
+                    <div ref={nexusMsgEndRef} />
+                  </ChatErrorBoundary>
+                </div>
+                
+                {/* Nexus 输入框 */}
+                <div className="px-4 py-3 border-t border-white/10 bg-black/20">
+                  <div className="flex gap-2">
+                    <textarea
+                      ref={nexusInputRef}
+                      value={nexusInput}
+                      onChange={(e) => setNexusInput(e.target.value)}
+                      onKeyDown={handleNexusKeyDown}
+                      placeholder={`对 ${nexus.label || 'Nexus'} 说...`}
+                      disabled={isNexusStreaming}
+                      rows={1}
+                      className="flex-1 px-3 py-2 bg-white/5 border border-white/10 rounded-lg 
+                                 text-sm font-mono text-white/80 placeholder-white/25
+                                 focus:border-white/25 focus:outline-none
+                                 disabled:opacity-50 resize-none min-h-[40px] max-h-[100px]"
+                    />
+                    {isNexusStreaming ? (
+                      <button
+                        onClick={() => {/* TODO: abort nexus chat */}}
+                        className="px-3 py-2 bg-red-500/20 border border-red-500/30 rounded-lg 
+                                   text-red-400 hover:bg-red-500/30 transition-colors self-end"
+                      >
+                        <Square className="w-4 h-4" />
+                      </button>
+                    ) : (
+                      <button
+                        onClick={handleNexusSend}
+                        disabled={!nexusInput.trim()}
+                        className="px-3 py-2 rounded-lg transition-colors self-end
+                                   disabled:opacity-30 disabled:cursor-not-allowed"
+                        style={{
+                          backgroundColor: `${dynamicColor}20`,
+                          borderWidth: 1,
+                          borderColor: `${dynamicColor}40`,
+                          color: dynamicColor,
+                        }}
+                      >
+                        <Send className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </>
+            ) : (
+            /* ====== 详情视图 (原有内容) ====== */
+            <>
             <div className="flex-1 overflow-y-auto p-6 space-y-5">
               
               {/* === 建造中状态 === */}
@@ -431,8 +596,8 @@ export function NexusDetailPanel() {
               {/* Planet preview + level */}
               <div className="flex items-center gap-4">
                 <PlanetPreview 
-                  hue={nexus.visualDNA.primaryHue}
-                  accentHue={nexus.visualDNA.accentHue}
+                  hue={nexus.visualDNA?.primaryHue ?? 180}
+                  accentHue={nexus.visualDNA?.accentHue ?? 240}
                   level={nexus.level}
                 />
                 <div className="flex-1 space-y-2">
@@ -490,6 +655,13 @@ export function NexusDetailPanel() {
                   {canExecute ? 'Execute' : 'No Skills Bound'}
                 </span>
               </button>
+
+              {/* 一句话介绍 */}
+              {nexus.flavorText && (
+                <p className="text-sm font-mono text-white/40 text-center leading-relaxed -mt-2">
+                  {nexus.flavorText}
+                </p>
+              )}
               
               {/* ==================== Bound Skills ==================== */}
               <div className="p-5 rounded-xl bg-white/[0.03] border border-white/[0.06]">
@@ -600,7 +772,7 @@ export function NexusDetailPanel() {
               )}
 
               {/* ==================== Task Execution Progress ==================== */}
-              {activeTask?.taskPlan && (
+              {activeTask?.taskPlan && activeTask.taskPlan.subTasks && (
                 <div className="p-5 rounded-xl bg-cyan-500/5 border border-cyan-500/20">
                   <div className="flex items-center gap-2 mb-3">
                     <Activity className="w-4 h-4 text-cyan-400 animate-pulse" />
@@ -608,7 +780,7 @@ export function NexusDetailPanel() {
                       Task Execution
                     </span>
                     <span className="ml-auto text-xs font-mono text-white/30">
-                      {activeTask.taskPlan.subTasks.filter(t => t.status === 'done').length}/{activeTask.taskPlan.subTasks.length}
+                      {(activeTask.taskPlan.subTasks || []).filter(t => t.status === 'done').length}/{(activeTask.taskPlan.subTasks || []).length}
                     </span>
                   </div>
                   
@@ -907,6 +1079,8 @@ export function NexusDetailPanel() {
                 Decommission Node
               </button>
             </div>
+            </>
+            )}
           </motion.div>
         </>
       )}

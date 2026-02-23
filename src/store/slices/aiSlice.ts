@@ -7,6 +7,10 @@ import { localClawService } from '@/services/LocalClawService'
 // 摘要缓存时间 (5分钟)
 const SUMMARY_CACHE_MS = 5 * 60 * 1000
 
+// 内存限制常量 - 防止 OOM
+const MAX_CHAT_MESSAGES = 100        // 主聊天最多保留 100 条消息
+const MAX_NEXUS_MESSAGES = 50        // 每个 Nexus 对话最多保留 50 条消息
+
 // LocalStorage 键名
 const STORAGE_KEYS = {
   CHAT_HISTORY: 'ddos_chat_history',
@@ -94,10 +98,22 @@ export interface AiSlice {
 
   // 冒险日志生成
   generateJournal: (memories: MemoryEntry[]) => Promise<void>
+  generateSilentJournal: () => Promise<void>
 
   // 聊天面板开关
   isChatOpen: boolean
   setChatOpen: (open: boolean) => void
+
+  // ============================================
+  // Nexus 独立对话 (Phase 2: 按 Nexus 隔离)
+  // ============================================
+  nexusChatMap: Record<string, ChatMessage[]>
+  nexusChatStreaming: string | null  // 当前正在流式输出的 nexusId
+  nexusChatStreamContent: string
+  nexusChatError: string | null
+  sendNexusChat: (nexusId: string, message: string) => Promise<void>
+  clearNexusChat: (nexusId: string) => void
+  getNexusChatMessages: (nexusId: string) => ChatMessage[]
 }
 
 export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) => ({
@@ -115,6 +131,191 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
   // 聊天面板开关
   isChatOpen: false,
   setChatOpen: (open) => set({ isChatOpen: open }),
+
+  // ============================================
+  // Nexus 独立对话 (Phase 2)
+  // ============================================
+  nexusChatMap: {},
+  nexusChatStreaming: null,
+  nexusChatStreamContent: '',
+  nexusChatError: null,
+
+  getNexusChatMessages: (nexusId) => {
+    return get().nexusChatMap[nexusId] || []
+  },
+
+  clearNexusChat: (nexusId) => {
+    set((state) => {
+      const newMap = { ...state.nexusChatMap }
+      delete newMap[nexusId]
+      return { nexusChatMap: newMap }
+    })
+  },
+
+  sendNexusChat: async (nexusId, message) => {
+    if (!isLLMConfigured()) return
+
+    // 用户消息
+    const userMsg: ChatMessage = {
+      id: `nexus-user-${Date.now()}`,
+      role: 'user',
+      content: message,
+      timestamp: Date.now(),
+    }
+
+    set((state) => {
+      const prev = state.nexusChatMap[nexusId] || []
+      return {
+        nexusChatMap: { ...state.nexusChatMap, [nexusId]: [...prev, userMsg].slice(-MAX_NEXUS_MESSAGES) },
+        nexusChatStreaming: nexusId,
+        nexusChatStreamContent: '',
+        nexusChatError: null,
+      }
+    })
+
+    try {
+      const fullState = get() as any
+      const connectionMode = fullState.connectionMode || 'native'
+      const connectionStatus = fullState.connectionStatus || 'disconnected'
+      const isNativeConnected = connectionMode === 'native' && connectionStatus === 'connected'
+
+      if (isNativeConnected) {
+        // Native 模式: 走 Quest ReAct 循环
+        const execId = `nexus-exec-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+        const execStartTime = Date.now()
+
+        // 占位消息
+        const placeholderMsg: ChatMessage = {
+          id: execId,
+          role: 'assistant',
+          content: '',
+          timestamp: Date.now(),
+          execution: { id: execId, status: 'running', timestamp: Date.now() },
+        }
+        set((state) => {
+          const prev = state.nexusChatMap[nexusId] || []
+          return {
+            nexusChatMap: { ...state.nexusChatMap, [nexusId]: [...prev, placeholderMsg].slice(-MAX_NEXUS_MESSAGES) },
+          }
+        })
+
+        // 激活 Nexus 并执行
+        fullState.setActiveNexus?.(nexusId)
+        fullState.startNexusExecution?.(nexusId)
+
+        // 创建实时任务
+        fullState.addActiveExecution?.({
+          id: execId,
+          title: message.slice(0, 50),
+          description: message,
+          status: 'executing',
+          priority: 'high',
+          timestamp: new Date().toISOString(),
+          executionSteps: [],
+          taskPlan: { nexusId },
+        })
+
+        try {
+          const result = await localClawService.sendMessageWithQuestPlan(
+            message,
+            nexusId,
+            (step) => {
+              fullState.appendExecutionStep?.(execId, step)
+            }
+          )
+
+          const execDuration = Date.now() - execStartTime
+
+          // 替换占位消息为最终结果
+          set((state) => {
+            const msgs = (state.nexusChatMap[nexusId] || []).map(m =>
+              m.id === execId ? { ...m, content: result, execution: undefined } : m
+            )
+            return {
+              nexusChatMap: { ...state.nexusChatMap, [nexusId]: msgs },
+              nexusChatStreaming: null,
+              nexusChatStreamContent: '',
+            }
+          })
+
+          fullState.updateActiveExecution?.(execId, {
+            status: 'done',
+            executionOutput: result,
+            executionDuration: execDuration,
+          })
+          fullState.completeNexusExecution?.(nexusId, { status: 'success', output: result.slice(0, 200) })
+
+        } catch (err: any) {
+          const execDuration = Date.now() - execStartTime
+          set((state) => {
+            const msgs = (state.nexusChatMap[nexusId] || []).map(m =>
+              m.id === execId ? { ...m, content: `执行失败: ${err.message}`, error: true, execution: undefined } : m
+            )
+            return {
+              nexusChatMap: { ...state.nexusChatMap, [nexusId]: msgs },
+              nexusChatStreaming: null,
+              nexusChatStreamContent: '',
+              nexusChatError: err.message,
+            }
+          })
+          fullState.updateActiveExecution?.(execId, {
+            status: 'done',
+            executionError: err.message,
+            executionDuration: execDuration,
+          })
+          fullState.completeNexusExecution?.(nexusId, { status: 'error', error: err.message })
+        }
+
+      } else {
+        // 非 Native 模式: 使用 streamChat 进行前端 LLM 对话
+        const storeData = {
+          tasks: fullState.tasks || [],
+          skills: fullState.skills || [],
+          memories: fullState.memories || [],
+          soulCoreTruths: fullState.soulCoreTruths || [],
+          soulBoundaries: fullState.soulBoundaries || [],
+          soulVibeStatement: fullState.soulVibeStatement || '',
+          soulRawContent: fullState.soulRawContent || '',
+          connectionStatus: fullState.connectionStatus || 'disconnected',
+        }
+
+        const nexusMsgs = get().nexusChatMap[nexusId] || []
+        const messages = buildChatMessages('world', storeData, nexusMsgs, message)
+
+        let fullContent = ''
+        await streamChat(
+          messages,
+          (chunk) => {
+            fullContent += chunk
+            set({ nexusChatStreamContent: fullContent })
+          },
+        )
+
+        const assistantMsg: ChatMessage = {
+          id: `nexus-assistant-${Date.now()}`,
+          role: 'assistant',
+          content: fullContent,
+          timestamp: Date.now(),
+        }
+
+        set((state) => {
+          const prev = state.nexusChatMap[nexusId] || []
+          return {
+            nexusChatMap: { ...state.nexusChatMap, [nexusId]: [...prev, assistantMsg].slice(-MAX_NEXUS_MESSAGES) },
+            nexusChatStreaming: null,
+            nexusChatStreamContent: '',
+          }
+        })
+      }
+
+    } catch (err: any) {
+      set({
+        nexusChatStreaming: null,
+        nexusChatStreamContent: '',
+        nexusChatError: err.message,
+      })
+    }
+  },
 
   setLlmConfig: (config) => {
     saveLLMConfig(config)
@@ -205,7 +406,7 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
     }
 
     set((state) => ({
-      chatMessages: [...state.chatMessages, userMsg],
+      chatMessages: [...state.chatMessages, userMsg].slice(-MAX_CHAT_MESSAGES),
       chatStreaming: true,
       chatStreamContent: '',
       chatError: null,
@@ -235,7 +436,7 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
           execution: { id: execId, status: 'running', timestamp: Date.now() },
         }
         set((s) => ({
-          chatMessages: [...s.chatMessages, placeholderMsg],
+          chatMessages: [...s.chatMessages, placeholderMsg].slice(-MAX_CHAT_MESSAGES),
           chatStreaming: true,
           chatStreamContent: '',
           executionStatuses: { ...s.executionStatuses, [execId]: placeholderMsg.execution! },
@@ -441,7 +642,7 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
       }
 
       set((state) => ({
-        chatMessages: [...state.chatMessages, assistantMsg],
+        chatMessages: [...state.chatMessages, assistantMsg].slice(-MAX_CHAT_MESSAGES),
         chatStreaming: false,
         chatStreamContent: '',
         _chatAbort: null,
@@ -480,7 +681,7 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
               },
             }
             set((state) => ({
-              chatMessages: [...state.chatMessages, suggestionMsg],
+              chatMessages: [...state.chatMessages, suggestionMsg].slice(-MAX_CHAT_MESSAGES),
             }))
             continue
           }
@@ -498,7 +699,7 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
             },
           }
           set((state) => ({
-            chatMessages: [...state.chatMessages, execMsg],
+            chatMessages: [...state.chatMessages, execMsg].slice(-MAX_CHAT_MESSAGES),
             executionStatuses: { 
               ...state.executionStatuses, 
               [execId]: execMsg.execution! 
@@ -573,7 +774,7 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
             timestamp: Date.now(),
           }
           set((state) => ({
-            chatMessages: [...state.chatMessages, assistantMsg],
+            chatMessages: [...state.chatMessages, assistantMsg].slice(-MAX_CHAT_MESSAGES),
             chatStreaming: false,
             chatStreamContent: '',
             _chatAbort: null,
@@ -615,7 +816,7 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
       timestamp: Date.now(),
     }
     set((state) => ({
-      chatMessages: [...state.chatMessages, systemMsg],
+      chatMessages: [...state.chatMessages, systemMsg].slice(-MAX_CHAT_MESSAGES),
     }))
   },
 
@@ -745,6 +946,79 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
       fullState.setJournalEntries?.(entries)
     } catch (err) {
       console.error('[Journal] Generation failed:', err)
+    } finally {
+      fullState.setJournalLoading?.(false)
+    }
+  },
+
+  // ============================================
+  // 静默日志生成 (每日自动触发)
+  // ============================================
+  generateSilentJournal: async () => {
+    const fullState = get() as any
+
+    // 1. 从 localStorage 加载缓存的日志条目
+    const CACHE_KEY = 'ddos_journal_entries'
+    let cached: JournalEntry[] = []
+    try {
+      const raw = localStorage.getItem(CACHE_KEY)
+      if (raw) cached = JSON.parse(raw)
+    } catch {}
+
+    // 如果 state 中没有条目但缓存中有，先同步缓存
+    if (cached.length > 0 && (fullState.journalEntries || []).length === 0) {
+      fullState.setJournalEntries?.(cached)
+    }
+
+    // 2. 检查今天的日志是否已存在
+    const today = new Date().toLocaleDateString('sv-SE')
+    const existingEntries: JournalEntry[] = cached.length > 0 ? cached : (fullState.journalEntries || [])
+    if (existingEntries.some((e: JournalEntry) => e.date === today)) {
+      return // 今天已有日志
+    }
+
+    // 3. 检查生成条件
+    if (!isLLMConfigured()) return
+    const memories: MemoryEntry[] = fullState.memories || []
+    if (memories.length === 0) return
+    if (fullState.journalLoading) return
+
+    // 4. 收集今天的记忆
+    const todayMemories = memories.filter((m: MemoryEntry) => {
+      try {
+        return new Date(m.timestamp).toLocaleDateString('sv-SE') === today
+      } catch { return false }
+    })
+    if (todayMemories.length === 0) return
+
+    // 5. 静默生成
+    fullState.setJournalLoading?.(true)
+    try {
+      const messages = buildJournalPrompt(today, todayMemories)
+      const response = await chat(messages)
+      const result = parseJournalResult(response)
+
+      const newEntry: JournalEntry = {
+        id: `journal-${today}`,
+        date: today,
+        title: result.title,
+        narrative: result.narrative,
+        mood: result.mood,
+        keyFacts: result.keyFacts,
+        memoryCount: todayMemories.length,
+        generatedAt: Date.now(),
+      }
+
+      const updatedEntries = [...cached.filter((e: JournalEntry) => e.date !== today), newEntry]
+      updatedEntries.sort((a: JournalEntry, b: JournalEntry) => b.date.localeCompare(a.date))
+
+      try {
+        localStorage.setItem(CACHE_KEY, JSON.stringify(updatedEntries.slice(0, 30)))
+      } catch {}
+
+      fullState.setJournalEntries?.(updatedEntries)
+    } catch (err) {
+      console.warn('[Journal] Silent generation failed:', err)
     } finally {
       fullState.setJournalLoading?.(false)
     }

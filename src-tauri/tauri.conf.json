@@ -42,6 +42,15 @@
       "wix": {
         "language": ["zh-CN", "en-US"]
       }
+    },
+    "ios": {
+      "developmentTeam": "$DEVELOPMENT_TEAM",
+      "provisioningProfile": "$PROVISIONING_PROFILE",
+      "entitlements": {
+        "com.apple.security.app-sandbox": true,
+        "com.apple.security.network.client": true,
+        "com.apple.security.files.user-selected.read-write": true
+      }
     }
   }
 }

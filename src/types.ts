@@ -36,7 +36,7 @@ export interface TaskItem {
   id: string
   title: string
   description: string
-  status: 'pending' | 'executing' | 'done'
+  status: 'pending' | 'executing' | 'done' | 'terminated'
   priority: 'high' | 'medium' | 'low'
   timestamp: string
   // 原始数据引用

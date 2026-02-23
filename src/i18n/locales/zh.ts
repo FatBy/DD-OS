@@ -41,7 +41,9 @@ const zh = {
   'settings.world_cosmos': '宇宙',
   'settings.world_cosmos_desc': '深空星球',
   'settings.world_cityscape': '城市',
-  'settings.world_cityscape_desc': '赛博建筑',
+  'settings.world_cityscape_desc': '等轴测城市',
+  'settings.world_village': '村庄',
+  'settings.world_village_desc': '俯视角村落',
   'settings.world_minimalist': '极简',
   'settings.world_minimalist_desc': '治愈积木',
   'settings.world_wildlife': '生态',
@@ -92,7 +94,13 @@ const zh = {
   'memory.conversations': '条对话',
   'memory.llm_not_configured': 'AI 未配置 - 前往设置配置 LLM API 以启用冒险日志自动生成',
   'memory.llm_hint': '需要在设置中配置 LLM API 才能生成日志',
-  'memory.instructions': '点击「生成日志」将对话转化为冒险故事，点击卡片查看完整内容。',
+  'memory.instructions': '日志将在有新对话后自动生成，点击左侧时间线查看历史日志。',
+  'memory.chronicle': '编年史',
+  'memory.geek_mode': '极客模式',
+  'memory.no_journal_today': '今日尚无冒险日志',
+  'memory.auto_generate_hint': '有新对话后将自动生成',
+  'memory.auto_generating': '自动生成中...',
+  'memory.no_raw_data': '无原始数据',
 
   // ---- 任务 ----
   'task.pending': '待处理',
@@ -229,6 +237,7 @@ const zh = {
   'nexus.deactivate': '停用',
   'nexus.sop': 'SOP',
   'nexus.sop_hint': '定制化系统提示词',
+  'nexus.create_new': '创建新 Nexus',
 
   // ---- 通用 ----
   'common.loading': '加载中...',

@@ -232,7 +232,6 @@ function App() {
     }
   }, [])
 
-  const isChatOpen = useStore((s) => s.isChatOpen)
   const initTheme = useStore((s) => s.initTheme)
   const worldTheme = useStore((s) => s.worldTheme)
 
@@ -244,48 +243,40 @@ function App() {
   // 根据 worldTheme 切换 CSS 主题类
   useEffect(() => {
     const root = document.documentElement
+    root.classList.remove('theme-cityscape', 'theme-village')
     if (worldTheme === 'cityscape') {
       root.classList.add('theme-cityscape')
-    } else {
-      root.classList.remove('theme-cityscape')
+    } else if (worldTheme === 'village') {
+      root.classList.add('theme-village')
     }
   }, [worldTheme])
 
-  // 聊天面板开关时触发 resize，让 Canvas 重新计算尺寸
-  useEffect(() => {
-    // 动画过程中多次触发 resize，确保 Canvas 平滑适应
-    const timers = [100, 300, 500].map(ms =>
-      setTimeout(() => window.dispatchEvent(new Event('resize')), ms)
-    )
-    return () => timers.forEach(clearTimeout)
-  }, [isChatOpen])
-
   return (
     <div className="flex w-screen h-screen overflow-hidden bg-skin-bg-primary text-skin-text-primary">
-      {/* Main content area */}
-      <div className="relative flex-1 min-w-0 h-full overflow-hidden">
-      {/* Background layer: always present */}
-      <ErrorBoundary>
-        <WorldView />
-      </ErrorBoundary>
-
-      {/* Content layer: active house */}
-      <AnimatePresence mode="wait">
-        {currentView !== 'world' && currentHouse && (
-          <HouseContainer key={currentView} house={currentHouse}>
-            <currentHouse.component />
-          </HouseContainer>
-        )}
-      </AnimatePresence>
-
-      {/* Navigation layer: Dock */}
+      {/* 左侧导航栏 */}
       <Dock />
 
-      {/* Connection control panel */}
-      <ConnectionPanel />
+      {/* 主内容区域 */}
+      <div className="relative flex-1 min-w-0 h-full overflow-hidden">
+        {/* Background layer: always present */}
+        <ErrorBoundary>
+          <WorldView />
+        </ErrorBoundary>
+
+        {/* Content layer: active house */}
+        <AnimatePresence mode="wait">
+          {currentView !== 'world' && currentHouse && (
+            <HouseContainer key={currentView} house={currentHouse}>
+              <currentHouse.component />
+            </HouseContainer>
+          )}
+        </AnimatePresence>
+
+        {/* Connection control panel */}
+        <ConnectionPanel />
       </div>
 
-      {/* AI Chat panel - flex sibling */}
+      {/* AI Chat panel - 居中弹出覆盖层 */}
       <AIChatPanel />
 
       {/* Observer: Nexus build proposal modal */}

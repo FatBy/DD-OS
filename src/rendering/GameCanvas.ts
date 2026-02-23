@@ -11,16 +11,21 @@ import type {
   Point,
 } from './types'
 import { RendererRegistry } from './RendererRegistry'
-import { createCosmosRenderers, createCityscapeRenderers, createMinimalistRenderers } from './index'
+import { createCosmosRenderers, createCityscapeRenderers, createVillageRenderers, createMinimalistRenderers } from './index'
 import { worldToScreen as wts, screenToWorld as stw } from './utils/coordinateTransforms'
 import { PlanetRenderer } from './entities/PlanetRenderer'
 import { BuildingRenderer } from './entities/BuildingRenderer'
 import { BlockRenderer } from './entities/BlockRenderer'
 import { TopDownBuildingRenderer } from './topdown/TopDownBuildingRenderer'
+import { IsometricBuildingRenderer } from './isometric/IsometricBuildingRenderer'
 import { CosmosRippleRenderer } from './backgrounds/CosmosRipple'
 
 // 俯视角瓦片尺寸 (16px * 3 scale)
 const TOPDOWN_TILE_SIZE = 48
+
+// 等轴测瓦片尺寸
+const ISO_TILE_W = 132
+const ISO_TILE_H = 101
 
 // 默认调色板 (保持原有配色)
 const DEFAULT_PALETTE: CanvasPalette = {
@@ -65,6 +70,7 @@ export class GameCanvas {
     this.registry = new RendererRegistry()
     this.registry.register('cosmos', createCosmosRenderers())
     this.registry.register('cityscape', createCityscapeRenderers())
+    this.registry.register('village', createVillageRenderers())
     this.registry.register('minimalist', createMinimalistRenderers())
     this.registry.setTheme('cosmos')
 
@@ -150,6 +156,14 @@ export class GameCanvas {
       )
     }
     
+    const isoRenderer = this.getIsometricBuildingRenderer()
+    if (isoRenderer) {
+      isoRenderer.setExecutionState(
+        state.executingNexusId ?? null,
+        state.executionStartTime ?? null,
+      )
+    }
+    
     // 更新涟漪渲染器的核心状态
     const rippleRenderer = this.getRippleRenderer()
     if (rippleRenderer && state.energyCore) {
@@ -197,7 +211,7 @@ export class GameCanvas {
   // ---- Coordinate Transforms ----
 
   /**
-   * 俯视角坐标转换 (正方形网格)
+   * 俯视角坐标转换 (正方形网格) - village 主题
    */
   private topDownWorldToScreen(gridX: number, gridY: number, camera: CameraState): Point {
     const w = this.canvas.clientWidth
@@ -209,19 +223,35 @@ export class GameCanvas {
     }
   }
 
+  /**
+   * 等轴测坐标转换 (菱形网格) - cityscape 主题
+   */
+  private isoWorldToScreen(gridX: number, gridY: number, camera: CameraState): Point {
+    const w = this.canvas.clientWidth
+    const h = this.canvas.clientHeight
+    const tileW = ISO_TILE_W * camera.zoom * 0.5
+    const tileH = ISO_TILE_H * camera.zoom * 0.5
+    return {
+      x: w / 2 + (gridX - gridY) * tileW * 0.5 + camera.x * camera.zoom,
+      y: h / 2 + (gridX + gridY) * tileH * 0.5 + camera.y * camera.zoom,
+    }
+  }
+
   worldToScreen(gridX: number, gridY: number, camera: CameraState): Point {
-    // 俯视角主题使用正方形网格
     const theme = this.registry.getCurrentTheme()
-    if (theme === 'cityscape') {
+    if (theme === 'village') {
       return this.topDownWorldToScreen(gridX, gridY, camera)
     }
-    // 等距主题使用菱形网格
+    if (theme === 'cityscape') {
+      return this.isoWorldToScreen(gridX, gridY, camera)
+    }
+    // cosmos/minimalist 使用默认菱形网格
     return wts(gridX, gridY, camera, this.canvas.clientWidth, this.canvas.clientHeight)
   }
 
   screenToWorld(screenX: number, screenY: number, camera: CameraState): { gridX: number; gridY: number } {
     const theme = this.registry.getCurrentTheme()
-    if (theme === 'cityscape') {
+    if (theme === 'village') {
       // 俯视角逆转换
       const w = this.canvas.clientWidth
       const h = this.canvas.clientHeight
@@ -229,6 +259,19 @@ export class GameCanvas {
       return {
         gridX: Math.round((screenX - w / 2 - camera.x * camera.zoom) / tileSize),
         gridY: Math.round((screenY - h / 2 - camera.y * camera.zoom) / tileSize),
+      }
+    }
+    if (theme === 'cityscape') {
+      // 等轴测逆转换
+      const w = this.canvas.clientWidth
+      const h = this.canvas.clientHeight
+      const tileW = ISO_TILE_W * camera.zoom * 0.5
+      const tileH = ISO_TILE_H * camera.zoom * 0.5
+      const sx = (screenX - w / 2 - camera.x * camera.zoom)
+      const sy = (screenY - h / 2 - camera.y * camera.zoom)
+      return {
+        gridX: Math.round(sx / tileW + sy / tileH),
+        gridY: Math.round(sy / tileH - sx / tileW),
       }
     }
     return stw(screenX, screenY, camera, this.canvas.clientWidth, this.canvas.clientHeight)
@@ -282,6 +325,13 @@ export class GameCanvas {
     if (!renderers) return null
     const building = renderers.entities.find(e => e.id === 'topdown-building-renderer')
     return building as TopDownBuildingRenderer | null
+  }
+
+  private getIsometricBuildingRenderer(): IsometricBuildingRenderer | null {
+    const renderers = this.registry.getCurrent()
+    if (!renderers) return null
+    const building = renderers.entities.find(e => e.id === 'isometric-building-renderer')
+    return building as IsometricBuildingRenderer | null
   }
 
   private getRippleRenderer(): CosmosRippleRenderer | null {

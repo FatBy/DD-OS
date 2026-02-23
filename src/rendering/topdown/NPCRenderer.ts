@@ -1,5 +1,5 @@
 // ============================================
-// DD-OS 俯视角小人漫游动画
+// DD-OS 俯视角 NPC 漫游动画 v2
 // NPC 在道路上随机行走
 // ============================================
 
@@ -8,8 +8,8 @@ import { getTileAtlas, TILE_SIZE } from './TileAtlas'
 
 const RENDER_SCALE = 3
 const NPC_COUNT = 5  // 同屏小人数量
-const WALK_SPEED = 0.02  // 移动速度 (格/帧)
-const ANIM_SPEED = 150  // 动画帧间隔 (ms)
+const WALK_SPEED = 0.015  // 移动速度 (格/帧)
+const ANIM_SPEED = 180  // 动画帧间隔 (ms)
 
 type Direction = 'up' | 'down' | 'left' | 'right'
 
@@ -21,19 +21,12 @@ interface NPC {
   targetY: number
   direction: Direction
   frame: number   // 动画帧 (0-3)
-  charType: number  // 角色类型 (0-5)
+  charVariant: number  // 角色外观变体 (0-2)
   lastFrameTime: number
 }
 
-// 角色动画帧位置 (tilemap 右侧)
-// 保留以备后续扩展使用
-// const CHAR_FRAMES: Record<Direction, { col: number, rows: number[] }> = {
-//   down:  { col: 24, rows: [0, 1, 2, 3, 4, 5] },
-//   ...
-// }
-
 /**
- * 小人漫游渲染器
+ * NPC 漫游渲染器
  */
 export class NPCRenderer implements ParticleRenderer {
   readonly id = 'npc-renderer'
@@ -52,15 +45,23 @@ export class NPCRenderer implements ParticleRenderer {
    */
   setRoadPositions(positions: GridPosition[]): void {
     this.roadPositions = positions
-    if (positions.length > 0 && !this.initialized) {
+    
+    // 只在有足够道路时初始化 NPC
+    if (positions.length >= 3 && !this.initialized) {
       this.initNPCs()
       this.initialized = true
+    } else if (positions.length < 3) {
+      // 道路太少，清除 NPC
+      this.npcs = []
+      this.initialized = false
     }
   }
 
   private initNPCs(): void {
     this.npcs = []
-    for (let i = 0; i < NPC_COUNT; i++) {
+    const count = Math.min(NPC_COUNT, Math.floor(this.roadPositions.length / 2))
+    
+    for (let i = 0; i < count; i++) {
       const pos = this.randomRoadPosition()
       this.npcs.push({
         id: i,
@@ -70,7 +71,7 @@ export class NPCRenderer implements ParticleRenderer {
         targetY: pos.gridY,
         direction: 'down',
         frame: 0,
-        charType: i % 6,  // 6 种角色外观
+        charVariant: i % 3,  // 3 种角色外观
         lastFrameTime: 0,
       })
     }
@@ -146,12 +147,16 @@ export class NPCRenderer implements ParticleRenderer {
       }
 
       // 绘制角色
-      // 角色在 tilemap 右侧，每个角色一列，每方向 4 帧
-      // 使用简化版本：固定使用第一个角色
-      const col = 24 + npc.frame
-      const row = npc.direction === 'down' ? 0 :
-                  npc.direction === 'up' ? 1 :
-                  npc.direction === 'left' ? 2 : 3
+      // 角色在 tilemap 第 12-15 行，每方向 4 帧
+      // 基础列: 24 (down), 25 (up), 26 (left), 27 (right)
+      // 帧偏移: 0-3
+      const baseCol = 24
+      const directionRow = npc.direction === 'down' ? 12 :
+                          npc.direction === 'up' ? 13 :
+                          npc.direction === 'left' ? 14 : 15
+
+      const col = baseCol + npc.frame
+      const row = directionRow + npc.charVariant * 4
 
       this.atlas.drawTileByPos(c, col, row, screenX - tileSize / 2, screenY - tileSize / 2, scale)
     }
@@ -162,5 +167,6 @@ export class NPCRenderer implements ParticleRenderer {
   dispose(): void {
     this.npcs = []
     this.roadPositions = []
+    this.initialized = false
   }
 }

@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "skills": {
+    "powerpoint-pptx": {
+      "version": "1.0.0",
+      "installedAt": 1771788196049
+    },
+    "tiangong-wps-ppt-automation": {
+      "version": "0.1.0",
+      "installedAt": 1771788327986
+    }
+  }
+}

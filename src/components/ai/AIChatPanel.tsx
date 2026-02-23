@@ -1,8 +1,8 @@
 import { useState, useRef, useEffect } from 'react'
-import { motion, AnimatePresence } from 'framer-motion'
+import { motion, AnimatePresence, useDragControls } from 'framer-motion'
 import { 
   MessageSquare, X, Send, Trash2, Square, Sparkles, Loader2, Zap,
-  Image, Paperclip, Puzzle, Server
+  Image, Paperclip, Puzzle, Server, Command, Plus, GripHorizontal
 } from 'lucide-react'
 import { useStore } from '@/store'
 import { isLLMConfigured } from '@/services/llmService'
@@ -21,8 +21,11 @@ export function AIChatPanel() {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const imageInputRef = useRef<HTMLInputElement>(null)
+  const constraintsRef = useRef<HTMLDivElement>(null)
+  const dragControls = useDragControls()
 
   const currentView = useStore((s) => s.currentView)
+  const setView = useStore((s) => s.setView)
   const chatMessages = useStore((s) => s.chatMessages)
   const chatStreaming = useStore((s) => s.chatStreaming)
   const chatStreamContent = useStore((s) => s.chatStreamContent)
@@ -34,6 +37,18 @@ export function AIChatPanel() {
 
   const configured = isLLMConfigured()
   const quickCommands = getQuickCommands(currentView)
+
+  // Ctrl/Cmd + K 全局快捷键
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault()
+        setIsOpen(!useStore.getState().isChatOpen)
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [setIsOpen])
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -137,281 +152,346 @@ export function AIChatPanel() {
     sendChat(prompt, currentView)
   }
 
+  const visibleMsgCount = chatMessages.filter(m => m.role !== 'system').length
+
+  // 创建 Nexus 引导处理
+  const handleCreateNexus = () => {
+    setView('world')
+    setIsOpen(false)
+  }
+
   return (
     <>
-      {/* 浮动按钮 */}
+      {/* ====== 底部胶囊触发栏 (面板关闭时显示) ====== */}
       <AnimatePresence>
         {!isOpen && (
           <motion.button
-            initial={{ scale: 0, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            exit={{ scale: 0, opacity: 0 }}
+            initial={{ y: 40, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            exit={{ y: 40, opacity: 0 }}
+            transition={{ type: 'spring', damping: 20, stiffness: 300 }}
             onClick={() => setIsOpen(true)}
-            className="fixed right-6 bottom-28 z-[45] w-12 h-12 rounded-full 
-                       bg-skin-accent-amber/20 border border-skin-accent-amber/30 
-                       flex items-center justify-center
-                       hover:bg-skin-accent-amber/30 transition-colors
-                       shadow-[0_0_20px_rgba(245,158,11,0.15)]"
+            className="fixed bottom-5 left-1/2 -translate-x-1/2 z-[45]
+                       flex items-center gap-3 px-5 py-2.5 
+                       bg-slate-900/70 backdrop-blur-2xl 
+                       border border-white/15 rounded-full
+                       hover:bg-slate-900/80 hover:border-white/25
+                       transition-colors cursor-pointer
+                       shadow-[0_4px_30px_rgba(0,0,0,0.4)]
+                       group"
           >
-            <MessageSquare className="w-5 h-5 text-skin-accent-amber" />
-            {chatMessages.length > 0 && (
-              <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-skin-accent-amber 
-                             text-[12px] text-skin-bg-primary flex items-center justify-center font-bold">
-                {chatMessages.filter(m => m.role !== 'system').length}
+            <Sparkles className="w-4 h-4 text-skin-accent-amber group-hover:text-skin-accent-amber/80" />
+            <span className="text-sm font-mono text-white/50 group-hover:text-white/70 transition-colors">
+              {t('chat.input_placeholder')}
+            </span>
+            <span className="flex items-center gap-1 text-[11px] font-mono text-white/25 border border-white/10 rounded px-1.5 py-0.5">
+              <Command className="w-3 h-3" />K
+            </span>
+            {visibleMsgCount > 0 && (
+              <span className="flex items-center justify-center w-5 h-5 rounded-full bg-skin-accent-amber/20 text-skin-accent-amber text-[11px] font-mono font-bold">
+                {visibleMsgCount}
               </span>
+            )}
+            {chatStreaming && (
+              <Loader2 className="w-3.5 h-3.5 text-skin-accent-cyan animate-spin" />
             )}
           </motion.button>
         )}
       </AnimatePresence>
 
-      {/* 聊天面板 */}
+      {/* ====== 聊天面板 (底部原地展开式, 可拖动) ====== */}
       <AnimatePresence>
         {isOpen && (
-          <motion.div
-            initial={{ width: 0 }}
-            animate={{ width: 488 }}
-            exit={{ width: 0 }}
-            transition={{ type: 'spring', damping: 25, stiffness: 300 }}
-            className="h-full shrink-0 overflow-hidden"
-          >
-            <div className="w-[480px] h-full py-3 pr-3 pl-2 box-border">
-              <div
-                className="w-full h-full bg-skin-bg-primary/95 backdrop-blur-xl border border-skin-border/10 rounded-2xl
-                           flex flex-col overflow-hidden
-                           shadow-[0_0_40px_rgba(0,0,0,0.5)]"
+          <>
+            {/* 背景蒙版 */}
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsOpen(false)}
+              className="fixed inset-0 z-[50] bg-black/40 backdrop-blur-sm"
+            />
+            
+            {/* 拖动约束区域 */}
+            <div ref={constraintsRef} className="fixed inset-0 z-[51] pointer-events-none" />
+            
+            {/* 底部展开对话面板 - 可拖动 */}
+            <motion.div
+              initial={{ y: 20, height: 48, opacity: 0.8 }}
+              animate={{ y: 0, height: 'auto', opacity: 1 }}
+              exit={{ y: 20, height: 48, opacity: 0 }}
+              transition={{ type: 'spring', damping: 28, stiffness: 350 }}
+              drag
+              dragControls={dragControls}
+              dragConstraints={constraintsRef}
+              dragElastic={0.05}
+              dragMomentum={false}
+              className="fixed bottom-5 left-1/2 -translate-x-1/2 z-[52]
+                         w-[900px] max-w-[85vw] max-h-[80vh]
+                         bg-skin-bg-primary/98 backdrop-blur-2xl 
+                         border border-skin-border/20
+                         rounded-2xl
+                         flex flex-col overflow-hidden
+                         shadow-[0_0_80px_rgba(0,0,0,0.6),0_0_30px_rgba(245,158,11,0.08)]
+                         pointer-events-auto"
+              style={{ height: '70vh', maxHeight: '750px' }}
+            >
+              {/* Header - 可拖动区域 */}
+              <div 
+                className="flex items-center justify-between px-6 py-4 border-b border-skin-border/15 cursor-grab active:cursor-grabbing"
+                onPointerDown={(e) => dragControls.start(e)}
               >
-            {/* Header */}
-            <div className="flex items-center justify-between px-4 py-3 border-b border-skin-border/10">
-              <div className="flex items-center gap-2">
-                <Sparkles className="w-4 h-4 text-skin-accent-amber" />
-                <span className="text-sm font-mono text-skin-accent-amber">AI</span>
-                <span className="text-[13px] font-mono text-skin-text-tertiary px-1.5 py-0.5 bg-skin-bg-secondary/30 rounded">
-                  {currentView}
-                </span>
-                {agentStatus === 'thinking' && (
-                  <span className="text-[13px] font-mono text-skin-accent-cyan animate-pulse flex items-center gap-1 ml-1">
-                    <Loader2 className="w-3 h-3 animate-spin" /> {t('task.agent_thinking')}
+                <div className="flex items-center gap-3">
+                  <GripHorizontal className="w-4 h-4 text-skin-text-tertiary/50" />
+                  <Sparkles className="w-5 h-5 text-skin-accent-amber" />
+                  <span className="text-lg font-mono text-skin-accent-amber font-semibold">AI Assistant</span>
+                  <span className="text-sm font-mono text-skin-text-tertiary px-2.5 py-1 bg-skin-bg-secondary/40 rounded-lg">
+                    {currentView}
                   </span>
-                )}
-                {agentStatus === 'executing' && (
-                  <span className="text-[13px] font-mono text-skin-accent-amber animate-pulse flex items-center gap-1 ml-1">
-                    <Zap className="w-3 h-3" /> {t('task.agent_executing')}
-                  </span>
-                )}
-              </div>
-              <div className="flex items-center gap-1">
-                <button
-                  onClick={clearChat}
-                  className="p-1.5 text-skin-text-tertiary hover:text-red-400 transition-colors"
-                  title={t('chat.clear')}
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
-                <button
-                  onClick={() => setIsOpen(false)}
-                  className="p-1.5 text-skin-text-tertiary hover:text-skin-text-secondary transition-colors"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-
-            {/* Messages */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-3">
-              <ChatErrorBoundary onReset={clearChat}>
-              {!configured ? (
-                <div className="flex flex-col items-center justify-center h-full text-center">
-                  <Sparkles className="w-10 h-10 text-skin-accent-amber/30 mb-3" />
-                  <p className="text-sm font-mono text-skin-text-tertiary mb-2">{t('chat.not_configured')}</p>
-                  <p className="text-xs font-mono text-skin-text-tertiary/60">
-                    {t('chat.configure_prompt')}
-                  </p>
+                  {agentStatus === 'thinking' && (
+                    <span className="text-sm font-mono text-skin-accent-cyan animate-pulse flex items-center gap-1.5 ml-2">
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" /> {t('task.agent_thinking')}
+                    </span>
+                  )}
+                  {agentStatus === 'executing' && (
+                    <span className="text-sm font-mono text-skin-accent-amber animate-pulse flex items-center gap-1.5 ml-2">
+                      <Zap className="w-3.5 h-3.5" /> {t('task.agent_executing')}
+                    </span>
+                  )}
                 </div>
-              ) : chatMessages.length === 0 && !chatStreaming ? (
-                <div className="flex flex-col items-center justify-center h-full text-center">
-                  <MessageSquare className="w-10 h-10 text-skin-text-primary/10 mb-3" />
-                  <p className="text-sm font-mono text-skin-text-tertiary mb-4">
-                    {t('chat.input_placeholder')}
-                  </p>
-                  {quickCommands.length > 0 && (
-                    <div className="flex flex-wrap gap-2 justify-center">
-                      {quickCommands.map((cmd) => (
-                        <button
-                          key={cmd.label}
-                          onClick={() => handleQuickCommand(cmd.prompt)}
-                          className="px-3 py-1.5 text-xs font-mono bg-skin-bg-secondary/30 border border-skin-border/10 
-                                     rounded-lg text-skin-text-secondary hover:text-skin-accent-amber hover:border-skin-accent-amber/30 
-                                     transition-colors"
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={clearChat}
+                    className="p-2.5 text-skin-text-tertiary hover:text-red-400 transition-colors rounded-lg hover:bg-white/5"
+                    title={t('chat.clear')}
+                  >
+                    <Trash2 className="w-4.5 h-4.5" />
+                  </button>
+                  <button
+                    onClick={() => setIsOpen(false)}
+                    className="p-2.5 text-skin-text-tertiary hover:text-skin-text-secondary transition-colors rounded-lg hover:bg-white/5"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Messages */}
+              <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
+                <ChatErrorBoundary onReset={clearChat}>
+                {!configured ? (
+                  <div className="flex flex-col items-center justify-center h-full text-center">
+                    <Sparkles className="w-16 h-16 text-skin-accent-amber/30 mb-5" />
+                    <p className="text-lg font-mono text-skin-text-tertiary mb-2">{t('chat.not_configured')}</p>
+                    <p className="text-base font-mono text-skin-text-tertiary/60">
+                      {t('chat.configure_prompt')}
+                    </p>
+                  </div>
+                ) : chatMessages.length === 0 && !chatStreaming ? (
+                  <div className="flex flex-col items-center justify-center h-full text-center">
+                    <MessageSquare className="w-16 h-16 text-skin-text-primary/10 mb-5" />
+                    <p className="text-lg font-mono text-skin-text-tertiary mb-4">
+                      {t('chat.input_placeholder')}
+                    </p>
+                    
+                    {/* 创建 Nexus 引导按钮 */}
+                    <button
+                      onClick={handleCreateNexus}
+                      className="flex items-center gap-3 px-6 py-3.5 mb-8
+                                 bg-gradient-to-r from-skin-accent-amber/20 to-skin-accent-cyan/10
+                                 border border-skin-accent-amber/30 rounded-xl
+                                 text-skin-accent-amber hover:border-skin-accent-amber/50
+                                 hover:from-skin-accent-amber/30 hover:to-skin-accent-cyan/15
+                                 transition-all duration-300 group"
+                    >
+                      <Plus className="w-5 h-5 group-hover:rotate-90 transition-transform duration-300" />
+                      <span className="font-mono text-base font-medium">{t('nexus.create_new') || '创建新 Nexus'}</span>
+                    </button>
+                    
+                    {quickCommands.length > 0 && (
+                      <div className="flex flex-wrap gap-2.5 justify-center max-w-lg">
+                        {quickCommands.map((cmd) => (
+                          <button
+                            key={cmd.label}
+                            onClick={() => handleQuickCommand(cmd.prompt)}
+                            className="px-4 py-2.5 text-sm font-mono bg-skin-bg-secondary/30 border border-skin-border/15 
+                                       rounded-xl text-skin-text-secondary hover:text-skin-accent-amber hover:border-skin-accent-amber/30 
+                                       transition-colors"
+                          >
+                            {cmd.label}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <>
+                    {chatMessages.filter(m => m.role !== 'system').map((msg) => (
+                      <ChatMessage key={msg.id} message={msg} />
+                    ))}
+                    {chatStreaming && chatStreamContent && (
+                      <StreamingMessage content={chatStreamContent} />
+                    )}
+                    {chatError && (
+                      <div className="px-5 py-4 bg-red-500/10 border border-red-500/20 rounded-xl text-base font-mono text-red-400">
+                        {chatError}
+                      </div>
+                    )}
+                  </>
+                )}
+                <div ref={messagesEndRef} />
+                </ChatErrorBoundary>
+              </div>
+
+              {/* Quick Commands Bar */}
+              {configured && chatMessages.length > 0 && quickCommands.length > 0 && (
+                <div className="px-6 py-3 border-t border-skin-border/10 flex gap-2.5 overflow-x-auto">
+                  {quickCommands.map((cmd) => (
+                    <button
+                      key={cmd.label}
+                      onClick={() => handleQuickCommand(cmd.prompt)}
+                      disabled={chatStreaming}
+                      className="flex-shrink-0 px-4 py-2 text-sm font-mono bg-skin-bg-secondary/30 border border-skin-border/15 
+                                 rounded-xl text-skin-text-tertiary hover:text-skin-accent-amber hover:border-skin-accent-amber/30 
+                                 transition-colors disabled:opacity-50"
+                    >
+                      {cmd.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {/* Input */}
+              {configured && (
+                <div className="px-6 py-5 border-t border-skin-border/15 bg-skin-bg-secondary/25">
+                  {/* 附件预览 */}
+                  {attachments.length > 0 && (
+                    <div className="flex flex-wrap gap-2.5 mb-4">
+                      {attachments.map((att, idx) => (
+                        <div
+                          key={idx}
+                          className="flex items-center gap-2 px-3.5 py-2 bg-skin-bg-secondary/40 border border-skin-border/15 
+                                     rounded-xl text-sm font-mono text-skin-text-secondary"
                         >
-                          {cmd.label}
-                        </button>
+                          {att.type === 'image' && <Image className="w-4 h-4 text-skin-accent-emerald" />}
+                          {att.type === 'file' && <Paperclip className="w-4 h-4 text-skin-accent-cyan" />}
+                          {att.type === 'skill' && <Puzzle className="w-4 h-4 text-skin-accent-amber" />}
+                          {att.type === 'mcp' && <Server className="w-4 h-4 text-skin-accent-purple" />}
+                          <span className="max-w-[140px] truncate">{att.name}</span>
+                          <button
+                            onClick={() => removeAttachment(idx)}
+                            className="text-skin-text-tertiary hover:text-red-400 ml-1"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
                       ))}
                     </div>
                   )}
-                </div>
-              ) : (
-                <>
-                  {chatMessages.filter(m => m.role !== 'system').map((msg) => (
-                    <ChatMessage key={msg.id} message={msg} />
-                  ))}
-                  {chatStreaming && chatStreamContent && (
-                    <StreamingMessage content={chatStreamContent} />
-                  )}
-                  {chatError && (
-                    <div className="px-3 py-2 bg-red-500/10 border border-red-500/20 rounded-lg text-xs font-mono text-red-400">
-                      {chatError}
-                    </div>
-                  )}
-                </>
-              )}
-              <div ref={messagesEndRef} />
-              </ChatErrorBoundary>
-            </div>
-
-            {/* Quick Commands Bar */}
-            {configured && chatMessages.length > 0 && quickCommands.length > 0 && (
-              <div className="px-3 py-2 border-t border-skin-border/5 flex gap-1.5 overflow-x-auto">
-                {quickCommands.map((cmd) => (
-                  <button
-                    key={cmd.label}
-                    onClick={() => handleQuickCommand(cmd.prompt)}
-                    disabled={chatStreaming}
-                    className="flex-shrink-0 px-2 py-1 text-[13px] font-mono bg-skin-bg-secondary/30 border border-skin-border/10 
-                               rounded text-skin-text-tertiary hover:text-skin-accent-amber hover:border-skin-accent-amber/30 
-                               transition-colors disabled:opacity-50"
-                  >
-                    {cmd.label}
-                  </button>
-                ))}
-              </div>
-            )}
-
-            {/* Input */}
-            {configured && (
-              <div className="px-3 py-3 border-t border-skin-border/10">
-                {/* 附件预览 */}
-                {attachments.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5 mb-2">
-                    {attachments.map((att, idx) => (
-                      <div
-                        key={idx}
-                        className="flex items-center gap-1 px-2 py-1 bg-skin-bg-secondary/30 border border-skin-border/10 
-                                   rounded text-[13px] font-mono text-skin-text-secondary"
+                  
+                  {/* 输入框 + 按钮 */}
+                  <div className="flex gap-4 items-end">
+                    {/* 工具按钮 */}
+                    <div className="flex gap-1.5 pb-2.5">
+                      <input
+                        ref={imageInputRef}
+                        type="file"
+                        accept="image/*"
+                        multiple
+                        onChange={handleImageUpload}
+                        className="hidden"
+                      />
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        multiple
+                        onChange={handleFileUpload}
+                        className="hidden"
+                      />
+                      <button
+                        onClick={() => imageInputRef.current?.click()}
+                        disabled={chatStreaming}
+                        className="p-2.5 text-skin-text-tertiary hover:text-skin-accent-emerald hover:bg-skin-bg-secondary/40 
+                                   rounded-xl transition-colors disabled:opacity-50"
+                        title="Image"
                       >
-                        {att.type === 'image' && <Image className="w-3 h-3 text-skin-accent-emerald" />}
-                        {att.type === 'file' && <Paperclip className="w-3 h-3 text-skin-accent-cyan" />}
-                        {att.type === 'skill' && <Puzzle className="w-3 h-3 text-skin-accent-amber" />}
-                        {att.type === 'mcp' && <Server className="w-3 h-3 text-skin-accent-purple" />}
-                        <span className="max-w-[100px] truncate">{att.name}</span>
-                        <button
-                          onClick={() => removeAttachment(idx)}
-                          className="text-skin-text-tertiary hover:text-red-400 ml-0.5"
-                        >
-                          <X className="w-3 h-3" />
-                        </button>
-                      </div>
-                    ))}
+                        <Image className="w-5 h-5" />
+                      </button>
+                      <button
+                        onClick={() => fileInputRef.current?.click()}
+                        disabled={chatStreaming}
+                        className="p-2.5 text-skin-text-tertiary hover:text-skin-accent-cyan hover:bg-skin-bg-secondary/40 
+                                   rounded-xl transition-colors disabled:opacity-50"
+                        title="File"
+                      >
+                        <Paperclip className="w-5 h-5" />
+                      </button>
+                      <button
+                        onClick={handleAddSkill}
+                        disabled={chatStreaming}
+                        className="p-2.5 text-skin-text-tertiary hover:text-skin-accent-amber hover:bg-skin-bg-secondary/40 
+                                   rounded-xl transition-colors disabled:opacity-50"
+                        title="SKILL"
+                      >
+                        <Puzzle className="w-5 h-5" />
+                      </button>
+                      <button
+                        onClick={handleAddMCP}
+                        disabled={chatStreaming}
+                        className="p-2.5 text-skin-text-tertiary hover:text-skin-accent-purple hover:bg-skin-bg-secondary/40 
+                                   rounded-xl transition-colors disabled:opacity-50"
+                        title="MCP"
+                      >
+                        <Server className="w-5 h-5" />
+                      </button>
+                    </div>
+                    
+                    {/* 输入框 */}
+                    <div className="flex-1">
+                      <textarea
+                        ref={textareaRef}
+                        value={input}
+                        onChange={(e) => setInput(e.target.value)}
+                        onKeyDown={handleKeyDown}
+                        placeholder={t('chat.input_placeholder')}
+                        disabled={chatStreaming}
+                        rows={1}
+                        className="w-full px-5 py-4 bg-skin-bg-secondary/40 border border-skin-border/15 rounded-xl 
+                                   text-base font-mono text-skin-text-secondary placeholder-skin-text-tertiary
+                                   focus:border-skin-accent-amber/50 focus:outline-none focus:ring-2 focus:ring-skin-accent-amber/10
+                                   disabled:opacity-50 resize-none min-h-[56px] max-h-[140px]"
+                      />
+                    </div>
+                    
+                    {/* 发送/停止按钮 */}
+                    {chatStreaming ? (
+                      <button
+                        onClick={abortChat}
+                        className="p-4 bg-red-500/20 border border-red-500/30 rounded-xl 
+                                   text-red-400 hover:bg-red-500/30 transition-colors"
+                      >
+                        <Square className="w-6 h-6" />
+                      </button>
+                    ) : (
+                      <button
+                        onClick={handleSend}
+                        disabled={!input.trim() && attachments.length === 0}
+                        className="p-4 bg-skin-accent-amber/20 border border-skin-accent-amber/30 rounded-xl 
+                                   text-skin-accent-amber hover:bg-skin-accent-amber/30 transition-colors
+                                   disabled:opacity-30 disabled:cursor-not-allowed"
+                      >
+                        <Send className="w-6 h-6" />
+                      </button>
+                    )}
                   </div>
-                )}
-                
-                {/* 上传按钮行 */}
-                <div className="flex items-center gap-1 mb-2">
-                  <input
-                    ref={imageInputRef}
-                    type="file"
-                    accept="image/*"
-                    multiple
-                    onChange={handleImageUpload}
-                    className="hidden"
-                  />
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    multiple
-                    onChange={handleFileUpload}
-                    className="hidden"
-                  />
-                  <button
-                    onClick={() => imageInputRef.current?.click()}
-                    disabled={chatStreaming}
-                    className="p-1.5 text-skin-text-tertiary hover:text-skin-accent-emerald hover:bg-skin-bg-secondary/30 
-                               rounded transition-colors disabled:opacity-50"
-                    title="Image"
-                  >
-                    <Image className="w-4 h-4" />
-                  </button>
-                  <button
-                    onClick={() => fileInputRef.current?.click()}
-                    disabled={chatStreaming}
-                    className="p-1.5 text-skin-text-tertiary hover:text-skin-accent-cyan hover:bg-skin-bg-secondary/30 
-                               rounded transition-colors disabled:opacity-50"
-                    title="File"
-                  >
-                    <Paperclip className="w-4 h-4" />
-                  </button>
-                  <button
-                    onClick={handleAddSkill}
-                    disabled={chatStreaming}
-                    className="p-1.5 text-skin-text-tertiary hover:text-skin-accent-amber hover:bg-skin-bg-secondary/30 
-                               rounded transition-colors disabled:opacity-50"
-                    title="SKILL"
-                  >
-                    <Puzzle className="w-4 h-4" />
-                  </button>
-                  <button
-                    onClick={handleAddMCP}
-                    disabled={chatStreaming}
-                    className="p-1.5 text-skin-text-tertiary hover:text-skin-accent-purple hover:bg-skin-bg-secondary/30 
-                               rounded transition-colors disabled:opacity-50"
-                    title="MCP"
-                  >
-                    <Server className="w-4 h-4" />
-                  </button>
-                  <span className="text-[12px] font-mono text-skin-text-tertiary/60 ml-auto">
-                    Shift+Enter
-                  </span>
+                  
+                  <p className="text-sm font-mono text-skin-text-tertiary/50 mt-3 text-center">
+                    Enter 发送 | Shift+Enter 换行 | Ctrl+K 关闭 | 拖动标题栏移动窗口
+                  </p>
                 </div>
-                
-                {/* 输入框 + 发送按钮 */}
-                <div className="flex gap-2">
-                  <textarea
-                    ref={textareaRef}
-                    value={input}
-                    onChange={(e) => setInput(e.target.value)}
-                    onKeyDown={handleKeyDown}
-                    placeholder={t('chat.input_placeholder')}
-                    disabled={chatStreaming}
-                    rows={1}
-                    className="flex-1 px-3 py-2 bg-skin-bg-secondary/30 border border-skin-border/10 rounded-lg 
-                               text-sm font-mono text-skin-text-secondary placeholder-skin-text-tertiary
-                               focus:border-skin-accent-amber/40 focus:outline-none
-                               disabled:opacity-50 resize-none min-h-[40px] max-h-[120px]"
-                  />
-                  {chatStreaming ? (
-                    <button
-                      onClick={abortChat}
-                      className="px-3 py-2 bg-red-500/20 border border-red-500/30 rounded-lg 
-                                 text-red-400 hover:bg-red-500/30 transition-colors self-end"
-                    >
-                      <Square className="w-4 h-4" />
-                    </button>
-                  ) : (
-                    <button
-                      onClick={handleSend}
-                      disabled={!input.trim() && attachments.length === 0}
-                      className="px-3 py-2 bg-skin-accent-amber/20 border border-skin-accent-amber/30 rounded-lg 
-                                 text-skin-accent-amber hover:bg-skin-accent-amber/30 transition-colors self-end
-                                 disabled:opacity-30 disabled:cursor-not-allowed"
-                    >
-                      <Send className="w-4 h-4" />
-                    </button>
-                  )}
-                </div>
-              </div>
-            )}
-              </div>
-            </div>
-          </motion.div>
+              )}
+            </motion.div>
+          </>
         )}
       </AnimatePresence>
     </>

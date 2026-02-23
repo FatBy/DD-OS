@@ -1,6 +1,7 @@
 import type { StateCreator } from 'zustand'
 import type { NexusEntity, CameraState, GridPosition, RenderSettings, VisualDNA, BuildingConfig } from '@/types'
 import type { WorldTheme } from '@/rendering/types'
+import { getCityBlockSystem } from '@/rendering/isometric/CityBlockSystem'
 
 // XP 等级阈值
 const XP_THRESHOLDS = [0, 20, 100, 500] as const
@@ -92,47 +93,6 @@ function createDemoNexuses(): Map<string, NexusEntity> {
   return loadNexusesFromStorage()
 }
 
-// 用于从服务器数据自动分配 grid 位置（考虑已存在的位置避免重叠）
-const PREDEFINED_POSITIONS: GridPosition[] = [
-  { gridX: 3, gridY: -2 },
-  { gridX: -2, gridY: 3 },
-  { gridX: 4, gridY: 1 },
-  { gridX: -1, gridY: -3 },
-  { gridX: 0, gridY: 4 },
-  { gridX: 5, gridY: -1 },
-  { gridX: -3, gridY: 0 },
-  { gridX: 2, gridY: 5 },
-  { gridX: -4, gridY: 2 },
-  { gridX: 1, gridY: -4 },
-  { gridX: 6, gridY: 2 },
-  { gridX: -2, gridY: -2 },
-]
-
-function assignGridPosition(existingNexuses: Map<string, NexusEntity>): GridPosition {
-  // 收集已占用的位置
-  const occupied = new Set<string>()
-  for (const nexus of existingNexuses.values()) {
-    if (nexus.position) {
-      occupied.add(`${nexus.position.gridX},${nexus.position.gridY}`)
-    }
-  }
-  
-  // 找到第一个未被占用的预定义位置
-  for (const pos of PREDEFINED_POSITIONS) {
-    const key = `${pos.gridX},${pos.gridY}`
-    if (!occupied.has(key)) {
-      return pos
-    }
-  }
-  
-  // 所有预定义位置都被占用时，生成随机位置
-  const randomOffset = () => Math.floor(Math.random() * 10) - 5
-  return {
-    gridX: randomOffset() + 7,
-    gridY: randomOffset() - 5,
-  }
-}
-
 // 执行结果类型
 export interface NexusExecutionResult {
   nexusId: string
@@ -193,7 +153,7 @@ export const createWorldSlice: StateCreator<WorldSlice> = (set, get) => ({
     showLabels: true,
     enableGlow: true,
   },
-  worldTheme: 'cityscape' as WorldTheme,
+  worldTheme: 'minimalist' as WorldTheme,
   // 执行状态初始值
   executingNexusId: null,
   executionStartTime: null,
@@ -232,8 +192,14 @@ export const createWorldSlice: StateCreator<WorldSlice> = (set, get) => ({
   updateNexusPosition: (id, position) => set((state) => {
     const nexus = state.nexuses.get(id)
     if (!nexus) return state
+    
+    // 使用地块系统吸附位置到地块中心
+    const blockSystem = getCityBlockSystem()
+    const snappedPos = blockSystem.snapToBlockCenter(position.gridX, position.gridY)
+    const snappedPosition = { gridX: snappedPos.isoX, gridY: snappedPos.isoY }
+    
     const next = new Map(state.nexuses)
-    next.set(id, { ...nexus, position })
+    next.set(id, { ...nexus, position: snappedPosition })
     saveNexusesToStorage(next)
     return { nexuses: next }
   }),
@@ -244,6 +210,11 @@ export const createWorldSlice: StateCreator<WorldSlice> = (set, get) => ({
 
   setNexusesFromServer: (nexuses) => set((state) => {
     const next = new Map(state.nexuses)
+    const blockSystem = getCityBlockSystem()
+    
+    // 清空地块系统，重新分配
+    blockSystem.clear()
+    
     for (const serverNexus of nexuses) {
       const existing = next.get(serverNexus.id)
       const xp = serverNexus.xp || 0
@@ -265,12 +236,19 @@ export const createWorldSlice: StateCreator<WorldSlice> = (set, get) => ({
         visualDNA = existing?.visualDNA || simpleVisualDNA(serverNexus.id)
       }
 
+      // 强制重新分配地块位置（确保每个 Nexus 独占一个地块）
+      const block = blockSystem.allocateBlock(serverNexus.id, 
+        existing?.position?.gridX ?? 0, 
+        existing?.position?.gridY ?? 0
+      )
+      const snappedPosition = { gridX: block.centerIsoX, gridY: block.centerIsoY }
+
       next.set(serverNexus.id, {
-        // 保留前端已有的状态 (position, constructionProgress 等)
+        // 保留前端已有的状态 (constructionProgress 等)
         ...existing,
         // 从服务器合并的数据
         id: serverNexus.id,
-        position: existing?.position || assignGridPosition(next),
+        position: snappedPosition,  // 使用吸附后的位置
         level: xpToLevel(xp),
         xp,
         visualDNA,

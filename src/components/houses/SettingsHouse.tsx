@@ -22,6 +22,7 @@ const WORLD_THEME_OPTIONS: Array<{
 }> = [
   { id: 'cosmos', labelKey: 'settings.world_cosmos', descKey: 'settings.world_cosmos_desc', color: 'rgb(56, 189, 248)' },
   { id: 'cityscape', labelKey: 'settings.world_cityscape', descKey: 'settings.world_cityscape_desc', color: 'rgb(251, 191, 36)' },
+  { id: 'village', labelKey: 'settings.world_village', descKey: 'settings.world_village_desc', color: 'rgb(126, 200, 80)' },
   { id: 'minimalist', labelKey: 'settings.world_minimalist', descKey: 'settings.world_minimalist_desc', color: 'rgb(168, 162, 158)' },
   { id: 'wildlife', labelKey: 'settings.world_wildlife', descKey: 'settings.world_wildlife_desc', color: 'rgb(52, 211, 153)' },
 ]
@@ -402,8 +403,8 @@ export function SettingsHouse() {
               <div className="grid grid-cols-3 gap-2">
                 {WORLD_THEME_OPTIONS.map((option) => {
                   const isActive = worldTheme === option.id
-                  // cosmos/cityscape/minimalist 已实现，wildlife 开发中
-                  const isAvailable = option.id === 'cosmos' || option.id === 'cityscape' || option.id === 'minimalist'
+                  // cosmos/cityscape/village/minimalist 已实现，wildlife 开发中
+                  const isAvailable = option.id === 'cosmos' || option.id === 'cityscape' || option.id === 'village' || option.id === 'minimalist'
                   return (
                     <button
                       key={option.id}

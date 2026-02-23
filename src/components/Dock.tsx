@@ -44,11 +44,11 @@ export function Dock() {
   const t = useT()
 
   return (
-    <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-40">
+    <div className="h-full flex flex-col justify-center py-4 pl-3 pr-1 z-40 shrink-0">
       <motion.div
-        className="flex items-end gap-1 px-4 py-3 bg-slate-900/60 backdrop-blur-2xl rounded-2xl border border-white/15 shadow-2xl"
-        initial={{ y: 100, opacity: 0 }}
-        animate={{ y: 0, opacity: 1 }}
+        className="flex flex-col items-center gap-1.5 py-4 px-2.5 bg-slate-900/60 backdrop-blur-2xl rounded-2xl border border-white/15 shadow-2xl"
+        initial={{ x: -80, opacity: 0 }}
+        animate={{ x: 0, opacity: 1 }}
         transition={{ type: 'spring', stiffness: 200, damping: 20, delay: 0.3 }}
       >
         {houseRegistry.map((house) => {
@@ -60,15 +60,15 @@ export function Dock() {
 
           return (
             <div key={house.id} className="relative group">
-              {/* Tooltip */}
-              <div className="absolute -top-10 left-1/2 -translate-x-1/2 px-3 py-1 bg-black/80 backdrop-blur-md rounded-lg text-xs font-mono text-white whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none border border-white/10">
+              {/* Tooltip - 右侧滑出 */}
+              <div className="absolute left-full ml-3 top-1/2 -translate-y-1/2 px-3 py-1.5 bg-black/80 backdrop-blur-md rounded-lg text-xs font-mono text-white whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none border border-white/10 z-50">
                 {dockNameKeys[house.id] ? t(dockNameKeys[house.id]) : house.name}
               </div>
 
               <motion.button
                 onClick={() => setView(house.id)}
                 className={cn(
-                  'flex flex-col items-center gap-1 p-3 rounded-xl transition-colors',
+                  'relative flex items-center justify-center p-2.5 rounded-xl transition-colors',
                   isActive ? activeBg : 'hover:bg-white/5'
                 )}
                 variants={dockIconVariants}
@@ -78,23 +78,23 @@ export function Dock() {
               >
                 <Icon
                   className={cn(
-                    'w-6 h-6 transition-colors',
+                    'w-5 h-5 transition-colors',
                     isActive ? textColor : 'text-white/60'
                   )}
                 />
-              </motion.button>
 
-              {/* Active indicator dot */}
-              {isActive && (
-                <motion.div
-                  className={cn(
-                    'absolute -bottom-0.5 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full',
-                    dotColor
-                  )}
-                  layoutId="dock-active-dot"
-                  transition={{ type: 'spring', stiffness: 500, damping: 30 }}
-                />
-              )}
+                {/* Active indicator - 左侧竖条 */}
+                {isActive && (
+                  <motion.div
+                    className={cn(
+                      'absolute -left-1.5 top-1/2 -translate-y-1/2 w-[3px] h-5 rounded-r-full',
+                      dotColor
+                    )}
+                    layoutId="dock-active-indicator"
+                    transition={{ type: 'spring', stiffness: 500, damping: 30 }}
+                  />
+                )}
+              </motion.button>
             </div>
           )
         })}
