@@ -42,6 +42,8 @@ const zh = {
   'settings.world_cosmos_desc': '深空星球',
   'settings.world_cityscape': '城市',
   'settings.world_cityscape_desc': '赛博建筑',
+  'settings.world_minimalist': '极简',
+  'settings.world_minimalist_desc': '治愈积木',
   'settings.world_wildlife': '生态',
   'settings.world_wildlife_desc': '自然生物',
   'settings.world_dev': '开发中',

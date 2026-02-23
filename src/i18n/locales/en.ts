@@ -44,6 +44,8 @@ const en: Record<TranslationKey, string> = {
   'settings.world_cosmos_desc': 'Deep space planets',
   'settings.world_cityscape': 'Cityscape',
   'settings.world_cityscape_desc': 'Cyber buildings',
+  'settings.world_minimalist': 'Minimalist',
+  'settings.world_minimalist_desc': 'Cozy blocks',
   'settings.world_wildlife': 'Wildlife',
   'settings.world_wildlife_desc': 'Natural creatures',
   'settings.world_dev': 'Coming soon',

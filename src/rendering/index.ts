@@ -9,11 +9,17 @@ import { CosmosRippleRenderer } from './backgrounds/CosmosRipple'
 import { PlanetRenderer } from './entities/PlanetRenderer'
 // CosmosCoreRenderer 已禁用 - 不再渲染中心核心
 // import { CosmosCoreRenderer } from './cores/CosmosCore'
-// 城市主题
-import { CityBackground } from './backgrounds/CityBackground'
-import { CityGrid } from './backgrounds/CityGrid'
-import { BuildingRenderer } from './entities/BuildingRenderer'
-import { DecorationRenderer } from './entities/DecorationRenderer'
+
+// 极简主题
+import { MinimalistBackground } from './backgrounds/MinimalistBackground'
+import { MinimalistGrid } from './backgrounds/MinimalistGrid'
+import { BlockRenderer } from './entities/BlockRenderer'
+
+// 俯视角城市主题 (RPG Urban Pack)
+import { TopDownBackground } from './topdown/TopDownBackground'
+import { TopDownGrid } from './topdown/TopDownGrid'
+import { TopDownBuildingRenderer } from './topdown/TopDownBuildingRenderer'
+import { NPCRenderer } from './topdown/NPCRenderer'
 
 /**
  * 创建 Cosmos 主题渲染器集合
@@ -31,16 +37,30 @@ export function createCosmosRenderers(): RendererSet {
 
 /**
  * 创建 Cityscape 主题渲染器集合
+ * RPG Urban Pack 俯视角城市
  */
 export function createCityscapeRenderers(): RendererSet {
+  const npcRenderer = new NPCRenderer()
   return {
-    background: new CityBackground(),
-    grid: new CityGrid(),
-    decorations: new DecorationRenderer(),
-    entities: [new BuildingRenderer()],
-    particles: [], // 城市主题暂无粒子效果
-    // core 已移除 - 不再渲染中心能量核心
-    ripple: new CosmosRippleRenderer(), // 复用涟漪效果
+    background: new TopDownBackground(),
+    grid: new TopDownGrid(),
+    entities: [new TopDownBuildingRenderer()],
+    particles: [npcRenderer],  // NPC 作为粒子渲染
+    ripple: new CosmosRippleRenderer(),
+  }
+}
+
+/**
+ * 创建 Minimalist 主题渲染器集合
+ * 治愈系几何积木 - Stripe/Monument Valley 风格
+ */
+export function createMinimalistRenderers(): RendererSet {
+  return {
+    background: new MinimalistBackground(),
+    grid: new MinimalistGrid(),
+    entities: [new BlockRenderer()],
+    particles: [],
+    ripple: new CosmosRippleRenderer(),
   }
 }
 
@@ -60,8 +80,11 @@ export { CosmosGridRenderer } from './backgrounds/CosmosGrid'
 export { CosmosRippleRenderer } from './backgrounds/CosmosRipple'
 export { PlanetRenderer } from './entities/PlanetRenderer'
 export { CosmosCoreRenderer } from './cores/CosmosCore'
-// 城市主题渲染器
-export { CityBackground } from './backgrounds/CityBackground'
-export { CityGrid } from './backgrounds/CityGrid'
-export { BuildingRenderer } from './entities/BuildingRenderer'
-export { DecorationRenderer } from './entities/DecorationRenderer'
+
+// 极简主题渲染器
+export { MinimalistBackground } from './backgrounds/MinimalistBackground'
+export { MinimalistGrid } from './backgrounds/MinimalistGrid'
+export { BlockRenderer } from './entities/BlockRenderer'
+
+// 俯视角城市渲染器
+export * from './topdown'

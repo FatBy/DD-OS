@@ -11,11 +11,16 @@ import type {
   Point,
 } from './types'
 import { RendererRegistry } from './RendererRegistry'
-import { createCosmosRenderers, createCityscapeRenderers } from './index'
+import { createCosmosRenderers, createCityscapeRenderers, createMinimalistRenderers } from './index'
 import { worldToScreen as wts, screenToWorld as stw } from './utils/coordinateTransforms'
 import { PlanetRenderer } from './entities/PlanetRenderer'
 import { BuildingRenderer } from './entities/BuildingRenderer'
+import { BlockRenderer } from './entities/BlockRenderer'
+import { TopDownBuildingRenderer } from './topdown/TopDownBuildingRenderer'
 import { CosmosRippleRenderer } from './backgrounds/CosmosRipple'
+
+// 俯视角瓦片尺寸 (16px * 3 scale)
+const TOPDOWN_TILE_SIZE = 48
 
 // 默认调色板 (保持原有配色)
 const DEFAULT_PALETTE: CanvasPalette = {
@@ -60,6 +65,7 @@ export class GameCanvas {
     this.registry = new RendererRegistry()
     this.registry.register('cosmos', createCosmosRenderers())
     this.registry.register('cityscape', createCityscapeRenderers())
+    this.registry.register('minimalist', createMinimalistRenderers())
     this.registry.setTheme('cosmos')
 
     this.resize()
@@ -128,6 +134,22 @@ export class GameCanvas {
       )
     }
     
+    const blockRenderer = this.getBlockRenderer()
+    if (blockRenderer) {
+      blockRenderer.setExecutionState(
+        state.executingNexusId ?? null,
+        state.executionStartTime ?? null,
+      )
+    }
+    
+    const topDownRenderer = this.getTopDownBuildingRenderer()
+    if (topDownRenderer) {
+      topDownRenderer.setExecutionState(
+        state.executingNexusId ?? null,
+        state.executionStartTime ?? null,
+      )
+    }
+    
     // 更新涟漪渲染器的核心状态
     const rippleRenderer = this.getRippleRenderer()
     if (rippleRenderer && state.energyCore) {
@@ -174,11 +196,41 @@ export class GameCanvas {
 
   // ---- Coordinate Transforms ----
 
+  /**
+   * 俯视角坐标转换 (正方形网格)
+   */
+  private topDownWorldToScreen(gridX: number, gridY: number, camera: CameraState): Point {
+    const w = this.canvas.clientWidth
+    const h = this.canvas.clientHeight
+    const tileSize = TOPDOWN_TILE_SIZE * camera.zoom
+    return {
+      x: w / 2 + gridX * tileSize + camera.x * camera.zoom,
+      y: h / 2 + gridY * tileSize + camera.y * camera.zoom,
+    }
+  }
+
   worldToScreen(gridX: number, gridY: number, camera: CameraState): Point {
+    // 俯视角主题使用正方形网格
+    const theme = this.registry.getCurrentTheme()
+    if (theme === 'cityscape') {
+      return this.topDownWorldToScreen(gridX, gridY, camera)
+    }
+    // 等距主题使用菱形网格
     return wts(gridX, gridY, camera, this.canvas.clientWidth, this.canvas.clientHeight)
   }
 
   screenToWorld(screenX: number, screenY: number, camera: CameraState): { gridX: number; gridY: number } {
+    const theme = this.registry.getCurrentTheme()
+    if (theme === 'cityscape') {
+      // 俯视角逆转换
+      const w = this.canvas.clientWidth
+      const h = this.canvas.clientHeight
+      const tileSize = TOPDOWN_TILE_SIZE * camera.zoom
+      return {
+        gridX: Math.round((screenX - w / 2 - camera.x * camera.zoom) / tileSize),
+        gridY: Math.round((screenY - h / 2 - camera.y * camera.zoom) / tileSize),
+      }
+    }
     return stw(screenX, screenY, camera, this.canvas.clientWidth, this.canvas.clientHeight)
   }
 
@@ -218,6 +270,20 @@ export class GameCanvas {
     return building as BuildingRenderer | null
   }
 
+  private getBlockRenderer(): BlockRenderer | null {
+    const renderers = this.registry.getCurrent()
+    if (!renderers) return null
+    const block = renderers.entities.find(e => e.id === 'block-renderer')
+    return block as BlockRenderer | null
+  }
+
+  private getTopDownBuildingRenderer(): TopDownBuildingRenderer | null {
+    const renderers = this.registry.getCurrent()
+    if (!renderers) return null
+    const building = renderers.entities.find(e => e.id === 'topdown-building-renderer')
+    return building as TopDownBuildingRenderer | null
+  }
+
   private getRippleRenderer(): CosmosRippleRenderer | null {
     const renderers = this.registry.getCurrent()
     if (!renderers) return null
@@ -235,6 +301,10 @@ export class GameCanvas {
     const buildingRenderer = this.getBuildingRenderer()
     if (buildingRenderer) {
       buildingRenderer.setDpr(this.dpr)
+    }
+    const blockRenderer = this.getBlockRenderer()
+    if (blockRenderer) {
+      blockRenderer.setDpr(this.dpr)
     }
   }
 
