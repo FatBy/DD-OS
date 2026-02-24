@@ -77,8 +77,25 @@ export interface ObserverSlice {
   closeNexusPanel: () => void
   clearPendingInput: () => void  // 清除预填输入
   
-  // Chat → Nexus
+  // Chat → Nexus (旧版，创建 Proposal)
   generateNexusFromChat: (messages: Array<{ role: string; content: string }>) => Promise<void>
+  
+  // Observer → Builder: 分析对话并返回结果供建构者使用
+  analyzeConversationForBuilder: (messages: Array<{ role: string; content: string }>) => Promise<NexusAnalysisResult | null>
+}
+
+// Observer 分析结果类型（供 Builder 使用）
+export interface NexusAnalysisResult {
+  name: string
+  description: string
+  sopContent: string           // 完整 Markdown SOP
+  confidence: number
+  suggestedSkills: string[]    // 建议绑定的技能/工具
+  tags: string[]               // 分类标签
+  triggers: string[]           // 触发词（用户说什么会激活这个 Nexus）
+  objective: string            // 核心目标
+  metrics: string[]            // 质量指标
+  strategy: string             // 执行策略
 }
 
 // ============================================
@@ -165,30 +182,53 @@ function generatePurposeSummary(trigger: TriggerPattern): string {
 }
 
 // ============================================
-// 对话转 Nexus 提示词
+// 对话转 Nexus 提示词 (升级版 - 完整 Nexus 格式)
 // ============================================
 
 const CHAT_TO_NEXUS_PROMPT = `你是 DD-OS 的"提炼器"。分析用户与 AI 的对话记录，提炼出可复用的 Nexus（自动化执行节点）。
 
-分析维度：
-1. 用户在对话中试图完成什么任务？
-2. 涉及哪些工具/技能？
-3. 是否有可固化的工作流程？
+## Nexus 是什么
+Nexus 是 DD-OS 的核心工作单元，类似于"专家角色+标准作业程序"的组合。每个 Nexus 应该：
+- 有清晰的功能定位和适用场景
+- 包含可执行的详细 SOP（标准作业程序）
+- 绑定必要的工具/技能
+- 有明确的触发条件和质量标准
 
+## 分析维度
+1. 用户在对话中试图完成什么任务？核心目标是什么？
+2. 涉及哪些工具/技能？它们如何协作？
+3. 工作流程是什么？有哪些关键步骤和注意事项？
+4. 可以提炼出什么样的可复用模式？
+
+## 返回格式
 返回 JSON：
 {
   "canCreate": true,
-  "suggestedName": "Nexus 名称规范：2-6个中文字，必须体现功能用途。好的例子：'代码审查'、'文档整理'、'日志分析'、'数据备份'。避免：数字编号、英文缩写、无意义的标识符。",
-  "suggestedSkills": ["工具名1", "工具名2"],
-  "suggestedSOP": "为这个 Nexus 编写可执行的系统提示词，描述它应如何处理此类任务，50-150字。",
-  "summary": "一句话概括此对话的核心目标",
+  "suggestedName": "2-6个中文字，体现功能用途。好的例子：'代码审查'、'漫改剧制作'、'文档整理'",
+  "description": "一句话描述这个 Nexus 的核心功能和适用场景",
+  "suggestedSkills": ["工具名1", "工具名2", "工具名3"],
+  "tags": ["分类标签1", "分类标签2"],
+  "triggers": ["触发词1", "触发词2", "触发词3"],
+  "objective": "这个 Nexus 要达成的核心目标（一句话）",
+  "metrics": ["质量指标1：具体标准", "质量指标2：具体标准"],
+  "strategy": "执行策略概述（如何组织工作流程）",
+  "sopContent": "## 完整的 Markdown 格式 SOP\\n\\n详细的标准作业程序，包含：\\n- 执行流程步骤\\n- 每步的具体操作说明\\n- 关键注意事项\\n- 质量检查点\\n- 常见问题处理\\n\\n至少300字，可以包含代码块、表格、列表等",
   "confidence": 0.1 ~ 1.0
 }
 
-如果对话内容过于杂乱或不适合提炼，返回：
-{"canCreate": false, "reason": "原因"}
+## SOP 编写要求
+sopContent 必须是详细可执行的操作指南，包含：
+1. **流程概览**: 用列表或流程图描述整体步骤
+2. **详细步骤**: 每个步骤的具体操作方法
+3. **参数配置**: 相关配置项和推荐值
+4. **质量标准**: 如何判断每步是否成功
+5. **注意事项**: 常见陷阱和规避方法
+6. **执行指令**: 当用户请求相关任务时，应该如何响应
 
-只输出 JSON。`
+## 如果对话不适合提炼
+返回：{"canCreate": false, "reason": "原因说明"}
+
+只输出 JSON，不要其他内容。`
 
 // ============================================
 // LLM 模式分析提示词 (语义引擎)
@@ -871,6 +911,84 @@ ${summaryData.recentTasks.map((t, i) =>
       console.log('[Observer] Nexus proposal created from chat')
     } catch (error) {
       console.warn('[Observer] Failed to generate Nexus from chat:', error)
+    } finally {
+      set({ isAnalyzing: false })
+    }
+  },
+
+  /**
+   * 观察者分析对话，返回结果供建构者（CreateNexusModal）使用
+   * 这是 Observer → Builder 的核心桥接方法
+   */
+  analyzeConversationForBuilder: async (messages): Promise<NexusAnalysisResult | null> => {
+    const { isAnalyzing } = get()
+    if (isAnalyzing) return null
+
+    // 过滤有效对话
+    const validMessages = messages.filter(
+      m => (m.role === 'user' || m.role === 'assistant') && m.content.trim()
+    )
+    
+    if (validMessages.length < 2) {
+      console.warn('[Observer] Not enough messages to analyze')
+      return null
+    }
+
+    set({ isAnalyzing: true })
+    console.log('[Observer] 🔍 Analyzing conversation for Builder...')
+
+    try {
+      const config = getLLMConfig()
+      if (!config.apiKey) {
+        console.warn('[Observer] No LLM API key configured')
+        return null
+      }
+
+      // 截取最近 30 条消息（比旧版更多，提取更完整信息）
+      const recentMessages = validMessages.slice(-30)
+      const conversationText = recentMessages
+        .map(m => `[${m.role}]: ${m.content.slice(0, 500)}`)
+        .join('\n')
+
+      const response = await chat(
+        [
+          { role: 'system', content: CHAT_TO_NEXUS_PROMPT },
+          { role: 'user', content: `以下是用户与 AI 的对话记录：\n\n${conversationText}\n\n请分析并提炼。` }
+        ],
+        { temperature: 0.3 } as any
+      )
+
+      const jsonMatch = response.match(/\{[\s\S]*\}/)
+      if (!jsonMatch) {
+        console.warn('[Observer] Invalid JSON from chat analysis')
+        return null
+      }
+
+      const result = JSON.parse(jsonMatch[0])
+      console.log('[Observer] 📋 Analysis result for Builder:', result)
+
+      if (!result.canCreate) {
+        console.log('[Observer] Chat not suitable for Nexus:', result.reason)
+        // 即使 LLM 认为不适合，也返回部分信息让用户决定
+        return null
+      }
+
+      // 返回结构化结果供 Builder 使用
+      return {
+        name: result.suggestedName || '',
+        description: result.description || result.summary || '',
+        sopContent: result.sopContent || result.suggestedSOP || '',
+        confidence: result.confidence || 0.7,
+        suggestedSkills: result.suggestedSkills || [],
+        tags: result.tags || [],
+        triggers: result.triggers || [],
+        objective: result.objective || '',
+        metrics: result.metrics || [],
+        strategy: result.strategy || '',
+      }
+    } catch (error) {
+      console.warn('[Observer] Failed to analyze conversation:', error)
+      return null
     } finally {
       set({ isAnalyzing: false })
     }

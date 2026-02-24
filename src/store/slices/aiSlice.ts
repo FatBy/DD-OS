@@ -157,7 +157,7 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
   executionStatuses: initialChatHistory.statuses,
 
   // 聊天面板开关 - 有历史对话时自动打开
-  isChatOpen: initialChatHistory.messages.filter(m => m.role !== 'system').length > 0,
+  isChatOpen: false, // 默认关闭，让用户主动打开
   setChatOpen: (open) => set({ isChatOpen: open }),
 
   // ============================================
@@ -209,95 +209,155 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
       const isNativeConnected = connectionMode === 'native' && connectionStatus === 'connected'
 
       if (isNativeConnected) {
-        // Native 模式: 走 Quest ReAct 循环
-        const execId = `nexus-exec-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
-        const execStartTime = Date.now()
+        // Native 模式: 根据任务复杂度选择路径
+        const taskComplexity = localClawService.classifyTaskComplexity(message)
+        console.log('[NexusChat] Task complexity:', taskComplexity, 'for:', message.slice(0, 50))
+        
+        if (taskComplexity === 'simple') {
+          // ===== 简单任务：直接流式 LLM 响应 =====
+          const msgId = `nexus-simple-${Date.now()}`
+          
+          // 占位消息
+          set((state) => {
+            const prev = state.nexusChatMap[nexusId] || []
+            return {
+              nexusChatMap: { 
+                ...state.nexusChatMap, 
+                [nexusId]: [...prev, { id: msgId, role: 'assistant' as const, content: '', timestamp: Date.now() }].slice(-MAX_NEXUS_MESSAGES) 
+              },
+            }
+          })
 
-        // 占位消息
-        const placeholderMsg: ChatMessage = {
-          id: execId,
-          role: 'assistant',
-          content: '',
-          timestamp: Date.now(),
-          execution: { id: execId, status: 'running', timestamp: Date.now() },
-        }
-        set((state) => {
-          const prev = state.nexusChatMap[nexusId] || []
-          return {
-            nexusChatMap: { ...state.nexusChatMap, [nexusId]: [...prev, placeholderMsg].slice(-MAX_NEXUS_MESSAGES) },
+          try {
+            const result = await localClawService.sendSimpleChat(
+              message,
+              nexusId,
+              (chunk) => {
+                // 流式更新
+                set((state) => ({
+                  nexusChatStreamContent: (state.nexusChatStreamContent || '') + chunk,
+                }))
+              }
+            )
+
+            // 完成：替换为最终内容
+            set((state) => {
+              const msgs = (state.nexusChatMap[nexusId] || []).map(m =>
+                m.id === msgId ? { ...m, content: result } : m
+              )
+              return {
+                nexusChatMap: { ...state.nexusChatMap, [nexusId]: msgs },
+                nexusChatStreaming: null,
+                nexusChatStreamContent: '',
+              }
+            })
+            persistNexusChatMap(get().nexusChatMap)
+
+          } catch (err: any) {
+            set((state) => {
+              const msgs = (state.nexusChatMap[nexusId] || []).map(m =>
+                m.id === msgId ? { ...m, content: `对话失败: ${err.message}`, error: true } : m
+              )
+              return {
+                nexusChatMap: { ...state.nexusChatMap, [nexusId]: msgs },
+                nexusChatStreaming: null,
+                nexusChatStreamContent: '',
+                nexusChatError: err.message,
+              }
+            })
           }
-        })
 
-        // 激活 Nexus 并执行
-        fullState.setActiveNexus?.(nexusId)
-        fullState.startNexusExecution?.(nexusId)
+        } else {
+          // ===== 复杂任务：走 Quest ReAct 循环 =====
+          const execId = `nexus-exec-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+          const execStartTime = Date.now()
 
-        // 创建实时任务
-        fullState.addActiveExecution?.({
-          id: execId,
-          title: message.slice(0, 50),
-          description: message,
-          status: 'executing',
-          priority: 'high',
-          timestamp: new Date().toISOString(),
-          executionSteps: [],
-          taskPlan: { nexusId },
-        })
-
-        try {
-          const result = await localClawService.sendMessageWithQuestPlan(
-            message,
-            nexusId,
-            (step) => {
-              fullState.appendExecutionStep?.(execId, step)
-            }
-          )
-
-          const execDuration = Date.now() - execStartTime
-          const nexusCreatedFiles = localClawService.lastCreatedFiles.length > 0
-            ? [...localClawService.lastCreatedFiles]
-            : undefined
-
-          // 替换占位消息为最终结果
+          // 占位消息
+          const placeholderMsg: ChatMessage = {
+            id: execId,
+            role: 'assistant',
+            content: '',
+            timestamp: Date.now(),
+            execution: { id: execId, status: 'running', timestamp: Date.now() },
+          }
           set((state) => {
-            const msgs = (state.nexusChatMap[nexusId] || []).map(m =>
-              m.id === execId ? { ...m, content: result, execution: undefined, createdFiles: nexusCreatedFiles } : m
-            )
+            const prev = state.nexusChatMap[nexusId] || []
             return {
-              nexusChatMap: { ...state.nexusChatMap, [nexusId]: msgs },
-              nexusChatStreaming: null,
-              nexusChatStreamContent: '',
+              nexusChatMap: { ...state.nexusChatMap, [nexusId]: [...prev, placeholderMsg].slice(-MAX_NEXUS_MESSAGES) },
             }
           })
 
-          fullState.updateActiveExecution?.(execId, {
-            status: 'done',
-            executionOutput: result,
-            executionDuration: execDuration,
-          })
-          fullState.completeNexusExecution?.(nexusId, { status: 'success', output: result.slice(0, 200) })
-          persistNexusChatMap(get().nexusChatMap)
+          // 激活 Nexus 并执行
+          fullState.setActiveNexus?.(nexusId)
+          fullState.startNexusExecution?.(nexusId)
 
-        } catch (err: any) {
-          const execDuration = Date.now() - execStartTime
-          set((state) => {
-            const msgs = (state.nexusChatMap[nexusId] || []).map(m =>
-              m.id === execId ? { ...m, content: `执行失败: ${err.message}`, error: true, execution: undefined } : m
+          // 创建实时任务
+          fullState.addActiveExecution?.({
+            id: execId,
+            title: message.slice(0, 50),
+            description: message,
+            status: 'executing',
+            priority: 'high',
+            timestamp: new Date().toISOString(),
+            executionSteps: [],
+            taskPlan: { nexusId },
+          })
+
+          try {
+            const result = await localClawService.sendMessageWithQuestPlan(
+              message,
+              nexusId,
+              (step) => {
+                fullState.appendExecutionStep?.(execId, step)
+              }
             )
-            return {
-              nexusChatMap: { ...state.nexusChatMap, [nexusId]: msgs },
-              nexusChatStreaming: null,
-              nexusChatStreamContent: '',
-              nexusChatError: err.message,
-            }
-          })
-          fullState.updateActiveExecution?.(execId, {
-            status: 'done',
-            executionError: err.message,
-            executionDuration: execDuration,
-          })
-          fullState.completeNexusExecution?.(nexusId, { status: 'error', error: err.message })
-          persistNexusChatMap(get().nexusChatMap)
+
+            const execDuration = Date.now() - execStartTime
+            const nexusCreatedFiles = localClawService.lastCreatedFiles.length > 0
+              ? [...localClawService.lastCreatedFiles]
+              : undefined
+
+            // 替换占位消息为最终结果
+            set((state) => {
+              const msgs = (state.nexusChatMap[nexusId] || []).map(m =>
+                m.id === execId ? { ...m, content: result, execution: undefined, createdFiles: nexusCreatedFiles } : m
+              )
+              return {
+                nexusChatMap: { ...state.nexusChatMap, [nexusId]: msgs },
+                nexusChatStreaming: null,
+                nexusChatStreamContent: '',
+              }
+            })
+
+            fullState.updateActiveExecution?.(execId, {
+              status: 'done',
+              executionOutput: result,
+              executionDuration: execDuration,
+            })
+            fullState.completeNexusExecution?.(nexusId, { status: 'success', output: result.slice(0, 200) })
+            persistNexusChatMap(get().nexusChatMap)
+
+          } catch (err: any) {
+            const execDuration = Date.now() - execStartTime
+            set((state) => {
+              const msgs = (state.nexusChatMap[nexusId] || []).map(m =>
+                m.id === execId ? { ...m, content: `执行失败: ${err.message}`, error: true, execution: undefined } : m
+              )
+              return {
+                nexusChatMap: { ...state.nexusChatMap, [nexusId]: msgs },
+                nexusChatStreaming: null,
+                nexusChatStreamContent: '',
+                nexusChatError: err.message,
+              }
+            })
+            fullState.updateActiveExecution?.(execId, {
+              status: 'done',
+              executionError: err.message,
+              executionDuration: execDuration,
+            })
+            fullState.completeNexusExecution?.(nexusId, { status: 'error', error: err.message })
+            persistNexusChatMap(get().nexusChatMap)
+          }
         }
 
       } else {

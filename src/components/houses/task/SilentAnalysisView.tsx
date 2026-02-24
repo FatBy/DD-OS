@@ -1,19 +1,26 @@
 import { useEffect } from 'react'
 import { motion } from 'framer-motion'
-import { Sparkles, RefreshCw, AlertCircle, Inbox } from 'lucide-react'
+import { Sparkles, RefreshCw, AlertCircle, Inbox, Wand2 } from 'lucide-react'
 import { useStore } from '@/store'
 import { isLLMConfigured } from '@/services/llmService'
+import type { OptimizationAction } from '@/store/slices/sessionsSlice'
 
 export function SilentAnalysisView() {
   const silentAnalysis = useStore((s) => s.silentAnalysis)
   const shouldRefresh = useStore((s) => s.shouldRefreshAnalysis)
   const generateAnalysis = useStore((s) => s.generateSilentAnalysis)
   const activeExecutions = useStore((s) => s.activeExecutions)
+  const openNexusPanelWithInput = useStore((s) => s.openNexusPanelWithInput)
   const configured = isLLMConfigured()
 
   const doneCount = activeExecutions.filter(
     t => t.status === 'done' || t.status === 'terminated'
   ).length
+
+  // 应用优化建议
+  const handleApplyOptimization = (opt: OptimizationAction) => {
+    openNexusPanelWithInput(opt.target, opt.prompt)
+  }
 
   // 自动触发静默分析
   useEffect(() => {
@@ -90,6 +97,27 @@ export function SilentAnalysisView() {
               <p className="text-sm font-mono text-white/30">
                 点击刷新按钮生成分析
               </p>
+            )}
+
+            {/* 优化建议按钮 */}
+            {silentAnalysis.optimizations && silentAnalysis.optimizations.length > 0 && (
+              <div className="mt-4 pt-3 border-t border-white/5">
+                <div className="text-xs font-mono text-white/30 mb-2">一键优化</div>
+                <div className="flex flex-wrap gap-2">
+                  {silentAnalysis.optimizations.map((opt, idx) => (
+                    <button
+                      key={idx}
+                      onClick={() => handleApplyOptimization(opt)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono
+                        bg-amber-500/10 hover:bg-amber-500/20 text-amber-300/80 hover:text-amber-300
+                        border border-amber-500/20 hover:border-amber-500/40 rounded-lg transition-all"
+                    >
+                      <Wand2 className="w-3 h-3" />
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
             )}
 
             {/* 上次分析时间 */}

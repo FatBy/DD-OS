@@ -1,8 +1,8 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import { motion, AnimatePresence, useDragControls } from 'framer-motion'
 import { 
   MessageSquare, X, Send, Trash2, Square, Sparkles, Loader2, Zap,
-  Image, Paperclip, Puzzle, Server, Command, Plus, GripHorizontal, BookmarkPlus
+  Image, Paperclip, Puzzle, Server, Command, GripHorizontal, Wand2
 } from 'lucide-react'
 import { useStore } from '@/store'
 import { isLLMConfigured } from '@/services/llmService'
@@ -11,6 +11,7 @@ import { ChatMessage, StreamingMessage } from './ChatMessage'
 import { ChatErrorBoundary } from './ChatErrorBoundary'
 import { AddMCPModal } from './AddMCPModal'
 import { AddSkillModal } from './AddSkillModal'
+import { CreateNexusModal, NexusInitialData } from '@/components/world/CreateNexusModal'
 import { useT } from '@/i18n'
 
 export function AIChatPanel() {
@@ -21,15 +22,19 @@ export function AIChatPanel() {
   const [attachments, setAttachments] = useState<Array<{ type: string; name: string; data?: string }>>([])
   const [showMCPModal, setShowMCPModal] = useState(false)
   const [showSkillModal, setShowSkillModal] = useState(false)
+  const [showNexusModal, setShowNexusModal] = useState(false)
+  const [nexusInitialData, setNexusInitialData] = useState<NexusInitialData | undefined>()
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const imageInputRef = useRef<HTMLInputElement>(null)
   const constraintsRef = useRef<HTMLDivElement>(null)
   const dragControls = useDragControls()
+  
+  // 存储后台分析的结果
+  const pendingAnalysisResult = useRef<NexusInitialData | null>(null)
 
   const currentView = useStore((s) => s.currentView)
-  const setView = useStore((s) => s.setView)
   const chatMessages = useStore((s) => s.chatMessages)
   const chatStreaming = useStore((s) => s.chatStreaming)
   const chatStreamContent = useStore((s) => s.chatStreamContent)
@@ -38,8 +43,13 @@ export function AIChatPanel() {
   const clearChat = useStore((s) => s.clearChat)
   const abortChat = useStore((s) => s.abortChat)
   const agentStatus = useStore((s) => s.agentStatus)
-  const generateNexusFromChat = useStore((s) => s.generateNexusFromChat)
-  const isAnalyzing = useStore((s) => s.isAnalyzing)
+  
+  // Observer 观察者 - 负责分析对话
+  const analyzeConversationForBuilder = useStore((s) => s.analyzeConversationForBuilder)
+  const isObserverAnalyzing = useStore((s) => s.isAnalyzing)
+  
+  // Toast 通知
+  const addToast = useStore((s) => s.addToast)
 
   const configured = isLLMConfigured()
   const quickCommands = getQuickCommands(currentView)
@@ -157,11 +167,99 @@ export function AIChatPanel() {
 
   const visibleMsgCount = chatMessages.filter(m => m.role !== 'system').length
 
-  // 创建 Nexus 引导处理
-  const handleCreateNexus = () => {
-    setView('world')
-    setIsOpen(false)
-  }
+  /**
+   * 创建 Nexus 处理
+   * 流程：Observer（观察者）后台分析对话 → Toast 通知 → Builder（建构者/CreateNexusModal）展示编辑
+   */
+  const handleCreateNexus = useCallback(async () => {
+    // 如果没有对话，直接打开空表单（建构者模式）
+    if (chatMessages.length < 2) {
+      setNexusInitialData(undefined)
+      setShowNexusModal(true)
+      return
+    }
+
+    // 显示"开始分析"Toast
+    addToast({
+      type: 'info',
+      title: '观察者启动',
+      message: '正在分析对话内容，完成后将通知你...',
+      duration: 3000,
+    })
+
+    // 后台运行分析（不阻塞用户操作）
+    const messagesToAnalyze = chatMessages.map(m => ({ role: m.role, content: m.content }))
+    
+    // 异步分析，使用 Promise 但不 await
+    analyzeConversationForBuilder(messagesToAnalyze).then((analysisResult) => {
+      if (analysisResult) {
+        // 存储分析结果
+        const resultData: NexusInitialData = {
+          name: analysisResult.name,
+          description: analysisResult.description,
+          sopContent: analysisResult.sopContent,
+          suggestedSkills: analysisResult.suggestedSkills,
+          tags: analysisResult.tags,
+          triggers: analysisResult.triggers,
+          objective: analysisResult.objective,
+          metrics: analysisResult.metrics,
+          strategy: analysisResult.strategy,
+          isFromChat: true,
+        }
+        pendingAnalysisResult.current = resultData
+        
+        // 显示成功 Toast（可点击打开弹窗）
+        addToast({
+          type: 'success',
+          title: 'Nexus 分析完成',
+          message: `已提取「${analysisResult.name}」，包含 ${analysisResult.suggestedSkills?.length || 0} 个技能`,
+          duration: 8000,
+          onClick: () => {
+            // 点击 Toast 时打开 Modal 并填入数据
+            setNexusInitialData(pendingAnalysisResult.current || undefined)
+            setShowNexusModal(true)
+          },
+        })
+        
+        console.log('[Observer → Builder] 后台分析完成:', {
+          name: analysisResult.name,
+          skillCount: analysisResult.suggestedSkills?.length || 0,
+          sopLength: analysisResult.sopContent?.length || 0,
+        })
+      } else {
+        // 分析失败，提示用户手动创建
+        addToast({
+          type: 'warning',
+          title: '分析未能提取有效内容',
+          message: '点击手动创建 Nexus',
+          duration: 6000,
+          onClick: () => {
+            setNexusInitialData(undefined)
+            setShowNexusModal(true)
+          },
+        })
+        console.log('[Observer → Builder] 分析无结果')
+      }
+    }).catch((error) => {
+      console.error('[Observer] 分析失败:', error)
+      addToast({
+        type: 'error',
+        title: '分析失败',
+        message: '点击手动创建 Nexus',
+        duration: 6000,
+        onClick: () => {
+          setNexusInitialData(undefined)
+          setShowNexusModal(true)
+        },
+      })
+    })
+  }, [chatMessages, analyzeConversationForBuilder, addToast])
+
+  // 关闭 Nexus Modal 时清理状态
+  const handleCloseNexusModal = useCallback(() => {
+    setShowNexusModal(false)
+    setNexusInitialData(undefined)
+  }, [])
 
   return (
     <>
@@ -264,13 +362,23 @@ export function AIChatPanel() {
                   )}
                 </div>
                 <div className="flex items-center gap-2">
+                  {/* 创建 Nexus 按钮 - 更明显 */}
                   <button
-                    onClick={() => generateNexusFromChat(chatMessages.map(m => ({ role: m.role, content: m.content })))}
-                    disabled={chatMessages.length < 2 || isAnalyzing || chatStreaming}
-                    className="p-2.5 text-skin-text-tertiary hover:text-skin-accent-amber transition-colors rounded-lg hover:bg-white/5 disabled:opacity-30 disabled:pointer-events-none"
-                    title="将当前对话保存为 Nexus"
+                    onClick={handleCreateNexus}
+                    disabled={chatStreaming || isObserverAnalyzing}
+                    className="flex items-center gap-1.5 px-3 py-1.5 
+                             text-sm font-mono text-amber-400 
+                             bg-amber-500/10 border border-amber-500/30 rounded-lg
+                             hover:bg-amber-500/20 hover:border-amber-500/40
+                             transition-colors disabled:opacity-30 disabled:pointer-events-none"
+                    title="从对话创建 Nexus"
                   >
-                    {isAnalyzing ? <Loader2 className="w-4.5 h-4.5 animate-spin" /> : <BookmarkPlus className="w-4.5 h-4.5" />}
+                    {isObserverAnalyzing ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Wand2 className="w-4 h-4" />
+                    )}
+                    <span>创建 Nexus</span>
                   </button>
                   <button
                     onClick={clearChat}
@@ -310,14 +418,14 @@ export function AIChatPanel() {
                     <button
                       onClick={handleCreateNexus}
                       className="flex items-center gap-3 px-6 py-3.5 mb-8
-                                 bg-gradient-to-r from-skin-accent-amber/20 to-skin-accent-cyan/10
-                                 border border-skin-accent-amber/30 rounded-xl
-                                 text-skin-accent-amber hover:border-skin-accent-amber/50
-                                 hover:from-skin-accent-amber/30 hover:to-skin-accent-cyan/15
+                                 bg-gradient-to-r from-amber-500/20 to-cyan-500/10
+                                 border border-amber-500/30 rounded-xl
+                                 text-amber-400 hover:border-amber-500/50
+                                 hover:from-amber-500/30 hover:to-cyan-500/15
                                  transition-all duration-300 group"
                     >
-                      <Plus className="w-5 h-5 group-hover:rotate-90 transition-transform duration-300" />
-                      <span className="font-mono text-base font-medium">{t('nexus.create_new') || '创建新 Nexus'}</span>
+                      <Wand2 className="w-5 h-5 group-hover:rotate-12 transition-transform duration-300" />
+                      <span className="font-mono text-base font-medium">创建 Nexus</span>
                     </button>
                     
                     {quickCommands.length > 0 && (
@@ -507,7 +615,7 @@ export function AIChatPanel() {
         )}
       </AnimatePresence>
 
-      {/* MCP / SKILL 引导模态框 */}
+      {/* MCP / SKILL / Nexus 引导模态框 */}
       <AddMCPModal
         isOpen={showMCPModal}
         onClose={() => setShowMCPModal(false)}
@@ -517,6 +625,11 @@ export function AIChatPanel() {
         isOpen={showSkillModal}
         onClose={() => setShowSkillModal(false)}
         onConfirm={handleAddSkill}
+      />
+      <CreateNexusModal
+        isOpen={showNexusModal}
+        onClose={handleCloseNexusModal}
+        initialData={nexusInitialData}
       />
     </>
   )

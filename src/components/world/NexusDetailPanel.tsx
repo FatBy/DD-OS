@@ -5,13 +5,15 @@ import {
   ChevronDown, ChevronRight, Puzzle, Cpu,
   BookOpen, Zap, CheckCircle2, XCircle, Timer, Target, TrendingUp, AlertCircle,
   Loader2, Pause, SkipForward, Activity, Edit2,
-  Send, Square, MessageSquare, ArrowLeft, GripVertical, Search
+  Send, Square, MessageSquare, ArrowLeft, GripVertical, Download
 } from 'lucide-react'
 import { useStore } from '@/store'
 import { cn } from '@/utils/cn'
 import { useT } from '@/i18n'
 import { ChatMessage as ChatMessageComponent, StreamingMessage } from '@/components/ai/ChatMessage'
 import { ChatErrorBoundary } from '@/components/ai/ChatErrorBoundary'
+import { searchOnlineSkills } from '@/services/onlineSearchService'
+import { installSkill } from '@/services/installService'
 import type { NexusEntity, NexusExperience } from '@/types'
 
 // 建造总时长（与 worldSlice tickConstructionAnimations 中的 3000ms 一致）
@@ -119,7 +121,6 @@ export function NexusDetailPanel() {
   const activeExecutions = useStore((s) => s.activeExecutions)
   const worldTheme = useStore((s) => s.worldTheme)
 
-  const setView = useStore((s) => s.setView)
   const addToast = useStore((s) => s.addToast)
 
   // 搜索技能功能
@@ -144,6 +145,9 @@ export function NexusDetailPanel() {
   // 名称编辑状态
   const [isEditingName, setIsEditingName] = useState(false)
   const [editNameValue, setEditNameValue] = useState('')
+  
+  // 技能安装状态
+  const [installingSkillId, setInstallingSkillId] = useState<string | null>(null)
 
   // 执行视图状态: 'info' = 详情视图, 'chat' = 对话视图
   const [panelMode, setPanelMode] = useState<'info' | 'chat'>('info')
@@ -170,6 +174,33 @@ export function NexusDetailPanel() {
 
   // File-based Nexus can execute even without bound skills (it has SOP)
   const canExecute = boundSkills.length > 0 || !!nexus?.sopContent
+
+  // 搜索并安装技能
+  const handleSearchAndInstallSkill = async (skillName: string) => {
+    setInstallingSkillId(skillName)
+    try {
+      // 1. 搜索在线技能
+      const results = await searchOnlineSkills(skillName)
+      if (results.length === 0) {
+        addToast({ type: 'warning', title: `未找到 "${skillName}" 的在线技能` })
+        return
+      }
+      
+      // 2. 安装第一个匹配结果
+      const matched = results[0]
+      const installResult = await installSkill(matched)
+      
+      if (installResult.success) {
+        addToast({ type: 'success', title: `技能 "${matched.name}" 安装成功，请重新加载` })
+      } else {
+        addToast({ type: 'error', title: `安装失败: ${installResult.message}` })
+      }
+    } catch (error) {
+      addToast({ type: 'error', title: '搜索安装失败' })
+    } finally {
+      setInstallingSkillId(null)
+    }
+  }
 
   // 查找与当前 Nexus 关联的活跃任务
   const activeTask = useMemo(() => {
@@ -723,19 +754,26 @@ export function NexusDetailPanel() {
                         {skill.status !== 'active' && (
                           <div className="flex items-center gap-2 mt-1.5">
                             <button
-                              onClick={() => {
-                                // 关闭面板，跳转到技能屋
-                                closeNexusPanel()
-                                setView('skill')
-                                addToast({
-                                  type: 'info',
-                                  title: `请搜索 "${skill.name}" 技能`,
-                                })
-                              }}
-                              className="text-[11px] font-mono px-2 py-1 rounded bg-amber-500/10 text-amber-400/70 border border-amber-500/15 hover:bg-amber-500/20 hover:text-amber-400 transition-colors flex items-center gap-1"
+                              onClick={() => handleSearchAndInstallSkill(skill.name)}
+                              disabled={installingSkillId === skill.name}
+                              className={cn(
+                                "text-[11px] font-mono px-2 py-1 rounded border transition-colors flex items-center gap-1",
+                                installingSkillId === skill.name
+                                  ? "bg-cyan-500/20 text-cyan-400 border-cyan-500/30 cursor-wait"
+                                  : "bg-amber-500/10 text-amber-400/70 border-amber-500/15 hover:bg-amber-500/20 hover:text-amber-400"
+                              )}
                             >
-                              <Search className="w-3 h-3" />
-                              搜索并加载
+                              {installingSkillId === skill.name ? (
+                                <>
+                                  <Loader2 className="w-3 h-3 animate-spin" />
+                                  安装中...
+                                </>
+                              ) : (
+                                <>
+                                  <Download className="w-3 h-3" />
+                                  搜索并安装
+                                </>
+                              )}
                             </button>
                             <button
                               onClick={() => {

@@ -530,7 +530,10 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
             self.handle_file(path[6:])
         elif path.startswith('/nexuses/') and '/experience' not in path:
             nexus_name = path[9:]  # strip '/nexuses/'
-            self.handle_nexus_detail(nexus_name)
+            if nexus_name == 'health':
+                self.handle_nexuses_health()
+            else:
+                self.handle_nexus_detail(nexus_name)
         elif path.startswith('/task/status/'):
             task_id = path[13:]
             offset = int(query.get('offset', ['0'])[0])
@@ -539,6 +542,10 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
             self.handle_trace_search(query)
         elif path == '/api/traces/recent':
             self.handle_trace_recent(query)
+        elif path == '/api/registry/skills':
+            self.handle_registry_skills_search(query)
+        elif path == '/api/registry/mcp':
+            self.handle_registry_mcp_search(query)
         elif path == '/mcp/servers':
             self.handle_mcp_servers_list()
         elif path.startswith('/data/'):
@@ -577,6 +584,8 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
         elif path.startswith('/mcp/servers/') and path.endswith('/reconnect'):
             server_name = path[13:-10]  # Extract server name
             self.handle_mcp_reconnect(server_name)
+        elif path == '/mcp/install':
+            self.handle_mcp_install(data)
         elif path == '/skills/install':
             self.handle_skill_install(data)
         elif path == '/skills/uninstall':
@@ -1687,6 +1696,83 @@ curl -X POST http://localhost:3001/api/tools/execute \\
 
         self.send_json(nexuses)
 
+    def handle_nexuses_health(self):
+        """GET /nexuses/health - 检查 nexuses 目录的配置健康状况"""
+        nexuses_dir = self.clawd_path / 'nexuses'
+        issues = []
+        suggestions = []
+        stats = {
+            'valid_nexuses': 0,
+            'orphan_files': 0,
+            'missing_nexus_md': 0,
+            'invalid_frontmatter': 0,
+        }
+
+        if not nexuses_dir.exists():
+            self.send_json({
+                'healthy': True,
+                'issues': [],
+                'suggestions': ['nexuses 目录为空，可以开始创建 Nexus'],
+                'stats': stats
+            })
+            return
+
+        # 收集所有有效的 Nexus 目录
+        valid_dirs = set()
+        for nexus_md in nexuses_dir.rglob('NEXUS.md'):
+            nexus_dir = nexus_md.parent
+            frontmatter = parse_nexus_frontmatter(nexus_md)
+            if frontmatter and frontmatter.get('name'):
+                valid_dirs.add(str(nexus_dir.resolve()))
+                stats['valid_nexuses'] += 1
+            else:
+                stats['invalid_frontmatter'] += 1
+                issues.append({
+                    'type': 'invalid_frontmatter',
+                    'path': str(nexus_md),
+                    'message': f"NEXUS.md 缺少必要的 'name' 字段",
+                })
+
+        # 检查孤立文件（有 .json 但没有 NEXUS.md）
+        for item in nexuses_dir.iterdir():
+            if item.is_file() and item.suffix == '.json':
+                # 检查是否有对应的 NEXUS.md 目录
+                stem = item.stem.replace('.json', '')
+                potential_dir = nexuses_dir / stem
+                if not (potential_dir / 'NEXUS.md').exists():
+                    stats['orphan_files'] += 1
+                    issues.append({
+                        'type': 'orphan_json',
+                        'path': str(item),
+                        'message': f"发现孤立的 JSON 文件，没有对应的 NEXUS.md",
+                        'suggestion': f"创建 {stem}/NEXUS.md 或删除此文件",
+                    })
+                    suggestions.append(
+                        f"文件 '{item.name}' 可能是 AI 生成的配置，需要转换为 NEXUS.md 格式才能被系统识别"
+                    )
+
+            # 检查目录但没有 NEXUS.md
+            if item.is_dir() and not (item / 'NEXUS.md').exists():
+                # 检查目录内是否有其他文件
+                files = list(item.iterdir())
+                if files:
+                    stats['missing_nexus_md'] += 1
+                    issues.append({
+                        'type': 'missing_nexus_md',
+                        'path': str(item),
+                        'message': f"目录 '{item.name}' 缺少 NEXUS.md 文件",
+                        'files': [f.name for f in files[:5]],
+                    })
+
+        healthy = len(issues) == 0
+        self.send_json({
+            'healthy': healthy,
+            'issues': issues,
+            'suggestions': suggestions,
+            'stats': stats,
+            'tip': '运行 /nexuses 查看所有有效的 Nexus' if healthy else '请修复上述问题后重新检查',
+        })
+
     def handle_nexus_detail(self, nexus_name: str):
         """GET /nexuses/{name} - 获取单个 Nexus 完整信息"""
         nexuses_dir = self.clawd_path / 'nexuses'
@@ -1956,6 +2042,204 @@ curl -X POST http://localhost:3001/api/tools/execute \\
                 'status': 'error',
                 'message': f'Failed to reconnect server: {server_name}'
             }, 500)
+
+    # ============================================
+    # 🔍 Registry 在线搜索 (TF-IDF, 无 LLM)
+    # ============================================
+
+    def handle_registry_skills_search(self, query: dict):
+        """GET /api/registry/skills?q={query} - 搜索可安装的技能"""
+        q = query.get('q', [''])[0].strip().lower()
+        
+        # 读取 registry 文件
+        registry_path = self.clawd_path / 'registry' / 'skills.json'
+        if not registry_path.exists():
+            self.send_json({'status': 'ok', 'results': [], 'message': 'Registry not found'})
+            return
+        
+        try:
+            registry = json.loads(registry_path.read_text(encoding='utf-8'))
+            skills = registry.get('skills', [])
+        except Exception as e:
+            self.send_json({'status': 'error', 'message': f'Failed to read registry: {e}'}, 500)
+            return
+        
+        # 如果没有查询词，返回所有
+        if not q:
+            self.send_json({
+                'status': 'ok',
+                'results': skills[:20],
+                'total': len(skills)
+            })
+            return
+        
+        # TF-IDF 风格的关键词匹配
+        tokens = self._tokenize(q)
+        scored_results = []
+        
+        for skill in skills:
+            score = self._compute_skill_score(skill, tokens)
+            if score > 0:
+                scored_results.append({**skill, 'score': score})
+        
+        # 按分数排序
+        scored_results.sort(key=lambda x: x['score'], reverse=True)
+        
+        self.send_json({
+            'status': 'ok',
+            'results': scored_results[:10],
+            'total': len(scored_results),
+            'query': q
+        })
+
+    def handle_registry_mcp_search(self, query: dict):
+        """GET /api/registry/mcp?q={query} - 搜索可安装的 MCP 服务器"""
+        q = query.get('q', [''])[0].strip().lower()
+        
+        # 读取 registry 文件
+        registry_path = self.clawd_path / 'registry' / 'mcp-servers.json'
+        if not registry_path.exists():
+            self.send_json({'status': 'ok', 'results': [], 'message': 'Registry not found'})
+            return
+        
+        try:
+            registry = json.loads(registry_path.read_text(encoding='utf-8'))
+            servers = registry.get('servers', [])
+        except Exception as e:
+            self.send_json({'status': 'error', 'message': f'Failed to read registry: {e}'}, 500)
+            return
+        
+        # 如果没有查询词，返回所有
+        if not q:
+            self.send_json({
+                'status': 'ok',
+                'results': servers[:20],
+                'total': len(servers)
+            })
+            return
+        
+        # TF-IDF 风格的关键词匹配
+        tokens = self._tokenize(q)
+        scored_results = []
+        
+        for server in servers:
+            score = self._compute_mcp_score(server, tokens)
+            if score > 0:
+                scored_results.append({**server, 'score': score})
+        
+        # 按分数排序
+        scored_results.sort(key=lambda x: x['score'], reverse=True)
+        
+        self.send_json({
+            'status': 'ok',
+            'results': scored_results[:10],
+            'total': len(scored_results),
+            'query': q
+        })
+
+    def _tokenize(self, text: str) -> list:
+        """分词：按空格和标点拆分"""
+        import re
+        tokens = re.split(r'[\s,，.。!！?？、;；:：\-—]+', text.lower())
+        return [t for t in tokens if t and len(t) >= 1]
+
+    def _compute_skill_score(self, skill: dict, tokens: list) -> float:
+        """计算技能的匹配分数 (TF-IDF 简化版)"""
+        score = 0.0
+        name = skill.get('name', '').lower()
+        desc = skill.get('description', '').lower()
+        keywords = [k.lower() for k in skill.get('keywords', [])]
+        full_text = f"{name} {desc} {' '.join(keywords)}"
+        
+        for token in tokens:
+            # 词频 (TF)
+            tf = full_text.count(token)
+            # 长词权重更高 (简化 IDF)
+            idf = 1.5 if len(token) > 3 else 1.0
+            score += tf * idf
+            
+            # 精确匹配加权
+            if token in name:
+                score += 10
+            if token in keywords:
+                score += 5
+        
+        return min(score, 100)
+
+    def _compute_mcp_score(self, server: dict, tokens: list) -> float:
+        """计算 MCP 服务器的匹配分数"""
+        score = 0.0
+        name = server.get('name', '').lower()
+        desc = server.get('description', '').lower()
+        keywords = [k.lower() for k in server.get('keywords', [])]
+        full_text = f"{name} {desc} {' '.join(keywords)}"
+        
+        for token in tokens:
+            tf = full_text.count(token)
+            idf = 1.5 if len(token) > 3 else 1.0
+            score += tf * idf
+            
+            if token in name:
+                score += 10
+            if token in keywords:
+                score += 5
+        
+        return min(score, 100)
+
+    def handle_mcp_install(self, data: dict):
+        """POST /mcp/install - 安装 MCP 服务器配置"""
+        server_id = data.get('id', '')
+        server_name = data.get('name', server_id)
+        command = data.get('command', '')
+        args = data.get('args', [])
+        env = data.get('env', {})
+        
+        if not server_name or not command:
+            self.send_error_json('Missing required fields: name, command', 400)
+            return
+        
+        # 安全检查
+        if '..' in server_name or '/' in server_name or '\\' in server_name:
+            self.send_error_json('Invalid server name', 400)
+            return
+        
+        # 读取现有配置
+        config_path = self.clawd_path / 'mcp-servers.json'
+        try:
+            if config_path.exists():
+                config = json.loads(config_path.read_text(encoding='utf-8'))
+            else:
+                config = {'servers': {}}
+        except Exception as e:
+            self.send_error_json(f'Failed to read config: {e}', 500)
+            return
+        
+        # 检查是否已存在
+        if server_name in config.get('servers', {}):
+            self.send_error_json(f'Server already exists: {server_name}', 409)
+            return
+        
+        # 添加新服务器配置
+        config['servers'][server_name] = {
+            'command': command,
+            'args': args,
+            'env': env,
+            'enabled': False  # 默认禁用，需要用户手动启用
+        }
+        
+        # 写回配置文件
+        try:
+            config_path.write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding='utf-8')
+        except Exception as e:
+            self.send_error_json(f'Failed to write config: {e}', 500)
+            return
+        
+        self.send_json({
+            'status': 'ok',
+            'serverName': server_name,
+            'message': f'MCP server "{server_name}" added (disabled by default). Enable it in mcp-servers.json to use.',
+            'configPath': str(config_path)
+        })
 
     # ============================================
     # 📦 远程技能安装/卸载

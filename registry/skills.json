@@ -1,0 +1,115 @@
+{
+  "version": "1.0.0",
+  "updated": "2025-02-24",
+  "description": "DD-OS SKILL Registry - 可搜索和安装的技能索引",
+  "skills": [
+    {
+      "id": "deep-research",
+      "name": "深度调研",
+      "description": "执行多轮网络搜索和信息整合，生成详细的调研报告",
+      "keywords": ["调研", "研究", "搜索", "分析", "报告", "research", "深度"],
+      "downloadUrl": "https://raw.githubusercontent.com/anthropics/anthropic-quickstarts/main/computer-use-demo/computer_use_demo/tools/research.py",
+      "author": "anthropic",
+      "category": "research"
+    },
+    {
+      "id": "code-review",
+      "name": "代码审查",
+      "description": "深度审查代码质量、安全性、性能和最佳实践",
+      "keywords": ["代码", "审查", "review", "质量", "安全", "代码审核", "code"],
+      "downloadUrl": "local://skills/agent-review-pr/SKILL.md",
+      "author": "dd-os",
+      "category": "development"
+    },
+    {
+      "id": "web-search",
+      "name": "网页搜索",
+      "description": "使用搜索引擎搜索网页内容并提取关键信息",
+      "keywords": ["搜索", "网页", "web", "search", "查找", "检索"],
+      "downloadUrl": "local://skills/web-search/SKILL.md",
+      "author": "dd-os",
+      "category": "web"
+    },
+    {
+      "id": "browser-automation",
+      "name": "浏览器自动化",
+      "description": "控制浏览器执行自动化任务，如填表、点击、截图",
+      "keywords": ["浏览器", "自动化", "browser", "automation", "puppeteer", "playwright"],
+      "downloadUrl": "local://skills/browser-automation/SKILL.md",
+      "author": "dd-os",
+      "category": "automation"
+    },
+    {
+      "id": "file-operations",
+      "name": "文件操作",
+      "description": "读写、搜索、编辑本地文件系统中的文件",
+      "keywords": ["文件", "读写", "file", "操作", "编辑", "目录"],
+      "downloadUrl": "local://skills/filesystem/SKILL.md",
+      "author": "dd-os",
+      "category": "system"
+    },
+    {
+      "id": "document-generation",
+      "name": "文档生成",
+      "description": "生成 Word、PDF、Markdown 等格式的文档",
+      "keywords": ["文档", "生成", "word", "pdf", "markdown", "docx", "报告"],
+      "downloadUrl": "local://skills/docx/SKILL.md",
+      "author": "dd-os",
+      "category": "document"
+    },
+    {
+      "id": "data-analysis",
+      "name": "数据分析",
+      "description": "分析数据、生成图表和统计报告",
+      "keywords": ["数据", "分析", "data", "analysis", "统计", "图表", "excel"],
+      "downloadUrl": "local://skills/data-analysis/SKILL.md",
+      "author": "dd-os",
+      "category": "data"
+    },
+    {
+      "id": "translation",
+      "name": "翻译助手",
+      "description": "多语言翻译，支持文档、网页、代码注释翻译",
+      "keywords": ["翻译", "translate", "语言", "中英", "多语言", "localization"],
+      "downloadUrl": "local://skills/translation/SKILL.md",
+      "author": "dd-os",
+      "category": "language"
+    },
+    {
+      "id": "image-generation",
+      "name": "图片生成",
+      "description": "使用 AI 生成图片、图标、插图等视觉内容",
+      "keywords": ["图片", "生成", "image", "图标", "AI绘图", "设计"],
+      "downloadUrl": "local://skills/image-gen/SKILL.md",
+      "author": "dd-os",
+      "category": "creative"
+    },
+    {
+      "id": "git-operations",
+      "name": "Git 操作",
+      "description": "执行 Git 版本控制操作：提交、分支、合并、PR",
+      "keywords": ["git", "版本控制", "提交", "commit", "分支", "branch", "merge"],
+      "downloadUrl": "local://skills/git-tools/SKILL.md",
+      "author": "dd-os",
+      "category": "development"
+    },
+    {
+      "id": "api-testing",
+      "name": "API 测试",
+      "description": "测试 REST API 接口，验证响应和性能",
+      "keywords": ["api", "测试", "rest", "http", "接口", "postman"],
+      "downloadUrl": "local://skills/api-testing/SKILL.md",
+      "author": "dd-os",
+      "category": "development"
+    },
+    {
+      "id": "database-query",
+      "name": "数据库查询",
+      "description": "连接数据库执行 SQL 查询和数据操作",
+      "keywords": ["数据库", "sql", "database", "查询", "mysql", "postgres", "sqlite"],
+      "downloadUrl": "local://skills/database/SKILL.md",
+      "author": "dd-os",
+      "category": "data"
+    }
+  ]
+}

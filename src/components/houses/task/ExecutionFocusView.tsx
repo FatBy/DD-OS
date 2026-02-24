@@ -3,9 +3,10 @@ import { motion, AnimatePresence } from 'framer-motion'
 import {
   Play, Loader2, Brain, Wrench, Terminal,
   MessageSquare, AlertCircle, CheckCircle2, XCircle,
-  Activity, ChevronDown, Clock, Pause, SkipForward,
+  Activity, ChevronDown, Clock, Pause, SkipForward, Zap,
 } from 'lucide-react'
 import { cn } from '@/utils/cn'
+import { useStore } from '@/store'
 import type { TaskItem, ExecutionStep, SubTask, TaskPlan } from '@/types'
 import { useState } from 'react'
 
@@ -215,6 +216,16 @@ function ExecutionStepsViewer({ steps, output, error, duration }: {
 }) {
   const [stepsExpanded, setStepsExpanded] = useState(true) // 执行视图中默认展开
   const scrollRef = useRef<HTMLDivElement>(null)
+  
+  // 一键修复功能
+  const openNexusPanelWithInput = useStore((s) => s.openNexusPanelWithInput)
+  const addToast = useStore((s) => s.addToast)
+  
+  const handleOneClickFix = () => {
+    const prompt = `我在执行任务时遇到了错误，请帮我分析并修复：\n\n\`\`\`\n${error}\n\`\`\`\n\n请分析错误原因并给出解决方案。`
+    openNexusPanelWithInput('skill-scout', prompt)
+    addToast({ type: 'info', title: '已填入修复需求，请按回车执行' })
+  }
 
   // 自动滚动到底部
   useEffect(() => {
@@ -251,6 +262,13 @@ function ExecutionStepsViewer({ steps, output, error, duration }: {
           <div className="flex items-center gap-1.5 mb-1.5">
             <AlertCircle className="w-3 h-3 text-red-400" />
             <span className="text-[13px] font-mono text-red-400 font-medium">执行错误</span>
+            <button
+              onClick={handleOneClickFix}
+              className="ml-auto flex items-center gap-1 px-2 py-0.5 rounded bg-amber-500/15 text-amber-400 text-[11px] font-mono hover:bg-amber-500/25 transition-colors"
+            >
+              <Zap className="w-3 h-3" />
+              一键修复
+            </button>
           </div>
           <p className="text-xs text-red-300/80 font-mono">{error}</p>
         </div>

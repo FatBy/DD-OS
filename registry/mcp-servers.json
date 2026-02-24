@@ -1,0 +1,172 @@
+{
+  "version": "1.0.0",
+  "updated": "2025-02-24",
+  "description": "DD-OS MCP Server Registry - 可搜索和安装的 MCP 服务器索引",
+  "servers": [
+    {
+      "id": "filesystem",
+      "name": "文件系统",
+      "description": "安全的本地文件系统访问，支持读写、搜索、编辑文件",
+      "keywords": ["文件", "file", "filesystem", "目录", "读写", "本地"],
+      "command": "npx",
+      "args": ["-y", "@anthropic/mcp-server-filesystem", "--allowed-directories", "."],
+      "envRequired": [],
+      "category": "system",
+      "source": "anthropic"
+    },
+    {
+      "id": "github",
+      "name": "GitHub",
+      "description": "GitHub API 集成：仓库管理、Issue、PR、代码搜索",
+      "keywords": ["github", "代码", "仓库", "repository", "issue", "pr", "git"],
+      "command": "npx",
+      "args": ["-y", "@anthropic/mcp-server-github"],
+      "envRequired": ["GITHUB_TOKEN"],
+      "category": "development",
+      "source": "anthropic"
+    },
+    {
+      "id": "brave-search",
+      "name": "Brave 搜索",
+      "description": "使用 Brave Search API 进行网络搜索",
+      "keywords": ["搜索", "search", "brave", "网络", "web", "查找"],
+      "command": "npx",
+      "args": ["-y", "@anthropic/mcp-server-brave-search"],
+      "envRequired": ["BRAVE_API_KEY"],
+      "category": "web",
+      "source": "anthropic"
+    },
+    {
+      "id": "sqlite",
+      "name": "SQLite 数据库",
+      "description": "SQLite 数据库操作：查询、插入、更新、删除",
+      "keywords": ["sqlite", "数据库", "database", "sql", "查询"],
+      "command": "npx",
+      "args": ["-y", "@anthropic/mcp-server-sqlite", "--db-path", "data.db"],
+      "envRequired": [],
+      "category": "data",
+      "source": "anthropic"
+    },
+    {
+      "id": "puppeteer",
+      "name": "Puppeteer 浏览器",
+      "description": "使用 Puppeteer 控制 Chrome 浏览器进行自动化",
+      "keywords": ["puppeteer", "浏览器", "browser", "自动化", "chrome", "截图"],
+      "command": "npx",
+      "args": ["-y", "@anthropic/mcp-server-puppeteer"],
+      "envRequired": [],
+      "category": "automation",
+      "source": "anthropic"
+    },
+    {
+      "id": "slack",
+      "name": "Slack",
+      "description": "Slack 工作区集成：发送消息、管理频道",
+      "keywords": ["slack", "消息", "聊天", "频道", "workspace"],
+      "command": "npx",
+      "args": ["-y", "@anthropic/mcp-server-slack"],
+      "envRequired": ["SLACK_BOT_TOKEN", "SLACK_TEAM_ID"],
+      "category": "communication",
+      "source": "anthropic"
+    },
+    {
+      "id": "google-drive",
+      "name": "Google Drive",
+      "description": "Google Drive 文件管理和文档操作",
+      "keywords": ["google", "drive", "文档", "云盘", "gdrive"],
+      "command": "npx",
+      "args": ["-y", "@anthropic/mcp-server-gdrive"],
+      "envRequired": ["GOOGLE_CREDENTIALS"],
+      "category": "cloud",
+      "source": "anthropic"
+    },
+    {
+      "id": "postgres",
+      "name": "PostgreSQL",
+      "description": "PostgreSQL 数据库连接和查询",
+      "keywords": ["postgres", "postgresql", "数据库", "database", "sql"],
+      "command": "npx",
+      "args": ["-y", "@anthropic/mcp-server-postgres"],
+      "envRequired": ["POSTGRES_CONNECTION_STRING"],
+      "category": "data",
+      "source": "anthropic"
+    },
+    {
+      "id": "memory",
+      "name": "持久记忆",
+      "description": "为 AI 提供跨会话的持久化记忆存储",
+      "keywords": ["memory", "记忆", "存储", "持久化", "knowledge"],
+      "command": "npx",
+      "args": ["-y", "@anthropic/mcp-server-memory"],
+      "envRequired": [],
+      "category": "ai",
+      "source": "anthropic"
+    },
+    {
+      "id": "fetch",
+      "name": "网页抓取",
+      "description": "抓取网页内容并转换为可读文本",
+      "keywords": ["fetch", "网页", "抓取", "爬虫", "web", "http"],
+      "command": "npx",
+      "args": ["-y", "@anthropic/mcp-server-fetch"],
+      "envRequired": [],
+      "category": "web",
+      "source": "anthropic"
+    },
+    {
+      "id": "sequential-thinking",
+      "name": "序列思考",
+      "description": "帮助 AI 进行逐步推理和思考",
+      "keywords": ["thinking", "思考", "推理", "sequential", "reasoning"],
+      "command": "npx",
+      "args": ["-y", "@anthropic/mcp-server-sequential-thinking"],
+      "envRequired": [],
+      "category": "ai",
+      "source": "anthropic"
+    },
+    {
+      "id": "time",
+      "name": "时间服务",
+      "description": "获取当前时间、时区转换、日期计算",
+      "keywords": ["time", "时间", "日期", "时区", "date"],
+      "command": "npx",
+      "args": ["-y", "@anthropic/mcp-server-time"],
+      "envRequired": [],
+      "category": "utility",
+      "source": "anthropic"
+    },
+    {
+      "id": "everart",
+      "name": "EverArt 图片生成",
+      "description": "使用 EverArt API 生成 AI 图片",
+      "keywords": ["everart", "图片", "生成", "ai", "image", "绘图"],
+      "command": "npx",
+      "args": ["-y", "@anthropic/mcp-server-everart"],
+      "envRequired": ["EVERART_API_KEY"],
+      "category": "creative",
+      "source": "anthropic"
+    },
+    {
+      "id": "raycast",
+      "name": "Raycast",
+      "description": "Raycast 扩展集成 (macOS)",
+      "keywords": ["raycast", "mac", "macos", "快捷方式", "launcher"],
+      "command": "npx",
+      "args": ["-y", "@anthropic/mcp-server-raycast"],
+      "envRequired": [],
+      "category": "system",
+      "source": "anthropic"
+    },
+    {
+      "id": "exa",
+      "name": "Exa 搜索",
+      "description": "使用 Exa AI 搜索引擎进行语义搜索",
+      "keywords": ["exa", "搜索", "search", "语义", "ai"],
+      "command": "npx",
+      "args": ["-y", "@anthropic/mcp-server-exa"],
+      "envRequired": ["EXA_API_KEY"],
+      "category": "web",
+      "source": "anthropic"
+    }
+  ]
+}

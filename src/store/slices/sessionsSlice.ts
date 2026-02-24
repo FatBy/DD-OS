@@ -12,6 +12,14 @@ const STORAGE_KEYS = {
 // 批量持久化控制
 let _lastPersistTime = Date.now()
 
+// 优化建议动作
+export interface OptimizationAction {
+  target: string        // 目标 Nexus/SKILL ID，如 'skill-scout', 'dev-assistant'
+  targetType: 'nexus' | 'skill'
+  label: string         // 显示标签，如 "优化任务规划"
+  prompt: string        // 预填的优化指令
+}
+
 // 静默分析状态
 export interface SilentAnalysis {
   content: string
@@ -19,6 +27,7 @@ export interface SilentAnalysis {
   error: string | null
   timestamp: number
   taskCountAtGen: number
+  optimizations?: OptimizationAction[]  // 结构化优化建议
 }
 
 function emptySilentAnalysis(): SilentAnalysis {
@@ -319,7 +328,19 @@ export const createSessionsSlice: StateCreator<SessionsSlice> = (set, get) => ({
       const messages = [
         {
           role: 'system' as const,
-          content: '你是 DD-OS 任务分析师。基于历史任务执行记录，用简洁的叙事语气总结 Agent 的能力画像。包括：擅长什么类型任务、哪些容易失败、平均执行效率、改进建议。限制在 3-4 句话以内，使用中文。',
+          content: `你是 DD-OS 任务分析师。分析历史任务，输出 JSON 格式：
+{
+  "summary": "2-3句话的能力画像总结",
+  "optimizations": [
+    {"target": "skill-scout", "targetType": "nexus", "label": "优化建议标签", "prompt": "具体优化指令"}
+  ]
+}
+optimizations 规则：
+- target: 推荐优化的 Nexus ID (skill-scout/dev-assistant/qa-engineer) 或 skill 名称
+- targetType: "nexus" 或 "skill"
+- prompt: 给该 Nexus/Skill 的优化指令，包含具体改进建议
+- 最多 2 条建议，无需优化则 optimizations 为空数组
+仅输出 JSON，无其他文字。`,
         },
         {
           role: 'user' as const,
@@ -327,14 +348,31 @@ export const createSessionsSlice: StateCreator<SessionsSlice> = (set, get) => ({
         },
       ]
 
-      const content = await chat(messages)
+      const rawContent = await chat(messages)
+      
+      // 解析 JSON 响应
+      let summary = rawContent
+      let optimizations: OptimizationAction[] = []
+      try {
+        const jsonMatch = rawContent.match(/\{[\s\S]*\}/)
+        if (jsonMatch) {
+          const parsed = JSON.parse(jsonMatch[0])
+          summary = parsed.summary || rawContent
+          optimizations = (parsed.optimizations || []).filter(
+            (o: any) => o.target && o.label && o.prompt
+          )
+        }
+      } catch {
+        // JSON 解析失败，使用原始文本
+      }
 
       const newAnalysis: SilentAnalysis = {
-        content,
+        content: summary,
         loading: false,
         error: null,
         timestamp: Date.now(),
         taskCountAtGen: doneTasks.length,
+        optimizations,
       }
       persistSilentAnalysis(newAnalysis)
       set({ silentAnalysis: newAnalysis })

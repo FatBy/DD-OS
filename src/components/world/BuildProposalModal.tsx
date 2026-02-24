@@ -50,23 +50,25 @@ export function BuildProposalModal() {
     <AnimatePresence>
       {isOpen && (
         <>
-          {/* 背景遮罩 */}
+          {/* 背景遮罩 - 提高 z-index 确保在最上层 */}
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             onClick={rejectProposal}
-            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50"
+            className="fixed inset-0 bg-black/70 backdrop-blur-md z-[100]"
           />
           
-          {/* 弹窗 */}
+          {/* 弹窗 - 使用 inset-0 m-auto 实现居中，避免与 framer-motion transform 冲突 */}
           <motion.div
-            initial={{ opacity: 0, scale: 0.9, y: 20 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.9, y: 20 }}
-            className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-50
-                       w-[90%] max-w-md bg-slate-900/95 border border-white/10 
-                       rounded-xl shadow-2xl overflow-hidden"
+            initial={{ opacity: 0, scale: 0.9 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.9 }}
+            className="fixed inset-0 z-[101] m-auto
+                       w-[90%] max-w-md h-fit
+                       bg-slate-900/98 border-2 border-amber-500/40 
+                       rounded-2xl shadow-[0_0_60px_rgba(245,158,11,0.3)]
+                       overflow-hidden"
           >
             {/* 头部 */}
             <div className="flex items-center justify-between p-4 border-b border-white/5">
