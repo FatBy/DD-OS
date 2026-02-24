@@ -119,8 +119,10 @@ export function NexusDetailPanel() {
   const activeExecutions = useStore((s) => s.activeExecutions)
   const worldTheme = useStore((s) => s.worldTheme)
 
+  const setView = useStore((s) => s.setView)
+  const addToast = useStore((s) => s.addToast)
+
   // 搜索技能功能
-  const openNexusPanelWithInput = useStore((s) => s.openNexusPanelWithInput)
   const pendingNexusChatInput = useStore((s) => s.pendingNexusChatInput)
   const clearPendingInput = useStore((s) => s.clearPendingInput)
 
@@ -722,9 +724,13 @@ export function NexusDetailPanel() {
                           <div className="flex items-center gap-2 mt-1.5">
                             <button
                               onClick={() => {
-                                // 打开 skill-scout 面板并预填搜索请求
-                                const searchQuery = `帮我搜索并安装 "${skill.name}" 技能`
-                                openNexusPanelWithInput('skill-scout', searchQuery)
+                                // 关闭面板，跳转到技能屋
+                                closeNexusPanel()
+                                setView('skill')
+                                addToast({
+                                  type: 'info',
+                                  title: `请搜索 "${skill.name}" 技能`,
+                                })
                               }}
                               className="text-[11px] font-mono px-2 py-1 rounded bg-amber-500/10 text-amber-400/70 border border-amber-500/15 hover:bg-amber-500/20 hover:text-amber-400 transition-colors flex items-center gap-1"
                             >
