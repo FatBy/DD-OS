@@ -128,8 +128,8 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
   _chatAbort: null,
   executionStatuses: initialChatHistory.statuses,
 
-  // 聊天面板开关
-  isChatOpen: false,
+  // 聊天面板开关 - 有历史对话时自动打开
+  isChatOpen: initialChatHistory.messages.filter(m => m.role !== 'system').length > 0,
   setChatOpen: (open) => set({ isChatOpen: open }),
 
   // ============================================
