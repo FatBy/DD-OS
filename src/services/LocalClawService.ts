@@ -45,6 +45,89 @@ interface AgentMessage {
   content: string
 }
 
+// ============================================
+// Nexus 性能统计类型
+// ============================================
+
+interface ToolUsageStat {
+  calls: number
+  errors: number
+}
+
+interface NexusStats {
+  nexusId: string
+  totalTasks: number
+  successCount: number
+  failureCount: number
+  toolUsage: Record<string, ToolUsageStat>
+  totalTurns: number        // 用于计算平均值
+  totalDuration: number     // 用于计算平均值 (ms)
+  topErrors: string[]       // 最近的错误模式（去重，最多5条）
+  lastUpdated: number
+}
+
+type NexusStatsMap = Record<string, NexusStats>
+
+// ============================================
+// 自适应规则引擎类型
+// ============================================
+
+type RuleType =
+  | 'TOOL_ERROR_RATE'
+  | 'SUCCESS_RATE_DECLINE'
+  | 'EFFICIENCY_DEGRADATION'
+  | 'TOOL_SELECTION_HINT'
+  | 'TASK_DECOMPOSITION'
+  | 'ERROR_PATTERN_MEMORY'
+
+interface NexusRule {
+  id: string
+  nexusId: string
+  type: RuleType
+  active: boolean
+  injectedPrompt: string
+  createdAt: number
+  expiresAt: number
+  cooldownUntil: number
+  metadata: {
+    toolName?: string
+    triggerValue: number
+    threshold: number
+    samples: number
+  }
+}
+
+interface NexusRulesStorage {
+  version: string
+  rules: Record<string, NexusRule[]>
+  lastUpdated: number
+}
+
+const RULE_PRIORITY: Record<RuleType, number> = {
+  'ERROR_PATTERN_MEMORY': 10,
+  'SUCCESS_RATE_DECLINE': 9,
+  'TOOL_ERROR_RATE': 8,
+  'TASK_DECOMPOSITION': 7,
+  'EFFICIENCY_DEGRADATION': 6,
+  'TOOL_SELECTION_HINT': 5,
+}
+
+const RULE_LABELS: Record<RuleType, string> = {
+  'TOOL_ERROR_RATE': '工具错误率预警',
+  'SUCCESS_RATE_DECLINE': '成功率下降警报',
+  'EFFICIENCY_DEGRADATION': '效率退化警告',
+  'TOOL_SELECTION_HINT': '工具选择优化',
+  'TASK_DECOMPOSITION': '任务分解建议',
+  'ERROR_PATTERN_MEMORY': '错误模式记忆',
+}
+
+const RULE_CONFIG = {
+  MIN_TASKS: 5,
+  MAX_ACTIVE_RULES: 3,
+  COOLDOWN_MS: 24 * 60 * 60 * 1000,  // 24 hours
+  EXPIRY_MS: 7 * 24 * 60 * 60 * 1000, // 7 days
+}
+
 /**
  * 任务完成度验证结果
  * 用于判断任务是否真正完成，而不仅仅是执行了工具
@@ -723,6 +806,375 @@ class LocalClawService {
     }
   }
 
+  // ============================================
+  // 📊 Nexus 性能统计系统
+  // ============================================
+
+  /** 内存中的统计缓存 */
+  private nexusStatsCache: NexusStatsMap = {}
+
+  /**
+   * 启动时加载已有的统计数据
+   */
+  private async loadNexusStats(): Promise<void> {
+    try {
+      const result = await this.executeTool({
+        name: 'readFile',
+        args: { path: 'memory/nexus_stats.json' },
+      })
+      if (result.status === 'success' && result.result) {
+        this.nexusStatsCache = JSON.parse(result.result)
+        console.log(`[LocalClaw] Loaded nexus stats for ${Object.keys(this.nexusStatsCache).length} nexuses`)
+      }
+    } catch {
+      // 文件不存在，从空开始
+    }
+  }
+
+  /**
+   * 持久化统计数据到文件
+   */
+  private async saveNexusStats(): Promise<void> {
+    try {
+      await this.executeTool({
+        name: 'writeFile',
+        args: {
+          path: 'memory/nexus_stats.json',
+          content: JSON.stringify(this.nexusStatsCache, null, 2),
+        },
+      })
+    } catch (err) {
+      console.warn('[LocalClaw] Failed to save nexus stats:', err)
+    }
+  }
+
+  /**
+   * 任务完成后记录统计数据
+   * 从 ExecTrace 中提取关键指标，累加到对应 Nexus 的统计中
+   */
+  recordNexusPerformance(trace: ExecTrace): void {
+    const nexusId = trace.activeNexusId || '_global'
+
+    // 获取或初始化
+    if (!this.nexusStatsCache[nexusId]) {
+      this.nexusStatsCache[nexusId] = {
+        nexusId,
+        totalTasks: 0,
+        successCount: 0,
+        failureCount: 0,
+        toolUsage: {},
+        totalTurns: 0,
+        totalDuration: 0,
+        topErrors: [],
+        lastUpdated: Date.now(),
+      }
+    }
+
+    const stats = this.nexusStatsCache[nexusId]
+    stats.totalTasks++
+    stats.totalTurns += trace.turnCount || 0
+    stats.totalDuration += trace.duration || 0
+    stats.lastUpdated = Date.now()
+
+    if (trace.success) {
+      stats.successCount++
+    } else {
+      stats.failureCount++
+    }
+
+    // 统计每个工具的调用和错误
+    for (const tool of trace.tools) {
+      if (!stats.toolUsage[tool.name]) {
+        stats.toolUsage[tool.name] = { calls: 0, errors: 0 }
+      }
+      stats.toolUsage[tool.name].calls++
+      if (tool.status === 'error') {
+        stats.toolUsage[tool.name].errors++
+
+        // 记录错误模式（去重，保留最近5条）
+        const errSnippet = (tool.result || '').slice(0, 60)
+        if (errSnippet && !stats.topErrors.includes(errSnippet)) {
+          stats.topErrors.push(errSnippet)
+          if (stats.topErrors.length > 5) stats.topErrors.shift()
+        }
+      }
+    }
+
+    // 异步持久化（不阻塞）
+    this.saveNexusStats().catch(() => {})
+
+    // 🤖 触发规则引擎评估
+    this.evaluateAndActivateRules(nexusId)
+  }
+
+  /**
+   * 生成 Nexus 性能洞察文本
+   * 纯代码逻辑，不调用 LLM，直接从统计数据计算
+   */
+  buildNexusInsight(nexusId?: string | null): string {
+    const id = nexusId || '_global'
+    const stats = this.nexusStatsCache[id]
+    if (!stats || stats.totalTasks < 2) return ''  // 数据不足，不注入
+
+    const successRate = Math.round((stats.successCount / stats.totalTasks) * 100)
+    const avgTurns = Math.round(stats.totalTurns / stats.totalTasks)
+    const avgDuration = Math.round(stats.totalDuration / stats.totalTasks / 1000)  // 秒
+
+    const lines: string[] = [`## 📊 历史表现 (${stats.totalTasks}次任务)`]
+
+    // 成功率
+    if (successRate >= 80) {
+      lines.push(`成功率: ${successRate}% — 表现稳定`)
+    } else if (successRate >= 50) {
+      lines.push(`成功率: ${successRate}% — 有改进空间，注意失败模式`)
+    } else {
+      lines.push(`成功率: ${successRate}% — 失败率偏高，执行前仔细规划`)
+    }
+
+    // 效率
+    lines.push(`平均轮次: ${avgTurns} | 平均耗时: ${avgDuration}s`)
+
+    // 最常用工具 Top 3
+    const sortedTools = Object.entries(stats.toolUsage)
+      .sort((a, b) => b[1].calls - a[1].calls)
+      .slice(0, 3)
+    if (sortedTools.length > 0) {
+      const toolHints = sortedTools.map(([name, u]) => {
+        const errRate = u.calls > 0 ? Math.round((u.errors / u.calls) * 100) : 0
+        return errRate > 30
+          ? `${name}(${u.calls}次, ⚠️错误率${errRate}%)`
+          : `${name}(${u.calls}次)`
+      })
+      lines.push(`常用工具: ${toolHints.join(', ')}`)
+    }
+
+    // 高错误率工具预警
+    const riskyTools = Object.entries(stats.toolUsage)
+      .filter(([, u]) => u.calls >= 3 && (u.errors / u.calls) > 0.4)
+      .map(([name]) => name)
+    if (riskyTools.length > 0) {
+      lines.push(`⚠️ 高风险工具: ${riskyTools.join(', ')} — 使用前确认参数正确`)
+    }
+
+    // 策略建议
+    if (successRate < 60 && avgTurns > 15) {
+      lines.push(`建议: 失败率高且轮次多，优先拆分为更小的子任务`)
+    } else if (avgTurns > 20) {
+      lines.push(`建议: 平均轮次偏高，考虑更精确的工具选择`)
+    }
+
+    return lines.join('\n') + '\n'
+  }
+
+  // ============================================
+  // 🤖 自适应规则引擎
+  // ============================================
+
+  private nexusRulesCache: NexusRulesStorage = { version: '1.0', rules: {}, lastUpdated: 0 }
+
+  private async loadNexusRules(): Promise<void> {
+    try {
+      const result = await this.executeTool({
+        name: 'readFile',
+        args: { path: 'memory/nexus_rules.json' },
+      })
+      if (result.status === 'success' && result.result) {
+        this.nexusRulesCache = JSON.parse(result.result)
+        // 启动时清理过期规则
+        const now = Date.now()
+        for (const nexusId of Object.keys(this.nexusRulesCache.rules)) {
+          this.nexusRulesCache.rules[nexusId] = this.nexusRulesCache.rules[nexusId]
+            .filter(r => r.expiresAt > now)
+        }
+        console.log(`[RuleEngine] Loaded rules for ${Object.keys(this.nexusRulesCache.rules).length} nexuses`)
+      }
+    } catch {
+      // 文件不存在，从空开始
+    }
+  }
+
+  private async saveNexusRules(): Promise<void> {
+    this.nexusRulesCache.lastUpdated = Date.now()
+    try {
+      await this.executeTool({
+        name: 'writeFile',
+        args: {
+          path: 'memory/nexus_rules.json',
+          content: JSON.stringify(this.nexusRulesCache, null, 2),
+        },
+      })
+    } catch (err) {
+      console.warn('[RuleEngine] Failed to save rules:', err)
+    }
+  }
+
+  /**
+   * 获取 Nexus 的活跃规则（已过期的自动过滤）
+   */
+  getActiveRulesForNexus(nexusId: string | null): NexusRule[] {
+    if (!nexusId) return []
+    const rules = this.nexusRulesCache.rules[nexusId] || []
+    const now = Date.now()
+    return rules.filter(r => r.active && r.expiresAt > now)
+  }
+
+  /**
+   * 核心：评估统计数据，激活/创建规则
+   * 在 recordNexusPerformance 之后调用，纯 if/else 逻辑
+   */
+  private evaluateAndActivateRules(nexusId: string): void {
+    const stats = this.nexusStatsCache[nexusId]
+    if (!stats || stats.totalTasks < RULE_CONFIG.MIN_TASKS) return
+
+    const existing = this.nexusRulesCache.rules[nexusId] || []
+    const now = Date.now()
+
+    // 清理过期规则
+    this.nexusRulesCache.rules[nexusId] = existing.filter(r => r.expiresAt > now)
+    const activeCount = this.getActiveRulesForNexus(nexusId).length
+
+    const candidates: NexusRule[] = []
+
+    // --- 规则 1: 工具错误率预警 ---
+    for (const [toolName, usage] of Object.entries(stats.toolUsage)) {
+      if (usage.calls >= 5) {
+        const errorRate = Math.round((usage.errors / usage.calls) * 100)
+        if (errorRate > 40 && !this.hasActiveRule(nexusId, 'TOOL_ERROR_RATE', toolName)) {
+          candidates.push(this.createRule(nexusId, 'TOOL_ERROR_RATE',
+            `工具 ${toolName} 历史错误率 ${errorRate}%。调用前务必验证参数格式和路径，如有疑问先用 readFile 确认。`,
+            { toolName, triggerValue: errorRate, threshold: 40, samples: usage.calls }
+          ))
+        }
+      }
+    }
+
+    // --- 规则 2: 成功率下降 ---
+    if (stats.totalTasks >= 10) {
+      const successRate = Math.round((stats.successCount / stats.totalTasks) * 100)
+      if (successRate < 50 && !this.hasActiveRule(nexusId, 'SUCCESS_RATE_DECLINE')) {
+        candidates.push(this.createRule(nexusId, 'SUCCESS_RATE_DECLINE',
+          `当前成功率 ${successRate}%，低于健康水平。执行前制定详细计划，拆分为 3-5 个子步骤，每步验证后再继续。`,
+          { triggerValue: successRate, threshold: 50, samples: stats.totalTasks }
+        ))
+      }
+    }
+
+    // --- 规则 3: 效率退化 ---
+    const avgTurns = Math.round(stats.totalTurns / stats.totalTasks)
+    if (avgTurns > 20 && !this.hasActiveRule(nexusId, 'EFFICIENCY_DEGRADATION')) {
+      candidates.push(this.createRule(nexusId, 'EFFICIENCY_DEGRADATION',
+        `平均执行轮次 ${avgTurns}，效率偏低。优先使用直接相关的工具，避免试错式调用，参考历史成功案例的工具序列。`,
+        { triggerValue: avgTurns, threshold: 20, samples: stats.totalTasks }
+      ))
+    }
+
+    // --- 规则 4: 正向工具推荐 ---
+    for (const [toolName, usage] of Object.entries(stats.toolUsage)) {
+      if (usage.calls >= 5) {
+        const successRate = Math.round(((usage.calls - usage.errors) / usage.calls) * 100)
+        if (successRate > 80 && !this.hasActiveRule(nexusId, 'TOOL_SELECTION_HINT', toolName)) {
+          candidates.push(this.createRule(nexusId, 'TOOL_SELECTION_HINT',
+            `工具 ${toolName} 历史表现优秀（成功率 ${successRate}%），遇到相关任务时优先考虑。`,
+            { toolName, triggerValue: successRate, threshold: 80, samples: usage.calls }
+          ))
+        }
+      }
+    }
+
+    // --- 规则 5: 任务分解 ---
+    if (stats.failureCount >= 5) {
+      const failRate = Math.round((stats.failureCount / stats.totalTasks) * 100)
+      if (failRate > 60 && avgTurns > 15 && !this.hasActiveRule(nexusId, 'TASK_DECOMPOSITION')) {
+        candidates.push(this.createRule(nexusId, 'TASK_DECOMPOSITION',
+          `复杂任务失败率 ${failRate}%。接到任务时先输出 3-5 步执行计划，每步完成后检查结果再继续。`,
+          { triggerValue: failRate, threshold: 60, samples: stats.totalTasks }
+        ))
+      }
+    }
+
+    // --- 规则 6: 错误模式记忆 ---
+    const errorCounts = new Map<string, number>()
+    for (const err of stats.topErrors) {
+      const key = err.slice(0, 40)
+      errorCounts.set(key, (errorCounts.get(key) || 0) + 1)
+    }
+    for (const [pattern, count] of errorCounts) {
+      if (count >= 3 && !this.hasActiveRule(nexusId, 'ERROR_PATTERN_MEMORY', pattern)) {
+        candidates.push(this.createRule(nexusId, 'ERROR_PATTERN_MEMORY',
+          `历史错误模式: "${pattern}"（出现${count}次）。遇到类似错误时停止重试，寻求用户确认或换用备选方案。`,
+          { toolName: pattern, triggerValue: count, threshold: 3, samples: stats.totalTasks }
+        ))
+      }
+    }
+
+    // 按优先级排序，取可激活的
+    const sorted = candidates
+      .filter(r => !this.isInCooldown(nexusId, r.type, r.metadata.toolName))
+      .sort((a, b) => RULE_PRIORITY[b.type] - RULE_PRIORITY[a.type])
+
+    const maxNew = Math.max(0, RULE_CONFIG.MAX_ACTIVE_RULES - activeCount)
+    const toActivate = sorted.slice(0, maxNew)
+
+    if (toActivate.length === 0) return
+
+    // 激活规则
+    if (!this.nexusRulesCache.rules[nexusId]) {
+      this.nexusRulesCache.rules[nexusId] = []
+    }
+
+    for (const rule of toActivate) {
+      this.nexusRulesCache.rules[nexusId].push(rule)
+      console.log(`[RuleEngine] Activated: ${RULE_LABELS[rule.type]} for ${nexusId}`)
+
+      // Toast 通知
+      this.storeActions?.addToast({
+        type: 'info',
+        title: `规则引擎: ${RULE_LABELS[rule.type]}`,
+        message: rule.injectedPrompt.slice(0, 80),
+      })
+    }
+
+    // 异步保存
+    this.saveNexusRules().catch(() => {})
+  }
+
+  private createRule(
+    nexusId: string,
+    type: RuleType,
+    prompt: string,
+    metadata: NexusRule['metadata']
+  ): NexusRule {
+    const now = Date.now()
+    return {
+      id: `rule-${now}-${Math.random().toString(36).slice(2, 6)}`,
+      nexusId,
+      type,
+      active: true,
+      injectedPrompt: prompt,
+      createdAt: now,
+      expiresAt: now + RULE_CONFIG.EXPIRY_MS,
+      cooldownUntil: now + RULE_CONFIG.COOLDOWN_MS,
+      metadata,
+    }
+  }
+
+  private hasActiveRule(nexusId: string, type: RuleType, toolName?: string): boolean {
+    const rules = this.getActiveRulesForNexus(nexusId)
+    return rules.some(r =>
+      r.type === type && (!toolName || r.metadata.toolName === toolName)
+    )
+  }
+
+  private isInCooldown(nexusId: string, type: RuleType, toolName?: string): boolean {
+    const all = this.nexusRulesCache.rules[nexusId] || []
+    const now = Date.now()
+    return all.some(r =>
+      r.type === type &&
+      (!toolName || r.metadata.toolName === toolName) &&
+      r.cooldownUntil > now
+    )
+  }
+
   /**
    * 注入 Store Actions
    */
@@ -789,15 +1241,38 @@ class LocalClawService {
    */
   async sendSimpleChat(
     prompt: string,
-    _nexusId?: string,
+    nexusId?: string,
     onStream?: (chunk: string) => void
   ): Promise<string> {
     if (!isLLMConfigured()) {
       throw new Error('LLM 未配置')
     }
 
-    // 简单对话使用通用系统提示词
-    const systemPrompt = '你是一个友好、专业的 AI 助手。请简洁、直接地回答用户问题。'
+    // 构建包含 Nexus 设定的系统提示词
+    let systemPrompt = '你是一个友好、专业的 AI 助手。请简洁、直接地回答用户问题。'
+
+    if (nexusId) {
+      try {
+        // 从 store 获取 Nexus 实体
+        const { useStore } = await import('@/store')
+        const state = useStore.getState() as any
+        const nexus = state.nexuses?.get?.(nexusId)
+
+        if (nexus) {
+          const identity = nexus.label || nexus.id
+          const description = nexus.flavorText || nexus.sopContent?.split('\n')[0] || ''
+          const sop = nexus.sopContent || ''
+
+          systemPrompt = `你是 "${identity}"，DD-OS 中的一个专业 Agent。
+${description ? `角色描述: ${description}` : ''}
+${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
+
+请以该角色身份简洁、直接地回答用户问题。保持角色一致性。`
+        }
+      } catch {
+        // store 访问失败，使用默认提示词
+      }
+    }
 
     const messages: SimpleChatMessage[] = [
       { role: 'system', content: systemPrompt },
@@ -957,6 +1432,12 @@ class LocalClawService {
 
       // 加载能力缺失记忆
       await this.loadCapabilityGapHistory()
+
+      // 加载 Nexus 性能统计
+      await this.loadNexusStats()
+
+      // 加载自适应规则
+      await this.loadNexusRules()
 
       // 初始化今日日志
       await this.initDailyLog()
@@ -1319,6 +1800,19 @@ class LocalClawService {
       if (nexusCtx) {
         contextParts.push(nexusCtx)
       }
+    }
+
+    // 1.6 📊 Nexus 性能洞察注入
+    const performanceInsight = this.buildNexusInsight(activeNexusId)
+    if (performanceInsight) {
+      contextParts.push(performanceInsight)
+    }
+
+    // 1.7 🤖 自适应规则引擎注入
+    const activeRules = this.getActiveRulesForNexus(activeNexusId)
+    if (activeRules.length > 0) {
+      const ruleTexts = activeRules.map(r => `- ${r.injectedPrompt}`).join('\n')
+      contextParts.push(`## 🤖 自适应约束\n${ruleTexts}`)
     }
 
     // 2. 今日记忆 - 仅当可能相关时加载
@@ -2467,6 +2961,9 @@ class LocalClawService {
       this.saveExecTrace(trace).catch(err => {
         console.warn('[LocalClaw] Failed to save exec trace:', err)
       })
+
+      // 📊 记录 Nexus 性能统计
+      this.recordNexusPerformance(trace)
     }
 
     // 🔍 任务完成度验证 - 当没有最终响应或达到最大轮次时触发 (Legacy 模式)
@@ -2970,6 +3467,9 @@ ${toolName} 执行成功。请验证：
       this.saveExecTrace(trace).catch(err => {
         console.warn('[LocalClaw/FC] Failed to save exec trace:', err)
       })
+
+      // 📊 记录 Nexus 性能统计
+      this.recordNexusPerformance(trace)
 
       // P4: Nexus 经验记录
       if (activeNexusId) {
