@@ -101,6 +101,21 @@ pip install pyyaml
 
 ### Step 3: Launch
 
+**macOS One-Click Launch:**
+
+- **If you cloned via `git clone`**: Double-click `DD-OS.command` in Finder. Done!
+- **If you downloaded as ZIP**: Right-click `DD-OS.command` → select **Open** → click **Open** in the dialog. (Only needed once. After that, double-click works.)
+- **Alternative**: Open Terminal, paste this one line:
+  ```bash
+  cd ~/Downloads/DD-OS-main && bash DD-OS.command
+  ```
+
+**Windows One-Click Launch:**
+
+Double-click `start.bat` in File Explorer.
+
+**Manual Launch (all platforms):**
+
 Open two terminal windows:
 
 **Terminal 1 -- Start backend:**

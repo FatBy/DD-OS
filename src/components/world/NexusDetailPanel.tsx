@@ -479,7 +479,7 @@ export function NexusDetailPanel() {
                     ) : (
                       <>
                         {nexusMsgs.filter(m => m.role !== 'system').map((msg) => (
-                          <ChatMessageComponent key={msg.id} message={msg} />
+                          <ChatMessageComponent key={msg.id} message={msg} containerWidth="nexus" />
                         ))}
                         {isNexusStreaming && nexusChatStreamContent && (
                           <StreamingMessage content={nexusChatStreamContent} />

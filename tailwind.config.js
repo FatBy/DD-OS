@@ -36,6 +36,28 @@ export default {
       },
       
       // ============================================
+      // Typography 暗色主题覆盖
+      // ============================================
+      typography: {
+        DEFAULT: {
+          css: {
+            '--tw-prose-body': 'rgb(209 213 219)',
+            '--tw-prose-headings': 'rgb(255 255 255)',
+            '--tw-prose-links': 'rgb(34 211 238)',
+            '--tw-prose-bold': 'rgb(255 255 255)',
+            '--tw-prose-code': 'rgb(52 211 153)',
+            '--tw-prose-pre-bg': 'rgb(17 24 39 / 0.6)',
+            '--tw-prose-quotes': 'rgb(156 163 175)',
+            '--tw-prose-quote-borders': 'rgb(34 211 238 / 0.4)',
+            '--tw-prose-counters': 'rgb(156 163 175)',
+            '--tw-prose-bullets': 'rgb(34 211 238)',
+            '--tw-prose-th-borders': 'rgb(55 65 81)',
+            '--tw-prose-td-borders': 'rgb(55 65 81)',
+          }
+        }
+      },
+
+      // ============================================
       // 动画
       // ============================================
       animation: {
@@ -55,5 +77,7 @@ export default {
       },
     },
   },
-  plugins: [],
+  plugins: [
+    require('@tailwindcss/typography'),
+  ],
 }

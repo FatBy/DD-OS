@@ -1,5 +1,5 @@
 import type { StateCreator } from 'zustand'
-import type { Session, TaskItem, ExecutionStep } from '@/types'
+import type { Session, TaskItem, ExecutionStep, TaskStatus } from '@/types'
 import { sessionsToTasks } from '@/utils/dataMapper'
 import { chat, isLLMConfigured } from '@/services/llmService'
 
@@ -8,6 +8,9 @@ const STORAGE_KEYS = {
   TASK_HISTORY: 'ddos_task_history',
   SILENT_ANALYSIS: 'ddos_silent_analysis',
 }
+
+// 批量持久化控制
+let _lastPersistTime = Date.now()
 
 // 静默分析状态
 export interface SilentAnalysis {
@@ -57,7 +60,8 @@ function loadTaskHistory(): TaskItem[] {
   return []
 }
 
-function persistTaskHistory(tasks: TaskItem[]) {
+// 导出持久化函数，供 App.tsx 在刷新前调用
+export function persistTaskHistory(tasks: TaskItem[]) {
   try {
     // 只保留最近 50 条任务，清理 executionSteps 中的大数据
     const trimmed = tasks.slice(-50).map(t => ({
@@ -65,6 +69,7 @@ function persistTaskHistory(tasks: TaskItem[]) {
       executionSteps: t.executionSteps?.slice(-20), // 每个任务最多保留 20 个步骤
     }))
     localStorage.setItem(STORAGE_KEYS.TASK_HISTORY, JSON.stringify(trimmed))
+    _lastPersistTime = Date.now()
   } catch (e) {
     console.warn('[Sessions] Failed to persist task history:', e)
   }
@@ -111,6 +116,8 @@ export interface SessionsSlice {
   checkInterruptedTasks: () => void
   markInterruptedTasksAsFailed: () => void
   dismissInterruptedTasksWarning: () => void
+  retryInterruptedTask: (taskId: string) => TaskItem | null
+  getInterruptedTasks: () => TaskItem[]
   
   // 静默分析
   generateSilentAnalysis: () => Promise<void>
@@ -186,7 +193,7 @@ export const createSessionsSlice: StateCreator<SessionsSlice> = (set, get) => ({
     return { activeExecutions: newExecutions }
   }),
   
-  // 追加执行步骤到指定任务
+  // 追加执行步骤到指定任务（带批量持久化）
   appendExecutionStep: (taskId, step) => set((state) => {
     const newExecutions = state.activeExecutions.map(t => {
       if (t.id !== taskId) return t
@@ -196,7 +203,13 @@ export const createSessionsSlice: StateCreator<SessionsSlice> = (set, get) => ({
         executionSteps: [...existingSteps, step].slice(-50), // 最多保留 50 步
       }
     })
-    // 不在每一步都持久化，避免频繁写入
+    // 批量持久化：每 5 步或超过 10 秒持久化一次
+    const task = newExecutions.find(t => t.id === taskId)
+    const stepCount = task?.executionSteps?.length || 0
+    const timeSinceLastPersist = Date.now() - _lastPersistTime
+    if (stepCount % 5 === 0 || timeSinceLastPersist > 10000) {
+      persistTaskHistory(newExecutions)
+    }
     return { activeExecutions: newExecutions }
   }),
   
@@ -219,7 +232,7 @@ export const createSessionsSlice: StateCreator<SessionsSlice> = (set, get) => ({
       if (t.status === 'executing') {
         return {
           ...t,
-          status: 'terminated' as const,
+          status: 'interrupted' as TaskStatus,
           executionError: '任务因页面刷新而中断',
           executionDuration: Date.now() - (t.timestamp ? new Date(t.timestamp).getTime() : Date.now()),
         }
@@ -232,6 +245,36 @@ export const createSessionsSlice: StateCreator<SessionsSlice> = (set, get) => ({
 
   dismissInterruptedTasksWarning: () => {
     set({ hasInterruptedTasks: false })
+  },
+
+  // 获取所有中断的任务
+  getInterruptedTasks: () => {
+    const { activeExecutions } = get()
+    return activeExecutions.filter(t => t.status === 'executing' || t.status === 'interrupted')
+  },
+
+  // 重试中断的任务：标记原任务为 interrupted，返回任务信息供调用方重新执行
+  retryInterruptedTask: (taskId) => {
+    const { activeExecutions } = get()
+    const task = activeExecutions.find(t => t.id === taskId)
+    if (!task) return null
+    
+    // 标记原任务为 interrupted
+    const newExecutions = activeExecutions.map(t => {
+      if (t.id === taskId) {
+        return {
+          ...t,
+          status: 'interrupted' as TaskStatus,
+          executionError: '任务已重新执行',
+        }
+      }
+      return t
+    })
+    persistTaskHistory(newExecutions)
+    set({ activeExecutions: newExecutions })
+    
+    // 返回任务信息，供调用方使用 sendChat 重新执行
+    return task
   },
 
   // 静默分析

@@ -15,6 +15,7 @@ const MAX_NEXUS_MESSAGES = 50        // 每个 Nexus 对话最多保留 50 条�
 const STORAGE_KEYS = {
   CHAT_HISTORY: 'ddos_chat_history',
   EXECUTION_STATUS: 'ddos_execution_status',
+  NEXUS_CHAT_MAP: 'ddos_nexus_chat_map',
 }
 
 // 聊天记录持久化
@@ -48,10 +49,37 @@ function persistChatState(messages: ChatMessage[], statuses: Record<string, Exec
   }
 }
 
+// Nexus 聊天记录持久化
+function loadNexusChatMap(): Record<string, ChatMessage[]> {
+  try {
+    const data = localStorage.getItem(STORAGE_KEYS.NEXUS_CHAT_MAP)
+    return data ? JSON.parse(data) : {}
+  } catch (e) {
+    console.warn('[AI] Failed to load nexus chat map:', e)
+    return {}
+  }
+}
+
+function persistNexusChatMap(map: Record<string, ChatMessage[]>) {
+  try {
+    // 每个 Nexus 只保留最近 30 条消息，避免 localStorage 溢出
+    const trimmed: Record<string, ChatMessage[]> = {}
+    for (const [nexusId, msgs] of Object.entries(map)) {
+      if (msgs.length > 0) {
+        trimmed[nexusId] = msgs.slice(-30)
+      }
+    }
+    localStorage.setItem(STORAGE_KEYS.NEXUS_CHAT_MAP, JSON.stringify(trimmed))
+  } catch (e) {
+    console.warn('[AI] Failed to persist nexus chat map:', e)
+  }
+}
+
 const emptySummary = (): AISummary => ({ content: '', loading: false, error: null, timestamp: 0 })
 
 // 初始化时加载持久化数据
 const initialChatHistory = loadChatHistory()
+const initialNexusChatMap = loadNexusChatMap()
 
 export interface AiSlice {
   // LLM 配置
@@ -135,7 +163,7 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
   // ============================================
   // Nexus 独立对话 (Phase 2)
   // ============================================
-  nexusChatMap: {},
+  nexusChatMap: initialNexusChatMap,
   nexusChatStreaming: null,
   nexusChatStreamContent: '',
   nexusChatError: null,
@@ -150,6 +178,7 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
       delete newMap[nexusId]
       return { nexusChatMap: newMap }
     })
+    persistNexusChatMap(get().nexusChatMap)
   },
 
   sendNexusChat: async (nexusId, message) => {
@@ -225,11 +254,14 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
           )
 
           const execDuration = Date.now() - execStartTime
+          const nexusCreatedFiles = localClawService.lastCreatedFiles.length > 0
+            ? [...localClawService.lastCreatedFiles]
+            : undefined
 
           // 替换占位消息为最终结果
           set((state) => {
             const msgs = (state.nexusChatMap[nexusId] || []).map(m =>
-              m.id === execId ? { ...m, content: result, execution: undefined } : m
+              m.id === execId ? { ...m, content: result, execution: undefined, createdFiles: nexusCreatedFiles } : m
             )
             return {
               nexusChatMap: { ...state.nexusChatMap, [nexusId]: msgs },
@@ -244,6 +276,7 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
             executionDuration: execDuration,
           })
           fullState.completeNexusExecution?.(nexusId, { status: 'success', output: result.slice(0, 200) })
+          persistNexusChatMap(get().nexusChatMap)
 
         } catch (err: any) {
           const execDuration = Date.now() - execStartTime
@@ -264,6 +297,7 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
             executionDuration: execDuration,
           })
           fullState.completeNexusExecution?.(nexusId, { status: 'error', error: err.message })
+          persistNexusChatMap(get().nexusChatMap)
         }
 
       } else {
@@ -320,6 +354,7 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
             nexusChatStreamContent: '',
           }
         })
+        persistNexusChatMap(get().nexusChatMap)
 
         fullState.updateActiveExecution?.(execId, {
           status: 'done',
@@ -529,6 +564,9 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
 
           // 4. 完成 - 聊天面板显示最终结果（普通文本消息）
           const execDuration = Date.now() - execStartTime
+          const createdFiles = localClawService.lastCreatedFiles.length > 0
+            ? [...localClawService.lastCreatedFiles]
+            : undefined
           set((s) => ({
             chatStreaming: false,
             chatStreamContent: '',
@@ -537,9 +575,9 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
               ...s.executionStatuses,
               [execId]: { id: execId, status: 'success', output: result, timestamp: Date.now() },
             },
-            // 替换占位消息为最终结果（无 execution 卡片）
+            // 替换占位消息为最终结果（无 execution 卡片，附带创建的文件列表）
             chatMessages: s.chatMessages.map(m =>
-              m.id === execId ? { ...m, content: result, execution: undefined } : m
+              m.id === execId ? { ...m, content: result, execution: undefined, createdFiles } : m
             ),
           }))
           // 更新任务状态 + 存储执行结果

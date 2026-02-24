@@ -726,6 +726,10 @@ class LocalClawService {
   // P4: 技能嵌入索引 (语义检索)
   private skillEmbeddingIndex = new SkillEmbeddingIndex()
 
+  // 追踪执行过程中创建的文件 (用于在聊天中显示文件卡片)
+  private _lastCreatedFiles: { filePath: string; fileName: string; message: string; fileSize?: number }[] = []
+  get lastCreatedFiles() { return this._lastCreatedFiles }
+
   // JIT 缓存 - 避免重复读取
   private contextCache: Map<string, { content: string; timestamp: number }> = new Map()
   private readonly CACHE_TTL = 60000 // 1分钟缓存有效期
@@ -1661,6 +1665,9 @@ class LocalClawService {
       throw new Error('LLM 未配置。请在设置中配置 API Key。')
     }
 
+    // 清空上次执行的文件创建记录
+    this._lastCreatedFiles = []
+
     // P4: Nexus 触发器匹配 - 自动激活匹配的 Nexus
     const matchedNexus = this.matchNexusByTriggers(prompt)
     if (matchedNexus && !this.getActiveNexusId()) {
@@ -1715,6 +1722,9 @@ class LocalClawService {
     if (!isLLMConfigured()) {
       throw new Error('LLM 未配置。请在设置中配置 API Key。')
     }
+
+    // 清空上次执行的文件创建记录
+    this._lastCreatedFiles = []
 
     const taskId = `quest-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
     
@@ -2201,6 +2211,21 @@ class LocalClawService {
             // P5: 更新最近操作的实体 (用于指代消解)
             this.updateRecentEntities(toolCall.name, toolCall.args as Record<string, unknown>, toolResult.result)
             
+            // 追踪文件创建事件
+            if (toolCall.name === 'writeFile' && toolResult.status === 'success') {
+              try {
+                const parsed = JSON.parse(toolResult.result)
+                if (parsed.action === 'file_created' && parsed.filePath) {
+                  this._lastCreatedFiles.push({
+                    filePath: parsed.filePath,
+                    fileName: parsed.fileName || '',
+                    message: parsed.message || '',
+                    fileSize: parsed.fileSize,
+                  })
+                }
+              } catch { /* 非 JSON 结果，忽略 */ }
+            }
+
             // 🔄 技能变更检测：安装/卸载技能后刷新工具列表
             const isSkillChange = 
               (toolCall.name === 'runCmd' && (
@@ -2734,6 +2759,21 @@ ${toolName} 执行成功。请验证：
             // P5: 更新最近操作的实体 (用于指代消解) - FC 模式
             if (toolResult.status === 'success') {
               this.updateRecentEntities(toolName, toolArgs, toolResult.result)
+
+              // 追踪文件创建事件 - FC 模式
+              if (toolName === 'writeFile') {
+                try {
+                  const parsed = JSON.parse(toolResult.result)
+                  if (parsed.action === 'file_created' && parsed.filePath) {
+                    this._lastCreatedFiles.push({
+                      filePath: parsed.filePath,
+                      fileName: parsed.fileName || '',
+                      message: parsed.message || '',
+                      fileSize: parsed.fileSize,
+                    })
+                  }
+                } catch { /* 非 JSON 结果，忽略 */ }
+              }
             }
 
             // 🔄 技能变更检测 (与 Legacy 保持一致)

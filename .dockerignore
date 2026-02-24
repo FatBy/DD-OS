@@ -1,0 +1,44 @@
+# DD-OS Docker 忽略文件
+
+# 依赖目录（容器内重新安装）
+node_modules/
+__pycache__/
+*.pyc
+
+# 构建产物
+dist/
+build/
+*.egg-info/
+
+# 开发工具
+.git/
+.gitignore
+.vscode/
+.idea/
+
+# 本地配置
+*.local
+.env
+.env.*
+
+# 日志和缓存
+*.log
+.cache/
+.npm/
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# Tauri 相关（Docker 不需要）
+src-tauri/
+target/
+
+# 文档
+*.md
+!SKILL.md
+!NEXUS.md
+
+# 测试
+*.test.ts
+*.spec.ts

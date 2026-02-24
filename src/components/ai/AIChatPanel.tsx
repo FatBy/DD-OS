@@ -9,6 +9,8 @@ import { isLLMConfigured } from '@/services/llmService'
 import { getQuickCommands } from '@/services/contextBuilder'
 import { ChatMessage, StreamingMessage } from './ChatMessage'
 import { ChatErrorBoundary } from './ChatErrorBoundary'
+import { AddMCPModal } from './AddMCPModal'
+import { AddSkillModal } from './AddSkillModal'
 import { useT } from '@/i18n'
 
 export function AIChatPanel() {
@@ -17,6 +19,8 @@ export function AIChatPanel() {
   const setIsOpen = useStore((s) => s.setChatOpen)
   const [input, setInput] = useState('')
   const [attachments, setAttachments] = useState<Array<{ type: string; name: string; data?: string }>>([])
+  const [showMCPModal, setShowMCPModal] = useState(false)
+  const [showSkillModal, setShowSkillModal] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -58,7 +62,10 @@ export function AIChatPanel() {
 
   useEffect(() => {
     if (isOpen) {
-      setTimeout(() => textareaRef.current?.focus(), 300)
+      setTimeout(() => {
+        textareaRef.current?.focus()
+        messagesEndRef.current?.scrollIntoView({ behavior: 'instant' })
+      }, 300)
     }
   }, [isOpen])
 
@@ -125,24 +132,18 @@ export function AIChatPanel() {
     e.target.value = ''
   }
 
-  const handleAddSkill = () => {
-    const skillName = prompt('Skill name:')
-    if (skillName?.trim()) {
-      setAttachments(prev => [...prev, {
-        type: 'skill',
-        name: skillName.trim()
-      }])
-    }
+  const handleAddSkill = (skillName: string) => {
+    setAttachments(prev => [...prev, {
+      type: 'skill',
+      name: skillName,
+    }])
   }
 
-  const handleAddMCP = () => {
-    const mcpServer = prompt('MCP server:')
-    if (mcpServer?.trim()) {
-      setAttachments(prev => [...prev, {
-        type: 'mcp',
-        name: mcpServer.trim()
-      }])
-    }
+  const handleAddMCP = (serverName: string) => {
+    setAttachments(prev => [...prev, {
+      type: 'mcp',
+      name: serverName,
+    }])
   }
 
   const removeAttachment = (index: number) => {
@@ -225,6 +226,7 @@ export function AIChatPanel() {
               exit={{ scale: 0.95, opacity: 0 }}
               transition={{ type: 'spring', damping: 25, stiffness: 300 }}
               drag
+              dragListener={false}
               dragControls={dragControls}
               dragConstraints={constraintsRef}
               dragElastic={0.05}
@@ -337,7 +339,7 @@ export function AIChatPanel() {
                 ) : (
                   <>
                     {chatMessages.filter(m => m.role !== 'system').map((msg) => (
-                      <ChatMessage key={msg.id} message={msg} />
+                      <ChatMessage key={msg.id} message={msg} containerWidth="main" />
                     ))}
                     {chatStreaming && chatStreamContent && (
                       <StreamingMessage content={chatStreamContent} />
@@ -437,7 +439,7 @@ export function AIChatPanel() {
                         <Paperclip className="w-5 h-5" />
                       </button>
                       <button
-                        onClick={handleAddSkill}
+                        onClick={() => setShowSkillModal(true)}
                         disabled={chatStreaming}
                         className="p-2.5 text-skin-text-tertiary hover:text-skin-accent-amber hover:bg-skin-bg-secondary/40 
                                    rounded-xl transition-colors disabled:opacity-50"
@@ -446,7 +448,7 @@ export function AIChatPanel() {
                         <Puzzle className="w-5 h-5" />
                       </button>
                       <button
-                        onClick={handleAddMCP}
+                        onClick={() => setShowMCPModal(true)}
                         disabled={chatStreaming}
                         className="p-2.5 text-skin-text-tertiary hover:text-skin-accent-purple hover:bg-skin-bg-secondary/40 
                                    rounded-xl transition-colors disabled:opacity-50"
@@ -504,6 +506,18 @@ export function AIChatPanel() {
           </>
         )}
       </AnimatePresence>
+
+      {/* MCP / SKILL 引导模态框 */}
+      <AddMCPModal
+        isOpen={showMCPModal}
+        onClose={() => setShowMCPModal(false)}
+        onConfirm={handleAddMCP}
+      />
+      <AddSkillModal
+        isOpen={showSkillModal}
+        onClose={() => setShowSkillModal(false)}
+        onConfirm={handleAddSkill}
+      />
     </>
   )
 }

@@ -2,39 +2,83 @@ import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   X, Trash2, Clock, CheckCircle2, ChevronRight,
-  Calendar, Activity, MessageSquare, Hash, StopCircle,
+  Calendar, Activity, MessageSquare, Hash, StopCircle, AlertTriangle, Play,
 } from 'lucide-react'
 import { GlassCard } from '@/components/GlassCard'
 import { useStore } from '@/store'
 import { cn } from '@/utils/cn'
-import type { TaskItem } from '@/types'
+import type { TaskItem, TaskStatus } from '@/types'
 
-const statusConfig: Record<string, { icon: typeof Clock; color: string; label: string }> = {
+const statusConfig: Record<TaskStatus, { icon: typeof Clock; color: string; label: string }> = {
   pending: { icon: Clock, color: 'amber', label: '等待' },
+  queued: { icon: Clock, color: 'blue', label: '排队中' },
+  executing: { icon: Clock, color: 'cyan', label: '执行中' },
   done: { icon: CheckCircle2, color: 'emerald', label: '完成' },
   terminated: { icon: StopCircle, color: 'red', label: '已终止' },
+  interrupted: { icon: AlertTriangle, color: 'amber', label: '已中断' },
 }
 
 interface HistoryDrawerProps {
   isOpen: boolean
   onClose: () => void
+  /** 内嵌模式，不显示抽屉效果 */
+  inline?: boolean
+  /** 自定义任务列表，不传则从 store 获取 */
+  tasks?: TaskItem[]
 }
 
-export function HistoryDrawer({ isOpen, onClose }: HistoryDrawerProps) {
+export function HistoryDrawer({ isOpen, onClose, inline = false, tasks: customTasks }: HistoryDrawerProps) {
   const activeExecutions = useStore((s) => s.activeExecutions)
   const removeActiveExecution = useStore((s) => s.removeActiveExecution)
   const clearTaskHistory = useStore((s) => s.clearTaskHistory)
+  const retryInterruptedTask = useStore((s) => s.retryInterruptedTask)
+  const sendChat = useStore((s) => s.sendChat)
 
   const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [retrying, setRetrying] = useState<string | null>(null)
 
-  // 历史任务 = 非执行中的任务
-  const historyTasks = activeExecutions
-    .filter(t => t.status !== 'executing')
-    .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+  // 使用自定义任务列表或从 store 获取
+  const historyTasks = customTasks 
+    ? customTasks.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+    : activeExecutions
+        .filter(t => t.status !== 'executing')
+        .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
 
   const handleDelete = (id: string) => {
     removeActiveExecution(id)
     if (expandedId === id) setExpandedId(null)
+  }
+
+  const handleRetry = async (task: TaskItem) => {
+    if (retrying) return
+    setRetrying(task.id)
+    try {
+      const taskInfo = retryInterruptedTask(task.id)
+      if (taskInfo && taskInfo.description) {
+        await sendChat(taskInfo.description, 'task')
+      }
+    } finally {
+      setRetrying(null)
+    }
+  }
+
+  // 内嵌模式：直接渲染任务列表
+  if (inline) {
+    return (
+      <div className="space-y-2">
+        {historyTasks.map((task) => (
+          <HistoryTaskCard
+            key={task.id}
+            task={task}
+            isExpanded={expandedId === task.id}
+            onToggle={() => setExpandedId(prev => prev === task.id ? null : task.id)}
+            onDelete={() => handleDelete(task.id)}
+            onRetry={task.status === 'interrupted' ? () => handleRetry(task) : undefined}
+            isRetrying={retrying === task.id}
+          />
+        ))}
+      </div>
+    )
   }
 
   return (
@@ -120,11 +164,13 @@ export function HistoryDrawer({ isOpen, onClose }: HistoryDrawerProps) {
   )
 }
 
-function HistoryTaskCard({ task, isExpanded, onToggle, onDelete }: {
+function HistoryTaskCard({ task, isExpanded, onToggle, onDelete, onRetry, isRetrying }: {
   task: TaskItem
   isExpanded: boolean
   onToggle: () => void
   onDelete: () => void
+  onRetry?: () => void
+  isRetrying?: boolean
 }) {
   const config = statusConfig[task.status] || statusConfig.done
   const Icon = config.icon
@@ -191,6 +237,22 @@ function HistoryTaskCard({ task, isExpanded, onToggle, onDelete }: {
                     <div className="mt-2 p-2 bg-red-500/5 rounded border border-red-500/15">
                       <p className="text-[11px] text-red-300/80 font-mono">{task.executionError}</p>
                     </div>
+                  )}
+
+                  {/* 中断任务的重试按钮 */}
+                  {task.status === 'interrupted' && onRetry && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onRetry() }}
+                      disabled={isRetrying}
+                      className="mt-2 flex items-center gap-1.5 px-3 py-1.5 
+                               bg-emerald-500/20 border border-emerald-500/30 
+                               text-emerald-300 text-xs font-mono rounded-lg
+                               hover:bg-emerald-500/30 transition-colors
+                               disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <Play className="w-3 h-3" />
+                      {isRetrying ? '重新执行中...' : '重新执行此任务'}
+                    </button>
                   )}
 
                   <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[10px] font-mono text-white/30">

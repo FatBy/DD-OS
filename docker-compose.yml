@@ -1,0 +1,24 @@
+# DD-OS Docker Compose 配置
+# 一键启动完整的 AI 操作系统环境
+
+version: '3.8'
+
+services:
+  ddos:
+    build: .
+    container_name: dd-os
+    ports:
+      - "4173:4173"   # 前端界面
+      - "3001:3001"   # 后端 API
+    volumes:
+      # 持久化数据目录（记忆、配置等）
+      - ddos-data:/root/.ddos
+      # 挂载 skills 目录，方便热更新技能（可选）
+      # - ./skills:/app/skills
+    environment:
+      - TZ=Asia/Shanghai
+    restart: unless-stopped
+
+volumes:
+  ddos-data:
+    name: ddos-data

@@ -19,6 +19,7 @@ import { localClawService } from '@/services/LocalClawService'
 import { getLocalSoulData, getLocalSkills, getLocalMemories } from '@/utils/localDataProvider'
 import { simpleVisualDNA } from '@/store/slices/worldSlice'
 import { restoreLLMConfigFromServer } from '@/services/llmService'
+import { persistTaskHistory } from '@/store/slices/sessionsSlice'
 
 /**
  * 从 localStorage 缓存立即恢复数据到 store
@@ -232,6 +233,18 @@ function App() {
       openClawService.disconnect()
       localClawService.disconnect()
     }
+  }, [])
+
+  // 刷新前持久化任务状态，防止数据丢失
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      const { activeExecutions } = useStore.getState()
+      if (activeExecutions.length > 0) {
+        persistTaskHistory(activeExecutions)
+      }
+    }
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
   }, [])
 
   const initTheme = useStore((s) => s.initTheme)

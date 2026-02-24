@@ -4,29 +4,8 @@ import { User, Bot, AlertCircle, Clock, Loader2, CheckCircle2, XCircle, Copy, Ch
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { cn } from '@/utils/cn'
 import type { ChatMessage as ChatMessageType, ExecutionStatus } from '@/types'
-
-/**
- * 清理 Markdown 格式符号，转换为干净的纯文本
- */
-function cleanMarkdown(text: string): string {
-  return text
-    // 移除粗体 **text** 或 __text__
-    .replace(/\*\*([^*]+)\*\*/g, '$1')
-    .replace(/__([^_]+)__/g, '$1')
-    // 移除斜体 *text* 或 _text_
-    .replace(/\*([^*]+)\*/g, '$1')
-    .replace(/(?<![a-zA-Z0-9])_([^_]+)_(?![a-zA-Z0-9])/g, '$1')
-    // 移除行内代码 `code`
-    .replace(/`([^`]+)`/g, '$1')
-    // 移除链接 [text](url) -> text
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
-    // 移除标题符号 ### 
-    .replace(/^#{1,6}\s+/gm, '')
-    // 移除列表符号 - 或 *
-    .replace(/^[\s]*[-*]\s+/gm, '• ')
-    // 移除数字列表 1. 2. 3.
-    .replace(/^[\s]*\d+\.\s+/gm, '')
-}
+import { MarkdownRenderer } from './markdown/MarkdownRenderer'
+import { DocumentView, isLongFormContent } from './markdown/DocumentView'
 
 // 检测输出类型
 function detectOutputType(output: string): 'weather' | 'search' | 'file' | 'file_created' | 'command' | 'plain' {
@@ -186,7 +165,6 @@ interface FileCreatedData {
 }
 
 function FileCreatedOutput({ content }: { content: string }) {
-  const [copied, setCopied] = useState(false)
   const [opening, setOpening] = useState(false)
   
   // 解析数据
@@ -213,16 +191,7 @@ function FileCreatedOutput({ content }: { content: string }) {
     }
   }, [content])
   
-  const handleCopyPath = async () => {
-    const textToCopy = data.filePath || data.fileName
-    if (textToCopy) {
-      await navigator.clipboard.writeText(textToCopy)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-    }
-  }
-  
-  const handleOpenFolder = async () => {
+  const handleOpenFile = async () => {
     if (!data.filePath) return
     setOpening(true)
     
@@ -239,7 +208,7 @@ function FileCreatedOutput({ content }: { content: string }) {
       
       if (!response.ok) throw new Error('打开失败')
     } catch (error) {
-      console.error('打开文件夹失败:', error)
+      console.error('打开文件失败:', error)
     } finally {
       setOpening(false)
     }
@@ -277,27 +246,17 @@ function FileCreatedOutput({ content }: { content: string }) {
         <div className="text-xs text-emerald-400/80">{data.message}</div>
       </div>
       
-      {/* 操作按钮 */}
-      <div className="flex items-center gap-2">
+      {/* 操作按钮 - 直接打开文件 */}
+      {data.filePath && (
         <button
-          onClick={handleCopyPath}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-mono bg-white/5 border border-white/10 hover:border-emerald-500/30 text-white/60 hover:text-emerald-400 transition-colors"
+          onClick={handleOpenFile}
+          disabled={opening}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-mono bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/30 transition-colors disabled:opacity-50"
         >
-          {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-          {copied ? '已复制' : '复制路径'}
+          <FolderOpen className="w-3.5 h-3.5" />
+          {opening ? '打开中...' : '打开文件'}
         </button>
-        
-        {data.filePath && (
-          <button
-            onClick={handleOpenFolder}
-            disabled={opening}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-mono bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/30 transition-colors disabled:opacity-50"
-          >
-            <FolderOpen className="w-3.5 h-3.5" />
-            {opening ? '打开中...' : '打开文件夹'}
-          </button>
-        )}
-      </div>
+      )}
     </div>
   )
 }
@@ -410,9 +369,9 @@ function ExecutionCard({ execution, content }: { execution: ExecutionStatus; con
           </span>
         </div>
         
-        <p className="text-sm font-mono text-white/70 mb-3 leading-relaxed">
-          {content ? cleanMarkdown(content) : ''}
-        </p>
+        <div className="text-sm font-mono text-white/70 mb-3 leading-relaxed">
+          {content ? <MarkdownRenderer content={content} /> : ''}
+        </div>
         
         <div className="flex items-center gap-2">
           <button
@@ -521,14 +480,70 @@ function ExecutionCard({ execution, content }: { execution: ExecutionStatus; con
   )
 }
 
-interface ChatMessageProps {
-  message: ChatMessageType
+// 文件创建卡片 (基于结构化数据，用于消息附件)
+function FileCreatedCard({ file }: { file: { filePath: string; fileName: string; message: string; fileSize?: number } }) {
+  const [opening, setOpening] = useState(false)
+
+  const handleOpenFile = async () => {
+    if (!file.filePath) return
+    setOpening(true)
+    try {
+      const serverUrl = localStorage.getItem('ddos_server_url') || 'http://localhost:3001'
+      await fetch(`${serverUrl}/api/tools/execute`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'openInExplorer', args: { path: file.filePath } })
+      })
+    } catch (error) {
+      console.error('打开文件失败:', error)
+    } finally {
+      setOpening(false)
+    }
+  }
+
+  return (
+    <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-lg p-3 space-y-2">
+      <div className="flex items-center gap-2">
+        <FileText className="w-4 h-4 text-emerald-400/60" />
+        <span className="text-sm font-mono text-white/80">{file.fileName}</span>
+        {file.fileSize !== undefined && (
+          <span className="text-xs text-white/40 ml-auto">{file.fileSize} 字节</span>
+        )}
+      </div>
+
+      {file.filePath && (
+        <div className="flex items-start gap-2">
+          <span className="text-xs text-white/40 flex-shrink-0 mt-0.5">路径</span>
+          <span className="text-xs font-mono text-white/50 break-all" title={file.filePath}>
+            {file.filePath}
+          </span>
+        </div>
+      )}
+
+      {file.filePath && (
+        <button
+          onClick={handleOpenFile}
+          disabled={opening}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-mono bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/30 transition-colors disabled:opacity-50"
+        >
+          <FolderOpen className="w-3.5 h-3.5" />
+          {opening ? '打开中...' : '打开文件'}
+        </button>
+      )}
+    </div>
+  )
 }
 
-export function ChatMessage({ message }: ChatMessageProps) {
+interface ChatMessageProps {
+  message: ChatMessageType
+  containerWidth?: 'main' | 'nexus'
+}
+
+export function ChatMessage({ message, containerWidth = 'main' }: ChatMessageProps) {
   const isUser = message.role === 'user'
   const isError = message.error
   const hasExecution = !!message.execution
+  const isAssistantLongForm = !isUser && !hasExecution && message.content && isLongFormContent(message.content)
 
   return (
     <motion.div
@@ -536,8 +551,13 @@ export function ChatMessage({ message }: ChatMessageProps) {
       animate={{ opacity: 1, y: 0 }}
       className="space-y-2"
     >
-      {/* 文本消息气泡 */}
-      {!(message.execution?.status === 'suggestion') && message.content && !hasExecution && (
+      {/* 长文档视图 (助手消息，非 execution，内容较长) */}
+      {isAssistantLongForm && !(message.execution?.status === 'suggestion') && (
+        <DocumentView content={message.content} containerWidth={containerWidth} />
+      )}
+
+      {/* 普通文本消息气泡 */}
+      {!isAssistantLongForm && !(message.execution?.status === 'suggestion') && message.content && !hasExecution && (
         <div className={cn('flex gap-2', isUser ? 'flex-row-reverse' : 'flex-row')}>
           <div className={cn(
             'w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0',
@@ -549,11 +569,11 @@ export function ChatMessage({ message }: ChatMessageProps) {
             }
           </div>
           <div className={cn(
-            'max-w-[80%] px-3 py-2 rounded-lg text-sm font-mono leading-relaxed',
+            'max-w-[80%] px-3 py-2 rounded-lg text-sm leading-relaxed',
             isUser
-              ? 'bg-cyan-500/10 border border-cyan-500/20 text-white/80'
+              ? 'bg-cyan-500/10 border border-cyan-500/20 text-white/80 font-mono'
               : isError
-              ? 'bg-red-500/10 border border-red-500/20 text-red-300'
+              ? 'bg-red-500/10 border border-red-500/20 text-red-300 font-mono'
               : 'bg-white/5 border border-white/10 text-white/70'
           )}>
             {isError && (
@@ -562,7 +582,11 @@ export function ChatMessage({ message }: ChatMessageProps) {
                 <span className="text-[13px]">错误</span>
               </div>
             )}
-            <div className="whitespace-pre-wrap break-words">{cleanMarkdown(message.content)}</div>
+            {isUser ? (
+              <div className="whitespace-pre-wrap break-words">{message.content}</div>
+            ) : (
+              <MarkdownRenderer content={message.content} />
+            )}
           </div>
         </div>
       )}
@@ -573,8 +597,8 @@ export function ChatMessage({ message }: ChatMessageProps) {
           <div className="w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 bg-amber-500/20">
             <Bot className="w-3.5 h-3.5 text-amber-400" />
           </div>
-          <div className="max-w-[80%] px-3 py-2 rounded-lg text-sm font-mono leading-relaxed bg-white/5 border border-white/10 text-white/70">
-            <div className="whitespace-pre-wrap break-words">{cleanMarkdown(message.content)}</div>
+          <div className="max-w-[80%] px-3 py-2 rounded-lg text-sm leading-relaxed bg-white/5 border border-white/10 text-white/70">
+            <MarkdownRenderer content={message.content} />
           </div>
         </div>
       )}
@@ -582,6 +606,21 @@ export function ChatMessage({ message }: ChatMessageProps) {
       {/* 执行卡片 - 全宽独立展示 */}
       {hasExecution && (
         <ExecutionCard execution={message.execution!} content={message.content} />
+      )}
+
+      {/* 文件创建卡片 - 显示执行过程中创建的文件 */}
+      {message.createdFiles && message.createdFiles.length > 0 && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2 text-emerald-400 px-1">
+            <CheckCircle2 className="w-4 h-4" />
+            <span className="text-xs font-mono font-medium">
+              {message.createdFiles.length === 1 ? '已创建文件' : `已创建 ${message.createdFiles.length} 个文件`}
+            </span>
+          </div>
+          {message.createdFiles.map((file, i) => (
+            <FileCreatedCard key={`${file.filePath}-${i}`} file={file} />
+          ))}
+        </div>
       )}
     </motion.div>
   )
@@ -601,11 +640,9 @@ export function StreamingMessage({ content }: StreamingMessageProps) {
       <div className="w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 bg-amber-500/20">
         <Bot className="w-3.5 h-3.5 text-amber-400 animate-pulse" />
       </div>
-      <div className="max-w-[80%] px-3 py-2 rounded-lg text-sm font-mono leading-relaxed bg-white/5 border border-amber-500/20 text-white/70">
-        <div className="whitespace-pre-wrap break-words">
-          {cleanMarkdown(content)}
-          <span className="inline-block w-1.5 h-3.5 bg-amber-400/60 ml-0.5 animate-pulse" />
-        </div>
+      <div className="max-w-[80%] px-3 py-2 rounded-lg text-sm leading-relaxed bg-white/5 border border-amber-500/20 text-white/70">
+        <MarkdownRenderer content={content} />
+        <span className="inline-block w-1.5 h-3.5 bg-amber-400/60 ml-0.5 animate-pulse" />
       </div>
     </motion.div>
   )

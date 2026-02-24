@@ -31,12 +31,15 @@ export interface ExecutionStep {
   duration?: number
 }
 
+// 任务状态类型
+export type TaskStatus = 'pending' | 'queued' | 'executing' | 'done' | 'terminated' | 'interrupted'
+
 // 任务项 (映射自 Session)
 export interface TaskItem {
   id: string
   title: string
   description: string
-  status: 'pending' | 'executing' | 'done' | 'terminated'
+  status: TaskStatus
   priority: 'high' | 'medium' | 'low'
   timestamp: string
   // 原始数据引用
@@ -391,6 +394,8 @@ export interface ChatMessage {
   timestamp: number
   error?: boolean
   execution?: ExecutionStatus
+  /** 执行过程中创建的文件列表，用于在聊天中显示可点击的文件卡片 */
+  createdFiles?: { filePath: string; fileName: string; message: string; fileSize?: number }[]
 }
 
 export interface AISummary {
