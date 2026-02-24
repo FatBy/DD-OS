@@ -784,6 +784,7 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
                     'searchMemory': self._tool_search_memory,
                     'nexusBindSkill': self._tool_nexus_bind_skill,
                     'nexusUnbindSkill': self._tool_nexus_unbind_skill,
+                    'openInExplorer': self._tool_open_in_explorer,
                 }
                 handler = builtin_handlers.get(tool_name)
                 if handler:
@@ -958,7 +959,43 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
         file_path.parent.mkdir(parents=True, exist_ok=True)
         
         file_path.write_text(content, encoding='utf-8')
-        return f"Written {len(content)} bytes to {file_path.name}"
+        
+        # 返回结构化数据，包含完整路径以便前端快速访问
+        return json.dumps({
+            'action': 'file_created',
+            'message': f'已成功写入 {len(content)} 字节',
+            'fileName': file_path.name,
+            'filePath': str(file_path.resolve()),
+            'fileSize': len(content),
+        }, ensure_ascii=False)
+    
+    def _tool_open_in_explorer(self, args: dict) -> str:
+        """在文件管理器中打开指定路径并高亮文件"""
+        path = args.get('path', '')
+        if not path:
+            raise ValueError("路径参数不能为空")
+        
+        file_path = Path(path)
+        if not file_path.exists():
+            raise FileNotFoundError(f"文件不存在: {path}")
+        
+        import platform
+        import subprocess
+        system = platform.system()
+        
+        try:
+            if system == 'Windows':
+                # Windows: 使用 explorer /select 高亮文件
+                subprocess.run(['explorer', '/select,', str(file_path.resolve())], check=False)
+            elif system == 'Darwin':  # macOS
+                subprocess.run(['open', '-R', str(file_path.resolve())], check=True)
+            else:  # Linux
+                # 打开父目录
+                subprocess.run(['xdg-open', str(file_path.parent.resolve())], check=True)
+            
+            return f"已在文件管理器中打开: {file_path.name}"
+        except Exception as e:
+            raise RuntimeError(f"无法打开文件管理器: {str(e)}")
     
     def _check_nexus_duplication(self, new_content: str) -> str | None:
         """检查新建的 Nexus 是否与现存 Nexus 重复，返回重复的 Nexus ID"""
@@ -2546,11 +2583,11 @@ You are DD-OS, a local AI operating system running directly on the user's comput
     
     # 🔌 初始化工具注册表
     registry = ToolRegistry(clawd_path)
-    # 注册 12 个内置工具
+    # 注册内置工具
     builtin_names = [
         'readFile', 'writeFile', 'appendFile', 'listDir', 'runCmd',
         'weather', 'webSearch', 'webFetch', 'saveMemory', 'searchMemory',
-        'nexusBindSkill', 'nexusUnbindSkill',
+        'nexusBindSkill', 'nexusUnbindSkill', 'openInExplorer',
     ]
     for name in builtin_names:
         registry.register_builtin(name, name)  # handler resolved at dispatch time

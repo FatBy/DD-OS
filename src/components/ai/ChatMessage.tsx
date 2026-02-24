@@ -1,6 +1,6 @@
 import { useState, useMemo, useRef, useEffect } from 'react'
 import { motion } from 'framer-motion'
-import { User, Bot, AlertCircle, Clock, Loader2, CheckCircle2, XCircle, Copy, Check, MessageSquare, Cloud, Search, FileText, Terminal } from 'lucide-react'
+import { User, Bot, AlertCircle, Clock, Loader2, CheckCircle2, XCircle, Copy, Check, MessageSquare, Cloud, Search, FileText, Terminal, FolderOpen } from 'lucide-react'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { cn } from '@/utils/cn'
 import type { ChatMessage as ChatMessageType, ExecutionStatus } from '@/types'
@@ -29,7 +29,22 @@ function cleanMarkdown(text: string): string {
 }
 
 // 检测输出类型
-function detectOutputType(output: string): 'weather' | 'search' | 'file' | 'command' | 'plain' {
+function detectOutputType(output: string): 'weather' | 'search' | 'file' | 'file_created' | 'command' | 'plain' {
+  // 优先检测结构化 JSON 输出（文件创建）
+  try {
+    const parsed = JSON.parse(output)
+    if (parsed.action === 'file_created' && parsed.filePath) {
+      return 'file_created'
+    }
+  } catch {
+    // 非 JSON，继续正则检测
+  }
+  
+  // 兼容旧格式：正则匹配 "Written ... bytes to ..."
+  if (/Written \d+ bytes to .+/.test(output)) {
+    return 'file_created'
+  }
+  
   if (output.includes('查询时间:') || output.includes('Weather') || output.includes('°C') || output.includes('天气')) {
     return 'weather'
   }
@@ -162,6 +177,131 @@ function CommandOutput({ content }: { content: string }) {
   )
 }
 
+// 文件创建成功输出
+interface FileCreatedData {
+  filePath: string
+  fileName: string
+  message: string
+  fileSize?: number
+}
+
+function FileCreatedOutput({ content }: { content: string }) {
+  const [copied, setCopied] = useState(false)
+  const [opening, setOpening] = useState(false)
+  
+  // 解析数据
+  const data: FileCreatedData = useMemo(() => {
+    try {
+      const parsed = JSON.parse(content)
+      return {
+        filePath: parsed.filePath || '',
+        fileName: parsed.fileName || '',
+        message: parsed.message || '',
+        fileSize: parsed.fileSize,
+      }
+    } catch {
+      // 兼容旧格式：提取文件名
+      const match = content.match(/Written (\d+) bytes to (.+)/)
+      if (match) {
+        return {
+          filePath: '',
+          fileName: match[2],
+          message: `已写入 ${match[1]} 字节`,
+        }
+      }
+      return { filePath: '', fileName: '未知文件', message: content }
+    }
+  }, [content])
+  
+  const handleCopyPath = async () => {
+    const textToCopy = data.filePath || data.fileName
+    if (textToCopy) {
+      await navigator.clipboard.writeText(textToCopy)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    }
+  }
+  
+  const handleOpenFolder = async () => {
+    if (!data.filePath) return
+    setOpening(true)
+    
+    try {
+      const serverUrl = localStorage.getItem('ddos_server_url') || 'http://localhost:3001'
+      const response = await fetch(`${serverUrl}/api/tools/execute`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'openInExplorer',
+          args: { path: data.filePath }
+        })
+      })
+      
+      if (!response.ok) throw new Error('打开失败')
+    } catch (error) {
+      console.error('打开文件夹失败:', error)
+    } finally {
+      setOpening(false)
+    }
+  }
+  
+  return (
+    <div className="space-y-2 p-4">
+      <div className="flex items-center gap-2 text-emerald-400">
+        <CheckCircle2 className="w-5 h-5" />
+        <span className="text-sm font-medium">文件已创建</span>
+      </div>
+      
+      {/* 文件信息卡片 */}
+      <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-lg p-3 space-y-2">
+        <div className="flex items-center gap-2">
+          <FileText className="w-4 h-4 text-emerald-400/60" />
+          <span className="text-sm font-mono text-white/80">{data.fileName}</span>
+          {data.fileSize !== undefined && (
+            <span className="text-xs text-white/40 ml-auto">{data.fileSize} 字节</span>
+          )}
+        </div>
+        
+        {data.filePath && (
+          <div className="flex items-start gap-2">
+            <span className="text-xs text-white/40 flex-shrink-0 mt-0.5">路径</span>
+            <span 
+              className="text-xs font-mono text-white/50 break-all" 
+              title={data.filePath}
+            >
+              {data.filePath}
+            </span>
+          </div>
+        )}
+        
+        <div className="text-xs text-emerald-400/80">{data.message}</div>
+      </div>
+      
+      {/* 操作按钮 */}
+      <div className="flex items-center gap-2">
+        <button
+          onClick={handleCopyPath}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-mono bg-white/5 border border-white/10 hover:border-emerald-500/30 text-white/60 hover:text-emerald-400 transition-colors"
+        >
+          {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+          {copied ? '已复制' : '复制路径'}
+        </button>
+        
+        {data.filePath && (
+          <button
+            onClick={handleOpenFolder}
+            disabled={opening}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-mono bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/30 transition-colors disabled:opacity-50"
+          >
+            <FolderOpen className="w-3.5 h-3.5" />
+            {opening ? '打开中...' : '打开文件夹'}
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // 智能输出渲染器
 function SmartOutputViewer({ content }: { content: string }) {
   const outputType = detectOutputType(content)
@@ -173,6 +313,8 @@ function SmartOutputViewer({ content }: { content: string }) {
       return <SearchOutput content={content} />
     case 'file':
       return <FileOutput content={content} />
+    case 'file_created':
+      return <FileCreatedOutput content={content} />
     case 'command':
       return <CommandOutput content={content} />
     default:
