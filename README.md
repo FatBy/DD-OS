@@ -1,112 +1,258 @@
 <div align="center">
 
-# <img width="50" height="50" alt="Gemini_Generated_Image_yuphzayuphzayuph(1)" src="https://github.com/user-attachments/assets/89ec1d77-3614-4ff8-bd06-162bad8210c6" />  DD-OS
+# <img width="50" height="50" alt="DD-OS" src="https://github.com/user-attachments/assets/89ec1d77-3614-4ff8-bd06-162bad8210c6" />  DD-OS
 
 ### Digital Dimension Operating System
 
 *Build your LLM-driven world. Shatter the chatbox.*
 
-[Website](https://github.com/FatBy/dd-os) • [Docs](https://github.com/FatBy/dd-os/wiki) • [World View](https://github.com/FatBy/dd-os/wiki/WorldView) • [Skills Hub](https://github.com/FatBy/dd-os/tree/main/skills) • [Discord](https://discord.gg/ddos)
+[GitHub](https://github.com/FatBy/DD-OS) | [Skills Hub](https://github.com/FatBy/DD-OS/tree/main/skills)
 
 </div>
 
-> **"LLMs are the emergence of data intelligence, while Agents are the emergence of tool intelligence."**
+---
 
-**DD-OS** is a personal, spatial AI operating system that runs entirely on your local devices. It moves beyond the traditional 2D chatbot interface, rendering a live, interconnected **WorldView** canvas. By leveraging the native **Model Context Protocol (MCP)** and a Turing-complete **Prose Workflow Engine**, DD-OS seamlessly connects LLMs to your actual file system, browser, and enterprise apps (Slack, Notion, GitHub).
+![DD-OS 主界面](docs/images/ddos-hero.png)
 
-If you want an AI assistant that doesn't just "talk" but actively "executes" complex, multi-step workflows on your local machine—this is it.
+**DD-OS** 是一个运行在本地的游戏化 AI 操作系统。它将传统的聊天机器人界面重新定义为沉浸式的「数字世界」，每个 AI 技能和工作流都是世界中的一座建筑或一颗星球。内置 ReAct 执行引擎，支持多步骤任务自动规划与执行。
 
-## ✨ Highlights
+---
 
-* **Local-First Gateway** — A single control plane (`ddos-local-server.py`) managing all WebSocket sessions, LLM routing, and MCP tool execution safely on your loopback address.
+## 产品特色
 
-* **The Spatial Nexus** — No more "files" or "folders". Every asset, agent, and background task is an interconnected node (Nexus) inside an immersive React-based spatial canvas.
+### 三大世界主题
 
-* **Prose Workflow Engine (`.prose`)** — Eliminate LLM hallucinations on complex tasks. Abstract multi-step logic (e.g., *Parallel PR Reviews*, *Recursive Self-Refinement*) into traceable, code-level pipelines.
+DD-OS 提供三种沉浸式世界视图，可在设置中一键切换。
 
-* **Native MCP Skills Matrix** — Out-of-the-box integration with the tools you already use. Mount capabilities on demand:
+![主题展示](docs/images/ddos-themes.png)
 
-  * **Workspace**: Notion, Obsidian, Local File Systems.
+| 主题 | 风格 | 特色 |
+|------|------|------|
+| **Minimalist** | 极简几何 | 浮动粒子、呼吸光效、简洁方块建筑，适合专注工作 |
+| **Cityscape** | 等轴像素城市 | Kenney 风格瓦片渲染、道路网络、树木装饰 |
+| **Cosmos** | 宇宙星图 | 行星节点、轨道连线、星云粒子 |
 
-  * **DevOps**: Code Search, GitHub Issues/PRs, Tmux, Code Runner.
+---
 
-  * **Automation**: Headless Browser Control, Apple Script, 1Password.
+### Nexus 系统 -- 可进化的 AI 工作流节点
 
-## 🕹️ Quick Start (TL;DR)
+每个 Nexus 是一个可执行的 AI 工作流节点，拥有独立的技能绑定、SOP 定义和经验记录。
 
-**Prerequisites**: `Node.js ≥ 20`, `Python ≥ 3.10`.
+![Nexus 详情面板](docs/images/ddos-nexus.png)
 
-DD-OS runs with a decoupled frontend (React) and backend (Python gateway).
+- **等级成长**: 每次执行获得 XP，等级提升后视觉外观升级
+- **技能绑定**: 可绑定多个 SKILL，组合成复杂工作流
+- **独立对话**: 每个 Nexus 拥有专属对话上下文
+- **SOP 记忆**: 保存标准操作流程，确保执行一致性
+- **经验积累**: 成功/失败经验持续优化执行策略
+- **自定义模型**: 可为不同 Nexus 配置不同的 LLM
 
-### 1. Start the Local Control Plane (Frontend)
+---
+
+### 智能对话 -- ReAct 执行引擎
+
+内置 ReAct (Reasoning + Acting) 循环执行引擎，支持多步骤任务自动规划与执行。
+
+![对话面板](docs/images/ddos-chat.png)
+
+- **任务规划**: 自动拆解复杂任务为可执行子步骤
+- **工具调用**: 文件读写、命令执行、网页搜索、天气查询等
+- **Reflexion 机制**: 工具执行失败时自动反思重试
+- **Critic 验证**: 文件修改后自动校验结果
+- **危险操作审批**: 高风险命令需用户确认才能执行
+- **文件快速访问**: 生成文件后一键复制路径或打开文件夹
+
+---
+
+### 五大功能模块
+
+| 模块 | 说明 |
+|------|------|
+| **Task House** (任务看板) | 查看执行中/已完成的任务，实时展示执行步骤 |
+| **Skill House** (技能树) | 管理已加载的 SKILL，AI 能力雷达图分析 |
+| **Memory House** (记忆宫殿) | 冒险日志、记忆回放、AI 叙事生成 |
+| **Soul Tower** (灵魂塔) | AI 人格配置 (SOUL.md)，核心价值观和行为边界 |
+| **World View** (世界视图) | Nexus 节点地图，拖拽交互，主题切换 |
+
+---
+
+## 快速开始
+
+### 环境要求
+
+| 依赖 | 版本 |
+|------|------|
+| Node.js | >= 18 (推荐 v20+) |
+| Python | >= 3.10 |
+| Git | 最新版 |
+
+### 第 1 步: 下载项目
 
 ```bash
-git clone [https://github.com/FatBy/dd-os.git](https://github.com/FatBy/dd-os.git)
-cd dd-os
+git clone https://github.com/FatBy/DD-OS.git
+cd DD-OS
+```
 
+### 第 2 步: 安装依赖
+
+```bash
+# 前端依赖
 npm install
+
+# Python 依赖 (可选，如需 YAML 支持)
+pip install pyyaml
+```
+
+### 第 3 步: 一键启动
+
+需要开两个终端窗口：
+
+**终端 1 - 启动后端服务:**
+
+```bash
+# Windows
+python ddos-local-server.py --path ~/.ddos --port 3001
+
+# macOS / Linux
+python3 ddos-local-server.py --path ~/.ddos --port 3001
+```
+
+**终端 2 - 启动前端:**
+
+```bash
 npm run dev
 ```
 
-### 2. Ignite the Core Engine (Backend)
+浏览器打开 **http://localhost:5173** 即可进入 DD-OS。
 
-Open a new terminal session. We strongly recommend using a virtual Python environment.
+> 首次启动时，DD-OS 会自动在 `~/.ddos/` 目录下创建数据文件夹。
 
-```bash
-cd dd-os
+---
 
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+## 配置 API
 
-pip install -r requirements.txt
-python ddos-local-server.py
+DD-OS 需要连接 LLM API 才能使用 AI 功能。支持任何 OpenAI 兼容的 API。
+
+### 操作步骤
+
+1. 启动 DD-OS 后，点击左下角的 **连接图标**
+2. 选择 **Native** 模式
+3. 在 LLM 配置中填写：
+
+| 配置项 | 说明 | 示例 |
+|--------|------|------|
+| **Base URL** | API 服务地址 | `https://api.openai.com/v1` |
+| **Model** | 模型名称 | `gpt-4o` / `deepseek-chat` |
+| **API Key** | 你的 API 密钥 | `sk-xxxxxxxx` |
+
+### 支持的 API 服务
+
+| 服务商 | 推荐模型 | Base URL |
+|--------|---------|----------|
+| OpenAI | gpt-4o, gpt-4o-mini | `https://api.openai.com/v1` |
+| DeepSeek | deepseek-chat, deepseek-reasoner | `https://api.deepseek.com/v1` |
+| 月之暗面 | moonshot-v1-8k | `https://api.moonshot.cn/v1` |
+| 智谱 AI | glm-4-flash | `https://open.bigmodel.cn/api/paas/v4` |
+| 硅基流动 | 各类开源模型 | `https://api.siliconflow.cn/v1` |
+
+配置完成后，DD-OS 会自动连接后端并加载技能、记忆、灵魂数据。
+
+---
+
+## 技能系统
+
+### 内置工具
+
+| 工具 | 说明 |
+|------|------|
+| `readFile` / `writeFile` | 文件读写，生成文件后可一键打开 |
+| `runCmd` | 命令行执行 (带安全审批) |
+| `webSearch` | 网页搜索 |
+| `webFetch` | 获取网页内容 |
+| `weather` | 天气查询 |
+| `saveMemory` / `searchMemory` | 记忆存储与检索 |
+| `openInExplorer` | 在文件管理器中打开文件 |
+
+### 自定义技能
+
+在 `~/.ddos/skills/` 下创建目录，编写 `SKILL.md`：
+
+```
+~/.ddos/skills/my-skill/SKILL.md
 ```
 
-*Access `http://localhost:5173` in your browser to enter the dimension.*
+```markdown
+---
+name: my-skill
+description: 我的自定义技能
+version: 1.0.0
+---
 
-## 🛡️ Security Defaults (Important)
+# 使用说明
 
-DD-OS connects to your real file system and enterprise surfaces. **Treat all external inbound prompts as untrusted input.**
+这个技能的用途和操作流程...
+```
 
-* **Strict Approval Gate**: Any destructive or system-level tool calls (e.g., executing bash commands, deleting files) are intercepted by the `ApprovalModal` on the frontend, requiring explicit human consent.
+保存后 DD-OS 会自动热加载新技能，无需重启。
 
-* **Environment Isolation**: All API keys and tokens must be stored in your local `.env` file. The local server binds to `127.0.0.1` by default and refuses public ingress unless explicitly configured via reverse proxy.
+---
 
-* **Health Check**: Run `python ddos-local-server.py --doctor` to surface any risky or misconfigured workspace policies.
+## 数据目录
 
-## 🗺️ How it works (Architecture)
+```
+~/.ddos/
+├── SOUL.md              # AI 人格配置
+├── skills/              # 技能定义 (SKILL.md)
+│   ├── skill-scout/
+│   └── my-skill/
+├── nexuses/             # Nexus 工作流数据
+├── memory/              # 记忆文件
+└── logs/                # 对话日志
+```
 
-```text
+---
+
+## 架构概览
+
+```
   GitHub / Slack / Notion / Chrome / Local Bash
-               │
-               ▼  (Mapped via MCP Standard Protocol)
-┌───────────────────────────────┐
-│     Local Server Manager      │  <-- Tool Emergence Layer (Executor)
-│      (Python / MCP Host)      │
-└──────────────┬────────────────┘
-               │  (Zustand State & Websocket)
-┌──────────────┴────────────────┐
-│      Prose Workflow Engine    │  <-- Order Builder Layer (Orchestrator)
-│   (Pipelines & Error Retries) │
-└──────────────┬────────────────┘
-               │
-      [DeepSeek / Local Models] <-- Data Emergence Layer (The Brain)
+               |
+               v   (MCP Standard Protocol)
+  +-------------------------------+
+  |     ddos-local-server.py      |  <-- 工具执行层
+  |      (Python / MCP Host)      |
+  +---------------+---------------+
+                  |  (HTTP REST API)
+  +---------------+---------------+
+  |      ReAct Execution Engine   |  <-- 任务编排层
+  |   (LocalClawService.ts)       |
+  +---------------+---------------+
+                  |
+       [LLM API: GPT-4o / DeepSeek / ...]  <-- 智能层
 ```
 
-## 📖 Deep Dives & Documentation
+---
 
-Use these guides when you're past the onboarding flow and want to deeply customize your dimension:
+## 技术栈
 
-* [**Platform Architecture**](https://github.com/FatBy/dd-os/wiki/Architecture) — Understand the Gateway WebSocket network and WorldView topologies.
+| 层 | 技术 |
+|----|------|
+| 前端 | React + TypeScript + Vite + Zustand + Tailwind CSS + Framer Motion |
+| 渲染 | Canvas 2D (GameCanvas 渲染引擎) |
+| 后端 | Python (ddos-local-server.py) |
+| 协议 | HTTP REST API |
 
-* [**Writing Prose Workflows**](https://github.com/FatBy/dd-os/tree/main/skills/prose/lib) — How to write `.prose` files to orchestrate parallel agents.
+---
 
-* [**Creating Custom MCP Skills**](https://github.com/FatBy/dd-os/tree/main/skills/skill-creator) — A guide to wrapping your own Python/Node scripts into DD-OS skills.
+## 安全说明
 
-* [**The Soul & Memory Houses**](https://github.com/FatBy/dd-os/wiki/Houses) — How to configure long-term memory and distinct personas for your agents.
+- 所有 API Key 存储在浏览器 localStorage 中，不会上传到任何服务器
+- 后端默认绑定 `127.0.0.1`，仅本机可访问
+- 危险命令 (如 `rm -rf`、`format`) 会触发审批弹窗，需用户确认
+- 运行 `python ddos-local-server.py --doctor` 可检查安全配置
 
-## 🤝 Community & Contributing
+---
 
-DD-OS is built for those who want to shatter the chatbox and build real automated workflows. We welcome all AI/vibe-coded PRs! 🤖
+## License
 
-See [**CONTRIBUTING.md**](https://github.com/FatBy/dd-os/blob/main/CONTRIBUTING.md) for guidelines on code style, UI standards (Tailwind/MatrixRain effects), and how to submit pull requests.
+MIT
