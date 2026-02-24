@@ -109,7 +109,7 @@ export const createDevicesSlice: StateCreator<DevicesSlice> = (set, _get) => ({
   // 从解析后的 SOUL.md 设置灵魂数据
   setSoulFromParsed: (parsed, agentIdentity) => set((state) => {
     const identity: SoulIdentity = {
-      name: agentIdentity?.name || 'OpenClaw Agent',
+      name: agentIdentity?.name || 'DD-OS Agent',
       essence: parsed.subtitle || parsed.title || 'AI Assistant',
       vibe: parsed.vibeStatement ? parsed.vibeStatement.slice(0, 100) : '',
       symbol: agentIdentity?.emoji || '🤖',
@@ -118,7 +118,7 @@ export const createDevicesSlice: StateCreator<DevicesSlice> = (set, _get) => ({
     // 生成 prompts (兼容旧版)
     const prompts = {
       identity: agentIdentity 
-        ? `I'm ${agentIdentity.name || 'OpenClaw Agent'}, ID: ${agentIdentity.agentId}. ${agentIdentity.emoji || '🤖'}`
+        ? `I'm ${agentIdentity.name || 'DD-OS Agent'}, ID: ${agentIdentity.agentId}. ${agentIdentity.emoji || '🤖'}`
         : 'Connected, waiting for agent identity...',
       constraints: state.health
         ? `Status: ${state.health.status}\nUptime: ${Math.floor(state.health.uptime / 3600000)}h\nVersion: ${state.health.version || 'unknown'}`
@@ -160,7 +160,7 @@ export const createDevicesSlice: StateCreator<DevicesSlice> = (set, _get) => ({
       return {
         soulDimensions: dimensions,
         soulIdentity: {
-          name: identity.name || 'OpenClaw Agent',
+          name: identity.name || 'DD-OS Agent',
           essence: 'AI Assistant',
           vibe: '',
           symbol: identity.emoji || '🤖',

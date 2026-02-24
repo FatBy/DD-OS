@@ -66,7 +66,7 @@ export function getLocalSoulData(): LocalSoulData | null {
   const identityMd = getIdentityMd()
   
   // 从 IDENTITY.md 提取名字和 emoji（如果有）
-  let name = 'OpenClaw Agent'
+  let name = 'DD-OS Agent'
   let symbol = '🤖'
   
   if (identityMd) {

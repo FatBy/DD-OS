@@ -132,7 +132,7 @@ export function SettingsHouse() {
               <span className={cn(
                 isConnected ? 'text-emerald-400' : 'text-white/30'
               )}>
-                {connectionMode === 'native' ? 'Native' : 'OpenClaw'} · {isConnected ? t('settings.connected') : t('settings.disconnected')}
+                {connectionMode === 'native' ? 'Native' : 'DD-OS Cloud'} · {isConnected ? t('settings.connected') : t('settings.disconnected')}
               </span>
             </div>
             <div className="flex justify-between">

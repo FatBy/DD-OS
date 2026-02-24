@@ -396,7 +396,7 @@ class OpenClawService {
     this.storeActions?.addToast({
       type: 'success',
       title: '已连接',
-      message: '已连接到 OpenClaw Gateway',
+      message: '已连接到 DD-OS Cloud Gateway',
     })
     
     // 启动心跳
