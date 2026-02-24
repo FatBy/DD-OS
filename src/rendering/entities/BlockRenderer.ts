@@ -1,7 +1,7 @@
 // ============================================
 // DD-OS 积木块渲染器 (极简主题)
 // 纯代码生成的 3D 彩色积木块
-// Stripe/纪念碑谷级高级数据可视化
+// Level 差异 + 窗户纹理 + 屋顶装饰
 // ============================================
 
 import type { NexusEntity } from '@/types'
@@ -18,6 +18,15 @@ const COLOR_PALETTE = [
   { top: '#DDA0DD', left: '#BA7EBA', right: '#E8B8E8', zone: 'rgba(221, 160, 221, 0.15)' }, // 淡紫
   { top: '#FFB4A2', left: '#E69585', right: '#FFC8BA', zone: 'rgba(255, 180, 162, 0.15)' }, // 珊瑚
 ]
+
+// ---- Level 配置: 高度/宽度随等级递增 ----
+const LEVEL_CONFIG: Record<number, { baseH: number; hRange: number; scale: number }> = {
+  1: { baseH: 25, hRange: 10, scale: 0.45 },  // 小平房
+  2: { baseH: 40, hRange: 15, scale: 0.55 },  // 普通建筑
+  3: { baseH: 60, hRange: 15, scale: 0.65 },  // 中型大楼
+  4: { baseH: 80, hRange: 15, scale: 0.75 },  // 高级塔楼
+  5: { baseH: 100, hRange: 0, scale: 0.85 },  // 地标
+}
 
 /**
  * 简易哈希，用于确定性随机
@@ -41,7 +50,8 @@ function getGlowColor(nexus: NexusEntity): string {
 /**
  * 积木块渲染器 - 极简主题
  * - 纯代码绘制 3D 彩色积木块
- * - 每个 Nexus 有专属色块地毯
+ * - Level 差异化 (高度/宽度/细节)
+ * - 窗户纹理 + 屋顶装饰
  * - 执行时悬浮动画
  */
 export class BlockRenderer implements EntityRenderer {
@@ -81,12 +91,12 @@ export class BlockRenderer implements EntityRenderer {
     // 基于 ID 计算独特的建筑特征
     const hash = getHash(nexus.id)
     const colors = COLOR_PALETTE[hash % COLOR_PALETTE.length]
+    const level = Math.min(Math.max(nexus.level || 1, 1), 5)
     
-    // 积木块高度 (Z轴)：30-90 像素
-    const heightZ = 30 + (hash % 60) * camera.zoom
-    
-    // 积木块宽度比例 (0.5-0.8)
-    const blockScale = 0.5 + ((hash % 30) / 100)
+    // Level 差异化高度和宽度
+    const cfg = LEVEL_CONFIG[level] || LEVEL_CONFIG[1]
+    const heightZ = (cfg.baseH + hash % Math.max(cfg.hRange, 1)) * camera.zoom
+    const blockScale = cfg.scale + ((hash % 10) / 100)
     const w = TILE_WIDTH * blockScale * camera.zoom
     const h = TILE_HEIGHT * blockScale * camera.zoom
     
@@ -106,15 +116,14 @@ export class BlockRenderer implements EntityRenderer {
     const zoneH = TILE_HEIGHT * 0.9 * camera.zoom
     
     c.beginPath()
-    c.moveTo(cx, cy - zoneH / 2)           // 上顶点
-    c.lineTo(cx + zoneW / 2, cy)           // 右顶点
-    c.lineTo(cx, cy + zoneH / 2)           // 下顶点
-    c.lineTo(cx - zoneW / 2, cy)           // 左顶点
+    c.moveTo(cx, cy - zoneH / 2)
+    c.lineTo(cx + zoneW / 2, cy)
+    c.lineTo(cx, cy + zoneH / 2)
+    c.lineTo(cx - zoneW / 2, cy)
     c.closePath()
     c.fillStyle = colors.zone
     c.fill()
     
-    // 画一圈细细的边框
     c.lineWidth = 1.5
     c.strokeStyle = colors.top
     c.globalAlpha = (0.3 + 0.7 * buildProgress) * 0.5
@@ -129,7 +138,6 @@ export class BlockRenderer implements EntityRenderer {
     let floatY = 0
     if (isExecuting) {
       floatY = -12 + Math.sin(timestamp / 150) * 4
-      // 底盘阴影
       c.fillStyle = 'rgba(0, 0, 0, 0.15)'
       c.beginPath()
       c.ellipse(cx, cy + 2, w / 2.5, h / 3, 0, 0, Math.PI * 2)
@@ -150,10 +158,10 @@ export class BlockRenderer implements EntityRenderer {
 
     // --- 绘制左侧面 (深色背光面) ---
     c.beginPath()
-    c.moveTo(cx - w / 2, baseY)                    // 左
-    c.lineTo(cx, baseY + h / 2)                    // 下
-    c.lineTo(cx, baseY + h / 2 - heightZ)          // 往上拉伸
-    c.lineTo(cx - w / 2, baseY - heightZ)          // 左上
+    c.moveTo(cx - w / 2, baseY)
+    c.lineTo(cx, baseY + h / 2)
+    c.lineTo(cx, baseY + h / 2 - heightZ)
+    c.lineTo(cx - w / 2, baseY - heightZ)
     c.closePath()
     c.fillStyle = colors.left
     c.fill()
@@ -163,31 +171,38 @@ export class BlockRenderer implements EntityRenderer {
 
     // --- 绘制右侧面 (浅色向光面) ---
     c.beginPath()
-    c.moveTo(cx, baseY + h / 2)                    // 下
-    c.lineTo(cx + w / 2, baseY)                    // 右
-    c.lineTo(cx + w / 2, baseY - heightZ)          // 右上
-    c.lineTo(cx, baseY + h / 2 - heightZ)          // 往上拉伸
+    c.moveTo(cx, baseY + h / 2)
+    c.lineTo(cx + w / 2, baseY)
+    c.lineTo(cx + w / 2, baseY - heightZ)
+    c.lineTo(cx, baseY + h / 2 - heightZ)
     c.closePath()
     c.fillStyle = colors.right
     c.fill()
     c.stroke()
 
+    // --- 绘制窗户 (侧面之后、顶面之前) ---
+    this.drawWindows(c, cx, baseY, w, h, heightZ, level, hash)
+
     // --- 绘制顶面 ---
     c.beginPath()
-    c.moveTo(cx, baseY - h / 2 - heightZ)          // 顶上
-    c.lineTo(cx + w / 2, baseY - heightZ)          // 顶右
-    c.lineTo(cx, baseY + h / 2 - heightZ)          // 顶下
-    c.lineTo(cx - w / 2, baseY - heightZ)          // 顶左
+    c.moveTo(cx, baseY - h / 2 - heightZ)
+    c.lineTo(cx + w / 2, baseY - heightZ)
+    c.lineTo(cx, baseY + h / 2 - heightZ)
+    c.lineTo(cx - w / 2, baseY - heightZ)
     c.closePath()
     c.fillStyle = colors.top
     c.fill()
     
-    // 选中时顶面高亮
     if (isSelected) {
       c.fillStyle = 'rgba(255, 255, 255, 0.35)'
       c.fill()
     }
+    c.strokeStyle = 'rgba(0, 0, 0, 0.1)'
+    c.lineWidth = 1
     c.stroke()
+
+    // --- 屋顶装饰 ---
+    this.drawRoofDecoration(c, cx, baseY, w, h, heightZ, level, timestamp, colors, nexus)
 
     // 重置阴影
     c.shadowColor = 'transparent'
@@ -203,6 +218,176 @@ export class BlockRenderer implements EntityRenderer {
     // 执行指示器
     if (isExecuting && this.executionStartTime) {
       this.drawExecutionIndicator(c, screenPos, timestamp, nexus, floatY, heightZ)
+    }
+  }
+
+  /**
+   * 绘制窗户纹理
+   * 在左侧面和右侧面上绘制等距分布的窗户
+   */
+  private drawWindows(
+    ctx: CanvasRenderingContext2D,
+    cx: number, baseY: number,
+    w: number, h: number,
+    heightZ: number, level: number,
+    hash: number,
+  ): void {
+    if (level < 2 || heightZ < 20) return
+
+    // 窗户配置: cols × rows
+    const windowConfig: Record<number, { cols: number; rows: number }> = {
+      2: { cols: 1, rows: 2 },
+      3: { cols: 1, rows: 3 },
+      4: { cols: 2, rows: 3 },
+      5: { cols: 2, rows: 3 },
+    }
+    const wCfg = windowConfig[level] || windowConfig[2]
+
+    const winW = w * 0.08
+    const winH = heightZ * 0.08
+    const verticalPadding = heightZ * 0.15
+    const usableHeight = heightZ - verticalPadding * 2
+
+    ctx.save()
+
+    // --- 左面窗户 ---
+    // 左面从 (cx - w/2, baseY) 到 (cx, baseY + h/2), 高度方向向上 heightZ
+    for (let col = 0; col < wCfg.cols; col++) {
+      for (let row = 0; row < wCfg.rows; row++) {
+        // 沿左面水平方向的参数 t (0=左边, 1=右边)
+        const tH = (col + 1) / (wCfg.cols + 1)
+        // 沿高度方向的参数 (0=底部, 1=顶部)
+        const tV = (row + 1) / (wCfg.rows + 1)
+        const yOff = verticalPadding + usableHeight * (1 - tV)
+
+        // 左面上的点: 从底边线性插值
+        const faceMidX = cx - w / 2 + (w / 2) * tH
+        const faceMidY = baseY + (h / 2) * tH
+
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.22)'
+        ctx.fillRect(faceMidX - winW / 2, faceMidY - yOff - winH / 2, winW, winH)
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.06)'
+        ctx.lineWidth = 0.5
+        ctx.strokeRect(faceMidX - winW / 2, faceMidY - yOff - winH / 2, winW, winH)
+      }
+    }
+
+    // --- 右面窗户 ---
+    for (let col = 0; col < wCfg.cols; col++) {
+      for (let row = 0; row < wCfg.rows; row++) {
+        const tH = (col + 1) / (wCfg.cols + 1)
+        const tV = (row + 1) / (wCfg.rows + 1)
+        const yOff = verticalPadding + usableHeight * (1 - tV)
+
+        // 右面上的点: 从底边线性插值
+        const faceMidX = cx + (w / 2) * tH
+        const faceMidY = baseY + h / 2 - (h / 2) * tH
+
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.18)'
+        ctx.fillRect(faceMidX - winW / 2, faceMidY - yOff - winH / 2, winW, winH)
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.06)'
+        ctx.lineWidth = 0.5
+        ctx.strokeRect(faceMidX - winW / 2, faceMidY - yOff - winH / 2, winW, winH)
+      }
+    }
+
+    // Level 5: 窗户发光
+    if (level >= 5) {
+      const glowAlpha = 0.05 + 0.03 * Math.sin((hash % 100) * 0.1)
+      ctx.shadowColor = `rgba(255, 240, 180, ${glowAlpha})`
+      ctx.shadowBlur = 4
+    }
+
+    ctx.restore()
+  }
+
+  /**
+   * 绘制屋顶装饰
+   */
+  private drawRoofDecoration(
+    ctx: CanvasRenderingContext2D,
+    cx: number, baseY: number,
+    w: number, h: number,
+    heightZ: number, level: number,
+    timestamp: number,
+    colors: typeof COLOR_PALETTE[0],
+    nexus: NexusEntity,
+  ): void {
+    if (level < 3) return
+
+    const topCenterY = baseY - heightZ
+
+    if (level === 3) {
+      // 栏杆: 顶面四边的细线边缘
+      ctx.save()
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.12)'
+      ctx.lineWidth = 1
+
+      // 顶面四个顶点
+      const topUp = { x: cx, y: topCenterY - h / 2 }
+      const topRight = { x: cx + w / 2, y: topCenterY }
+      const topDown = { x: cx, y: topCenterY + h / 2 }
+      const topLeft = { x: cx - w / 2, y: topCenterY }
+
+      // 内缩 2px 的栏杆线
+      const inset = 3
+      ctx.beginPath()
+      ctx.moveTo(topUp.x, topUp.y + inset)
+      ctx.lineTo(topRight.x - inset, topRight.y)
+      ctx.lineTo(topDown.x, topDown.y - inset)
+      ctx.lineTo(topLeft.x + inset, topLeft.y)
+      ctx.closePath()
+      ctx.stroke()
+      ctx.restore()
+    }
+
+    if (level === 4) {
+      // 天线: 顶面中心垂直线 + 小球
+      ctx.save()
+      const antennaHeight = 12
+      const antennaX = cx
+      const antennaBaseY = topCenterY
+
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.2)'
+      ctx.lineWidth = 1.5
+      ctx.beginPath()
+      ctx.moveTo(antennaX, antennaBaseY)
+      ctx.lineTo(antennaX, antennaBaseY - antennaHeight)
+      ctx.stroke()
+
+      // 天线顶部小球
+      ctx.beginPath()
+      ctx.arc(antennaX, antennaBaseY - antennaHeight, 2.5, 0, Math.PI * 2)
+      ctx.fillStyle = colors.top
+      ctx.fill()
+      ctx.restore()
+    }
+
+    if (level >= 5) {
+      // 悬浮光环: 顶部旋转弧线
+      ctx.save()
+      const haloY = topCenterY - 18
+      const haloRadius = 10
+      const rotation = timestamp / 500
+      const pulse = 0.5 + 0.5 * Math.sin(timestamp / 300)
+
+      ctx.translate(cx, haloY)
+      ctx.rotate(rotation)
+      ctx.strokeStyle = getGlowColor(nexus)
+      ctx.lineWidth = 2
+      ctx.globalAlpha = 0.4 + 0.3 * pulse
+      ctx.lineCap = 'round'
+
+      ctx.beginPath()
+      ctx.arc(0, 0, haloRadius, 0, Math.PI * 1.3)
+      ctx.stroke()
+
+      // 第二段弧线 (对侧)
+      ctx.beginPath()
+      ctx.arc(0, 0, haloRadius, Math.PI, Math.PI * 2.3)
+      ctx.stroke()
+
+      ctx.restore()
     }
   }
 
@@ -225,7 +410,6 @@ export class BlockRenderer implements EntityRenderer {
     const bgWidth = metrics.width + padding * 2
     const bgHeight = 18
     const bgX = pos.x - bgWidth / 2
-    // 标签放在积木下方
     const bgY = pos.y + 20
     
     ctx.fillStyle = isSelected ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.75)'
@@ -233,7 +417,6 @@ export class BlockRenderer implements EntityRenderer {
     ctx.roundRect(bgX, bgY, bgWidth, bgHeight, 4)
     ctx.fill()
     
-    // 边框
     ctx.strokeStyle = 'rgba(0, 0, 0, 0.08)'
     ctx.lineWidth = 1
     ctx.stroke()
@@ -255,7 +438,6 @@ export class BlockRenderer implements EntityRenderer {
     const pulse = 0.5 + 0.5 * Math.sin(elapsed / 150)
     
     ctx.save()
-    // 指示器放在积木顶部上方
     ctx.translate(pos.x, pos.y + floatY - heightZ - 25)
     ctx.rotate(elapsed / 500)
     

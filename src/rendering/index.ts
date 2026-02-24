@@ -14,6 +14,7 @@ import { PlanetRenderer } from './entities/PlanetRenderer'
 import { MinimalistBackground } from './backgrounds/MinimalistBackground'
 import { MinimalistGrid } from './backgrounds/MinimalistGrid'
 import { BlockRenderer } from './entities/BlockRenderer'
+import { MinimalistDecoRenderer } from './decorations/MinimalistDecoRenderer'
 
 // 村庄主题 (纯色俯视角)
 import { TopDownBackground } from './topdown/TopDownBackground'
@@ -77,6 +78,7 @@ export function createMinimalistRenderers(): RendererSet {
   return {
     background: new MinimalistBackground(),
     grid: new MinimalistGrid(),
+    decorations: new MinimalistDecoRenderer(),
     entities: [new BlockRenderer()],
     particles: [],
     ripple: new CosmosRippleRenderer(),
@@ -104,6 +106,7 @@ export { CosmosCoreRenderer } from './cores/CosmosCore'
 export { MinimalistBackground } from './backgrounds/MinimalistBackground'
 export { MinimalistGrid } from './backgrounds/MinimalistGrid'
 export { BlockRenderer } from './entities/BlockRenderer'
+export { MinimalistDecoRenderer } from './decorations/MinimalistDecoRenderer'
 
 // 俯视角村庄渲染器
 export * from './topdown'

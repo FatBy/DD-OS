@@ -10,6 +10,8 @@ import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { BuildProposalModal } from '@/components/world/BuildProposalModal'
 import { ApprovalModal } from '@/components/ApprovalModal'
 import { NexusDetailPanel } from '@/components/world/NexusDetailPanel'
+import { InterruptedTasksWarning } from '@/components/InterruptedTasksWarning'
+import { CrashRecoveryBanner } from '@/components/CrashRecoveryBanner'
 import { useStore } from '@/store'
 import { getHouseById } from '@/houses/registry'
 import { openClawService } from '@/services/OpenClawService'
@@ -285,6 +287,12 @@ function App() {
 
       {/* Nexus detail panel */}
       <NexusDetailPanel />
+
+      {/* Interrupted tasks warning */}
+      <InterruptedTasksWarning />
+
+      {/* Crash recovery banner */}
+      <CrashRecoveryBanner />
 
       {/* Toast notifications */}
       <ToastContainer />

@@ -50,6 +50,7 @@ export interface ObserverSlice {
   isAnalyzing: boolean
   nexusPanelOpen: boolean
   selectedNexusForPanel: string | null
+  pendingNexusChatInput: string | null  // 预填的 Nexus 对话输入
   // 双引擎状态
   lastRuleCheckTime: number
   cachedTraces: ExecTrace[]
@@ -72,7 +73,12 @@ export interface ObserverSlice {
   
   // Panel Actions
   openNexusPanel: (nexusId: string) => void
+  openNexusPanelWithInput: (nexusId: string, input: string) => void  // 打开面板并预填输入
   closeNexusPanel: () => void
+  clearPendingInput: () => void  // 清除预填输入
+  
+  // Chat → Nexus
+  generateNexusFromChat: (messages: Array<{ role: string; content: string }>) => Promise<void>
 }
 
 // ============================================
@@ -144,6 +150,11 @@ function generatePurposeSummary(trigger: TriggerPattern): string {
     return '将周期性重复任务固化为自动触发的执行节点，实现定时自动化。'
   }
 
+  if (trigger.type === 'cross-skill') {
+    const skills = trigger.suggestedSkills?.join('、') || '多项工具'
+    return `将 ${skills} 的跨技能协作固化为一体化执行节点，实现多工具联动自动化。`
+  }
+
   // fallback: LLM 分析可能在 evidence[0] 有 summary
   const llmSummary = trigger.evidence[0]
   if (llmSummary && !llmSummary.startsWith('建议名称:')) {
@@ -152,6 +163,32 @@ function generatePurposeSummary(trigger: TriggerPattern): string {
 
   return '将检测到的行为模式固化为可复用的执行节点，提升操作效率。'
 }
+
+// ============================================
+// 对话转 Nexus 提示词
+// ============================================
+
+const CHAT_TO_NEXUS_PROMPT = `你是 DD-OS 的"提炼器"。分析用户与 AI 的对话记录，提炼出可复用的 Nexus（自动化执行节点）。
+
+分析维度：
+1. 用户在对话中试图完成什么任务？
+2. 涉及哪些工具/技能？
+3. 是否有可固化的工作流程？
+
+返回 JSON：
+{
+  "canCreate": true,
+  "suggestedName": "Nexus 名称规范：2-6个中文字，必须体现功能用途。好的例子：'代码审查'、'文档整理'、'日志分析'、'数据备份'。避免：数字编号、英文缩写、无意义的标识符。",
+  "suggestedSkills": ["工具名1", "工具名2"],
+  "suggestedSOP": "为这个 Nexus 编写可执行的系统提示词，描述它应如何处理此类任务，50-150字。",
+  "summary": "一句话概括此对话的核心目标",
+  "confidence": 0.1 ~ 1.0
+}
+
+如果对话内容过于杂乱或不适合提炼，返回：
+{"canCreate": false, "reason": "原因"}
+
+只输出 JSON。`
 
 // ============================================
 // LLM 模式分析提示词 (语义引擎)
@@ -186,6 +223,62 @@ const ANALYST_SYSTEM_PROMPT = `你是 DD-OS 系统的"观察者"。分析用户�
 // ============================================
 // Slice 创建函数
 // ============================================
+// Nexus 名称生成器
+// ============================================
+
+/**
+ * 根据触发模式生成有意义的 Nexus 名称
+ */
+function generateMeaningfulName(trigger: TriggerPattern): string {
+  // 常见工具到功能名称的映射
+  const toolToName: Record<string, string> = {
+    'readFile': '文件读取',
+    'writeFile': '文件编辑',
+    'listDir': '目录浏览',
+    'runCmd': '命令执行',
+    'search': '搜索助手',
+    'webSearch': '网页搜索',
+    'webFetch': '网页抓取',
+    'codeReview': '代码审查',
+    'analyze': '分析助手',
+    'generate': '内容生成',
+    'translate': '翻译助手',
+    'summarize': '摘要生成',
+  }
+
+  // 根据类型生成基础名称
+  const typeNames: Record<string, string> = {
+    'frequency': '常用任务',
+    'complexity': '复杂流程',
+    'dependency': '工具链',
+    'periodic': '定时任务',
+    'cross-skill': '技能组合',
+  }
+
+  // 尝试从建议的技能中推断名称
+  if (trigger.suggestedSkills && trigger.suggestedSkills.length > 0) {
+    const firstSkill = trigger.suggestedSkills[0]
+    // 检查是否有直接映射
+    for (const [key, name] of Object.entries(toolToName)) {
+      if (firstSkill.toLowerCase().includes(key.toLowerCase())) {
+        return name
+      }
+    }
+    // 使用技能名称的前几个字
+    if (firstSkill.length <= 6 && !/^[a-zA-Z0-9_-]+$/.test(firstSkill)) {
+      return firstSkill
+    }
+  }
+
+  // 根据类型和时间生成
+  const baseName = typeNames[trigger.type] || '智能助手'
+  const hour = new Date().getHours()
+  const timeHint = hour < 12 ? '晨' : hour < 18 ? '午' : '夜'
+  
+  return `${timeHint}间${baseName}`
+}
+
+// ============================================
 
 export const createObserverSlice: StateCreator<
   ObserverSlice,
@@ -200,6 +293,7 @@ export const createObserverSlice: StateCreator<
   isAnalyzing: false,
   nexusPanelOpen: false,
   selectedNexusForPanel: null,
+  pendingNexusChatInput: null,
   lastRuleCheckTime: 0,
   cachedTraces: [],
   cachedStats: null,
@@ -425,6 +519,50 @@ export const createObserverSlice: StateCreator<
       }
     }
 
+    // ========== 规则 4: 跨技能成功检测 ==========
+    // 检测成功使用 2+ 种不同工具的执行记录，若此模式出现 ≥2 次则触发
+    const crossSkillTraces = traces.filter(t => {
+      if (!t.success) return false
+      const uniqueTools = new Set(t.tools.map(tool => tool.name))
+      return uniqueTools.size >= 2
+    })
+
+    if (crossSkillTraces.length >= 2) {
+      // 统计跨技能组合出现频率
+      const comboFreq: Record<string, { count: number; tools: string[] }> = {}
+      for (const trace of crossSkillTraces) {
+        const toolNames = [...new Set(trace.tools.map(t => t.name))].sort()
+        const comboKey = toolNames.join('+')
+        if (!comboFreq[comboKey]) {
+          comboFreq[comboKey] = { count: 0, tools: toolNames }
+        }
+        comboFreq[comboKey].count++
+      }
+
+      const topCombo = Object.entries(comboFreq)
+        .filter(([, v]) => v.count >= 2)
+        .sort(([, a], [, b]) => b.count - a.count)[0]
+
+      if (topCombo) {
+        const [, { count, tools }] = topCombo
+        const confidence = Math.min(0.5 + count * 0.1, 0.85)
+
+        console.log(`[Observer/Rule] Cross-skill trigger: ${tools.join('+')} appeared ${count} times`)
+
+        return {
+          type: 'cross-skill' as const,
+          confidence,
+          evidence: [
+            `跨技能组合 "${tools.join(' + ')}" 成功执行 ${count} 次`,
+            `建议名称: ${tools.slice(0, 2).join('×')}协作`,
+          ],
+          detectedAt: Date.now(),
+          suggestedSkills: tools,
+          suggestedSOP: `你是一个多工具协作专家。你的核心能力是组合使用 ${tools.join('、')} 来完成复杂任务。接收用户需求后，判断需要哪些工具的协作，制定执行计划并逐步完成。`,
+        }
+      }
+    }
+
     console.log('[Observer/Rule] No rule-based pattern detected')
     return null
   },
@@ -529,10 +667,12 @@ ${summaryData.recentTasks.map((t, i) =>
     
     if (nameFromEvidence) {
       suggestedName = nameFromEvidence.replace('建议名称:', '').trim()
+      // 验证名称质量：如果是无意义的标识符，使用更好的默认值
+      if (/^[A-Z0-9-_]+$/.test(suggestedName) || suggestedName.length > 10) {
+        suggestedName = generateMeaningfulName(trigger)
+      }
     } else {
-      // 生成默认名称
-      const timestamp = new Date().toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
-      suggestedName = `Nexus-${timestamp}`
+      suggestedName = generateMeaningfulName(trigger)
     }
 
     // 生成功能目标概述
@@ -640,10 +780,99 @@ ${summaryData.recentTasks.map((t, i) =>
     })
   },
 
+  openNexusPanelWithInput: (nexusId, input) => {
+    set({
+      nexusPanelOpen: true,
+      selectedNexusForPanel: nexusId,
+      pendingNexusChatInput: input,
+    })
+  },
+
   closeNexusPanel: () => {
     set({
       nexusPanelOpen: false,
       selectedNexusForPanel: null,
+      pendingNexusChatInput: null,
     })
+  },
+
+  clearPendingInput: () => {
+    set({ pendingNexusChatInput: null })
+  },
+
+  /**
+   * 从当前对话生成 Nexus 提案（手动触发）
+   */
+  generateNexusFromChat: async (messages) => {
+    const { isAnalyzing, currentProposal } = get()
+    if (isAnalyzing || currentProposal?.status === 'pending') return
+
+    // 过滤有效对话（排除系统消息和空消息）
+    const validMessages = messages.filter(
+      m => (m.role === 'user' || m.role === 'assistant') && m.content.trim()
+    )
+    if (validMessages.length < 2) {
+      console.warn('[Observer] Not enough messages to generate Nexus')
+      return
+    }
+
+    set({ isAnalyzing: true })
+    console.log('[Observer] Generating Nexus from chat...')
+
+    try {
+      const config = getLLMConfig()
+      if (!config.apiKey) {
+        console.warn('[Observer] No LLM API key configured')
+        return
+      }
+
+      // 截取最近 20 条消息避免 token 溢出
+      const recentMessages = validMessages.slice(-20)
+      const conversationText = recentMessages
+        .map(m => `[${m.role}]: ${m.content.slice(0, 300)}`)
+        .join('\n')
+
+      const response = await chat(
+        [
+          { role: 'system', content: CHAT_TO_NEXUS_PROMPT },
+          { role: 'user', content: `以下是用户与 AI 的对话记录：\n\n${conversationText}\n\n请分析并提炼。` }
+        ],
+        { temperature: 0.3 } as any
+      )
+
+      const jsonMatch = response.match(/\{[\s\S]*\}/)
+      if (!jsonMatch) {
+        console.warn('[Observer] Invalid JSON from chat analysis')
+        return
+      }
+
+      const result = JSON.parse(jsonMatch[0])
+      console.log('[Observer] Chat analysis result:', result)
+
+      if (!result.canCreate) {
+        console.log('[Observer] Chat not suitable for Nexus:', result.reason)
+        return
+      }
+
+      // 构造 TriggerPattern 并创建 Proposal
+      const trigger: TriggerPattern = {
+        type: 'dependency',
+        confidence: result.confidence || 0.7,
+        evidence: [
+          result.summary || '从对话中提炼',
+          `建议名称: ${result.suggestedName}`,
+        ],
+        detectedAt: Date.now(),
+        suggestedSkills: result.suggestedSkills || [],
+        suggestedSOP: result.suggestedSOP || '',
+      }
+
+      get().createProposal(trigger)
+      console.log('[Observer] Nexus proposal created from chat')
+    } catch (error) {
+      console.warn('[Observer] Failed to generate Nexus from chat:', error)
+    } finally {
+      set({ isAnalyzing: false })
+    }
   },
 })

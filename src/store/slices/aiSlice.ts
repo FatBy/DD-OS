@@ -268,6 +268,20 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
 
       } else {
         // 非 Native 模式: 使用 streamChat 进行前端 LLM 对话
+        const execId = `nexus-chat-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+
+        // 写入 activeExecutions 以便任务监控栏可见
+        fullState.addActiveExecution?.({
+          id: execId,
+          title: message.slice(0, 50),
+          description: message,
+          status: 'executing',
+          priority: 'medium',
+          timestamp: new Date().toISOString(),
+          executionSteps: [],
+          taskPlan: { nexusId },
+        })
+
         const storeData = {
           tasks: fullState.tasks || [],
           skills: fullState.skills || [],
@@ -305,6 +319,12 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
             nexusChatStreaming: null,
             nexusChatStreamContent: '',
           }
+        })
+
+        fullState.updateActiveExecution?.(execId, {
+          status: 'done',
+          executionOutput: fullContent.slice(0, 200),
+          executionDuration: Date.now() - (new Date(fullState.activeExecutions?.find((t: any) => t.id === execId)?.timestamp || Date.now()).getTime()),
         })
       }
 
@@ -979,17 +999,42 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
 
     // 3. 检查生成条件
     if (!isLLMConfigured()) return
-    const memories: MemoryEntry[] = fullState.memories || []
-    if (memories.length === 0) return
     if (fullState.journalLoading) return
 
-    // 4. 收集今天的记忆
-    const todayMemories = memories.filter((m: MemoryEntry) => {
+    // 4. 收集今天的对话记录 (优先使用 chatMessages，回退到 memories)
+    const chatMessages: ChatMessage[] = fullState.chatMessages || []
+    const memories: MemoryEntry[] = fullState.memories || []
+    
+    // 过滤今天的聊天记录
+    const todayChats = chatMessages.filter((m: ChatMessage) => {
+      if (m.role === 'system') return false
       try {
         return new Date(m.timestamp).toLocaleDateString('sv-SE') === today
       } catch { return false }
     })
-    if (todayMemories.length === 0) return
+    
+    // 如果有今天的聊天记录，转换为 MemoryEntry 格式
+    let todayMemories: MemoryEntry[] = []
+    if (todayChats.length >= 2) {
+      todayMemories = todayChats.map((m: ChatMessage) => ({
+        id: m.id,
+        title: m.role === 'user' ? '用户消息' : 'AI 回复',
+        content: m.content.slice(0, 500),
+        type: 'short-term' as const,
+        timestamp: new Date(m.timestamp).toISOString(),
+        role: m.role as 'user' | 'assistant',
+        tags: [],
+      }))
+    } else {
+      // 回退：使用 memories 中今天的记录
+      todayMemories = memories.filter((m: MemoryEntry) => {
+        try {
+          return new Date(m.timestamp).toLocaleDateString('sv-SE') === today
+        } catch { return false }
+      })
+    }
+    
+    if (todayMemories.length < 2) return // 至少需要 2 条记录
 
     // 5. 静默生成
     fullState.setJournalLoading?.(true)

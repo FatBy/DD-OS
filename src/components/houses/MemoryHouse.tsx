@@ -360,6 +360,7 @@ function DiaryCard({
 export function MemoryHouse() {
   const t = useT()
   const storeMemories = useStore(s => s.memories)
+  const chatMessages = useStore(s => s.chatMessages)
   const journalEntries = useStore(s => s.journalEntries)
   const journalLoading = useStore(s => s.journalLoading)
   const connectionStatus = useStore(s => s.connectionStatus)
@@ -408,12 +409,13 @@ export function MemoryHouse() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // 自动静默生成今天的日志
+  // 自动静默生成今天的日志 (有聊天记录或记忆时触发)
   useEffect(() => {
-    if (isConnected && storeMemories.length > 0) {
+    const hasContent = storeMemories.length > 0 || chatMessages.filter(m => m.role !== 'system').length >= 2
+    if (isConnected && hasContent) {
       generateSilentJournal()
     }
-  }, [isConnected, storeMemories.length, generateSilentJournal])
+  }, [isConnected, storeMemories.length, chatMessages.length, generateSilentJournal])
 
   // 手动全量重新生成
   const handleRefresh = () => {

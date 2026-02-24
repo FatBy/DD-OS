@@ -335,7 +335,7 @@ export function ExecutionFocusView({ task, onTerminate }: ExecutionFocusViewProp
     : '正在准备...'
 
   return (
-    <div className="flex-1 flex flex-col p-6 min-h-0">
+    <div className="flex flex-col p-6 min-h-0 max-h-[80vh]">
       {/* 顶部状态栏 */}
       <div className="flex items-center gap-3 p-4 bg-cyan-500/5 border border-cyan-500/20 rounded-lg mb-4 flex-shrink-0">
         <div className="flex items-center gap-2 flex-1 min-w-0">

@@ -72,13 +72,15 @@ export function parseSoulMd(content: string): ParsedSoul {
       }
 
       const sectionName = line.slice(3).trim().toLowerCase()
-      if (sectionName.includes('core truth')) {
+      // 支持多种格式: Core Truths, Core Principles, Core Values 等
+      if (sectionName.includes('core truth') || sectionName.includes('core principle') || sectionName.includes('core value') || sectionName.includes('principles')) {
         currentSection = 'truths'
-      } else if (sectionName.includes('boundar')) {
+      // 支持多种格式: Boundaries, Safety Rules, Constraints 等
+      } else if (sectionName.includes('boundar') || sectionName.includes('safety') || sectionName.includes('rule') || sectionName.includes('constraint')) {
         currentSection = 'boundaries'
-      } else if (sectionName.includes('vibe')) {
+      } else if (sectionName.includes('vibe') || sectionName.includes('personality') || sectionName.includes('style')) {
         currentSection = 'vibe'
-      } else if (sectionName.includes('continuit')) {
+      } else if (sectionName.includes('continuit') || sectionName.includes('memory') || sectionName.includes('context')) {
         currentSection = 'continuity'
       } else {
         currentSection = sectionName
@@ -123,8 +125,17 @@ export function parseSoulMd(content: string): ParsedSoul {
     // 根据当前章节解析内容
     switch (currentSection) {
       case 'truths':
-        // Core Truths - 每条以粗体开头或普通段落
-        if (line.startsWith('**') || line.match(/^[A-Z][a-z]/)) {
+        // Core Truths - 每条以粗体开头、列表项或普通段落
+        // 支持 - 或 * 开头的列表项
+        const truthLine = line.replace(/^[-\*]\s*/, '').trim()
+        if (line.startsWith('-') || line.startsWith('*')) {
+          // 列表项格式
+          if (currentTruthText) {
+            const truth = parseTruthLine(currentTruthText, result.coreTruths.length)
+            if (truth) result.coreTruths.push(truth)
+          }
+          currentTruthText = truthLine
+        } else if (line.startsWith('**') || line.match(/^[A-Z][a-z]/)) {
           // 保存之前的 truth
           if (currentTruthText) {
             const truth = parseTruthLine(currentTruthText, result.coreTruths.length)

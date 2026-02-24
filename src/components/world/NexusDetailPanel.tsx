@@ -5,7 +5,7 @@ import {
   ChevronDown, ChevronRight, Puzzle, Cpu,
   BookOpen, Zap, CheckCircle2, XCircle, Timer, Target, TrendingUp, AlertCircle,
   Loader2, Pause, SkipForward, Activity, Edit2,
-  Send, Square, MessageSquare, ArrowLeft, GripVertical
+  Send, Square, MessageSquare, ArrowLeft, GripVertical, Search
 } from 'lucide-react'
 import { useStore } from '@/store'
 import { cn } from '@/utils/cn'
@@ -119,6 +119,11 @@ export function NexusDetailPanel() {
   const activeExecutions = useStore((s) => s.activeExecutions)
   const worldTheme = useStore((s) => s.worldTheme)
 
+  // 搜索技能功能
+  const openNexusPanelWithInput = useStore((s) => s.openNexusPanelWithInput)
+  const pendingNexusChatInput = useStore((s) => s.pendingNexusChatInput)
+  const clearPendingInput = useStore((s) => s.clearPendingInput)
+
   // Nexus 独立对话 (Phase 2)
   const sendNexusChat = useStore((s) => s.sendNexusChat)
   const clearNexusChat = useStore((s) => s.clearNexusChat)
@@ -128,6 +133,7 @@ export function NexusDetailPanel() {
   
   const [showModelConfig, setShowModelConfig] = useState(false)
   const [showSOP, setShowSOP] = useState(true)  // 默认展开 SOP
+  const [showTaskDetail, setShowTaskDetail] = useState(false)  // 任务流程默认折叠
   const [customBaseUrl, setCustomBaseUrl] = useState('')
   const [customModel, setCustomModel] = useState('')
   const [customApiKey, setCustomApiKey] = useState('')
@@ -188,15 +194,29 @@ export function NexusDetailPanel() {
       .catch(() => {})
   }, [nexus?.id, nexusPanelOpen])
   
-  // 面板关闭时重置编辑状态
+  // 面板打开/关闭时处理状态
   useEffect(() => {
     if (!nexusPanelOpen) {
       setIsEditingName(false)
       setEditNameValue('')
-      setPanelMode('info')
       setNexusInput('')
+    } else if (selectedNexusForPanel) {
+      // 如果有预填输入，自动切换到 chat 模式并填入
+      if (pendingNexusChatInput) {
+        setPanelMode('chat')
+        setNexusInput(pendingNexusChatInput)
+        clearPendingInput()
+        setTimeout(() => nexusInputRef.current?.focus(), 200)
+      } else {
+        // 打开时：如果有活跃任务或已有对话记录，直接显示 chat 视图
+        const hasChatHistory = (nexusChatMap[selectedNexusForPanel] || []).length > 0
+        const hasActiveTask = activeExecutions.some(t => 
+          t.status === 'executing' && t.taskPlan?.nexusId === selectedNexusForPanel
+        )
+        setPanelMode((hasChatHistory || hasActiveTask) ? 'chat' : 'info')
+      }
     }
-  }, [nexusPanelOpen])
+  }, [nexusPanelOpen, selectedNexusForPanel, pendingNexusChatInput])
 
   // Nexus 对话自动滚动
   const nexusMsgs = selectedNexusForPanel ? (nexusChatMap[selectedNexusForPanel] || []) : []
@@ -688,17 +708,42 @@ export function NexusDetailPanel() {
                             'text-[13px] font-mono px-2 py-0.5 rounded-full',
                             skill.status === 'active' 
                               ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/20'
-                              : skill.status === 'missing'
-                              ? 'bg-amber-500/20 text-amber-400 border border-amber-500/20'
-                              : 'bg-white/5 text-white/40 border border-white/10'
+                              : 'bg-red-500/20 text-red-400 border border-red-500/20'
                           )}>
-                            {skill.status === 'active' ? 'ONLINE' : skill.status === 'missing' ? 'LOADING' : 'STANDBY'}
+                            {skill.status === 'active' ? 'ONLINE' : 'UNAVAILABLE'}
                           </span>
                         </div>
-                        {skill.description && (
+                        {skill.status === 'active' && skill.description && (
                           <p className="text-xs font-mono text-white/30 leading-relaxed line-clamp-2">
                             {skill.description}
                           </p>
+                        )}
+                        {skill.status !== 'active' && (
+                          <div className="flex items-center gap-2 mt-1.5">
+                            <button
+                              onClick={() => {
+                                // 打开 skill-scout 面板并预填搜索请求
+                                const searchQuery = `帮我搜索并安装 "${skill.name}" 技能`
+                                openNexusPanelWithInput('skill-scout', searchQuery)
+                              }}
+                              className="text-[11px] font-mono px-2 py-1 rounded bg-amber-500/10 text-amber-400/70 border border-amber-500/15 hover:bg-amber-500/20 hover:text-amber-400 transition-colors flex items-center gap-1"
+                            >
+                              <Search className="w-3 h-3" />
+                              搜索并加载
+                            </button>
+                            <button
+                              onClick={() => {
+                                if (!nexus) return
+                                const ids = nexus.boundSkillIds || nexus.skillDependencies || []
+                                const updated = { ...nexus, boundSkillIds: ids.filter(sid => sid !== skill.id && sid !== skill.name) }
+                                removeNexus(nexus.id)
+                                addNexus(updated)
+                              }}
+                              className="text-[11px] font-mono px-2 py-1 rounded bg-red-500/10 text-red-400/70 border border-red-500/15 hover:bg-red-500/20 hover:text-red-400 transition-colors"
+                            >
+                              移除
+                            </button>
+                          </div>
                         )}
                       </div>
                     ))}
@@ -774,7 +819,10 @@ export function NexusDetailPanel() {
               {/* ==================== Task Execution Progress ==================== */}
               {activeTask?.taskPlan && activeTask.taskPlan.subTasks && (
                 <div className="p-5 rounded-xl bg-cyan-500/5 border border-cyan-500/20">
-                  <div className="flex items-center gap-2 mb-3">
+                  <button
+                    onClick={() => setShowTaskDetail(!showTaskDetail)}
+                    className="w-full flex items-center gap-2"
+                  >
                     <Activity className="w-4 h-4 text-cyan-400 animate-pulse" />
                     <span className="text-xs font-mono text-cyan-400 uppercase tracking-wider">
                       Task Execution
@@ -782,10 +830,14 @@ export function NexusDetailPanel() {
                     <span className="ml-auto text-xs font-mono text-white/30">
                       {(activeTask.taskPlan.subTasks || []).filter(t => t.status === 'done').length}/{(activeTask.taskPlan.subTasks || []).length}
                     </span>
-                  </div>
+                    {showTaskDetail 
+                      ? <ChevronDown className="w-3 h-3 text-white/30" />
+                      : <ChevronRight className="w-3 h-3 text-white/30" />
+                    }
+                  </button>
                   
-                  {/* 进度条 */}
-                  <div className="mb-3">
+                  {/* 进度条（始终显示） */}
+                  <div className="mt-3">
                     <div className="h-2 bg-white/10 rounded-full overflow-hidden">
                       <motion.div
                         initial={{ width: 0 }}
@@ -801,6 +853,17 @@ export function NexusDetailPanel() {
                     </div>
                   </div>
                   
+                  {/* 详情（折叠） */}
+                  <AnimatePresence initial={false}>
+                    {showTaskDetail && (
+                      <motion.div
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: 'auto', opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        transition={{ duration: 0.2 }}
+                        className="overflow-hidden"
+                      >
+                        <div className="mt-3 pt-3 border-t border-cyan-500/10">
                   {/* 子任务状态统计 */}
                   <div className="flex flex-wrap gap-2 mb-3 text-[11px] font-mono">
                     {activeTask.taskPlan.subTasks.filter(t => t.status === 'executing').length > 0 && (
@@ -867,11 +930,18 @@ export function NexusDetailPanel() {
                             {subTask.error && (
                               <p className="text-[10px] text-red-400/70 mt-0.5 line-clamp-1">✗ {subTask.error}</p>
                             )}
+                            {subTask.status === 'blocked' && subTask.blockReason && (
+                              <p className="text-[10px] text-amber-400/70 mt-0.5 line-clamp-2">⚠ {subTask.blockReason}</p>
+                            )}
                           </div>
                         </div>
                       )
                     })}
                   </div>
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
                 </div>
               )}
               
@@ -927,26 +997,19 @@ export function NexusDetailPanel() {
                       {experiences.length}
                     </span>
                   </div>
-                  <div className="space-y-2 max-h-[240px] overflow-y-auto">
+                  <div className="space-y-1.5 max-h-[240px] overflow-y-auto">
                     {experiences.map((exp, i) => (
                       <div 
                         key={i}
-                        className="p-3 rounded-lg bg-white/[0.02] border border-white/[0.04] flex items-start gap-2"
+                        className="p-2.5 rounded-lg bg-white/[0.02] border border-white/[0.04] flex items-center gap-2"
                       >
                         {exp.outcome === 'success' 
-                          ? <CheckCircle2 className="w-4 h-4 text-emerald-400 mt-0.5 shrink-0" />
-                          : <XCircle className="w-4 h-4 text-red-400 mt-0.5 shrink-0" />
+                          ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                          : <XCircle className="w-3.5 h-3.5 text-red-400 shrink-0" />
                         }
-                        <div className="min-w-0">
-                          <p className="text-xs font-mono text-white/50 truncate">
-                            {exp.title}
-                          </p>
-                          {exp.content && (
-                            <p className="text-[13px] font-mono text-white/25 truncate mt-0.5">
-                              {exp.content.split('\n')[0]}
-                            </p>
-                          )}
-                        </div>
+                        <p className="text-xs font-mono text-white/50 truncate">
+                          {exp.title}
+                        </p>
                       </div>
                     ))}
                   </div>
@@ -1042,15 +1105,6 @@ export function NexusDetailPanel() {
                   )}
                 </AnimatePresence>
               </div>
-              
-              {/* Flavor Text */}
-              {nexus.flavorText && (
-                <div className="p-4 rounded-lg bg-gradient-to-b from-white/[0.03] to-transparent border-l-2 border-white/10">
-                  <p className="text-sm font-mono text-white/40 italic leading-relaxed">
-                    "{nexus.flavorText}"
-                  </p>
-                </div>
-              )}
               
               {/* Time info */}
               <div className="flex items-center gap-2 text-xs font-mono text-white/25">

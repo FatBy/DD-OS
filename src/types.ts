@@ -82,6 +82,7 @@ export interface SubTask {
   maxRetries?: number           // 最大重试次数（默认 2）
   approvalRequired?: boolean    // 需要用户确认
   approvalReason?: string       // 确认原因
+  blockReason?: string          // 阻塞原因（依赖失败详情）
   // 执行追踪
   executionSteps?: ExecutionStep[]
 }
@@ -578,7 +579,7 @@ export interface RenderSettings {
 // Observer / 涌现式 Nexus 类型
 // ============================================
 
-export type TriggerType = 'frequency' | 'complexity' | 'dependency' | 'periodic'
+export type TriggerType = 'frequency' | 'complexity' | 'dependency' | 'periodic' | 'cross-skill'
 
 export interface TriggerPattern {
   type: TriggerType

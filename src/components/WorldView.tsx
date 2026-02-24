@@ -2,7 +2,6 @@ import { useEffect, useRef, useCallback, useMemo } from 'react'
 import { motion } from 'framer-motion'
 import { useStore } from '@/store'
 import { GameCanvas } from '@/rendering/GameCanvas'
-import { Loader2 } from 'lucide-react'
 
 export function WorldView() {
   const currentView = useStore((s) => s.currentView)
@@ -191,14 +190,15 @@ export function WorldView() {
 
   return (
     <div className="absolute inset-0 overflow-hidden bg-skin-bg-primary">
-      {/* Layer 0: 装饰性网格 (增加空间感，与 SoulOrb 风格统一) */}
+      {/* Layer 0: 装饰性网格 (增加空间感，主题感知) */}
       <div 
         className="absolute inset-0 z-0 pointer-events-none opacity-[0.06]"
         style={{
-          backgroundImage: `
-            linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px),
-            linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px)
-          `,
+          backgroundImage: worldTheme === 'minimalist'
+            ? `linear-gradient(rgba(0,0,0,0.03) 1px, transparent 1px),
+               linear-gradient(90deg, rgba(0,0,0,0.03) 1px, transparent 1px)`
+            : `linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px),
+               linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px)`,
           backgroundSize: '80px 80px',
           maskImage: 'radial-gradient(ellipse at center, black 30%, transparent 80%)',
           WebkitMaskImage: 'radial-gradient(ellipse at center, black 30%, transparent 80%)',
@@ -228,14 +228,26 @@ export function WorldView() {
         />
       </motion.div>
 
-      {/* Layer 2: 边缘暗角 (画框效果) */}
-      <div className="absolute inset-0 z-20 pointer-events-none bg-[radial-gradient(ellipse_at_center,_transparent_30%,_rgba(2,6,23,0.6)_100%)]" />
+      {/* Layer 2: 边缘渐变 (主题感知) */}
+      <div 
+        className="absolute inset-0 z-20 pointer-events-none"
+        style={{
+          background: worldTheme === 'minimalist'
+            ? 'radial-gradient(ellipse at center, transparent 50%, rgba(230,228,225,0.4) 85%, rgba(220,218,215,0.7) 100%)'
+            : 'radial-gradient(ellipse at center, transparent 30%, rgba(2,6,23,0.6) 100%)'
+        }}
+      />
 
       {/* Layer 3: 加载占位 */}
       {nexuses.size === 0 && (
-        <div className="absolute inset-0 z-30 flex flex-col items-center justify-center pointer-events-none text-white/20">
-          <Loader2 className="w-8 h-8 animate-spin mb-2" />
-          <p className="font-mono text-xs tracking-widest uppercase">Scanning World Data...</p>
+        <div className="absolute inset-0 z-30 flex flex-col items-center justify-center pointer-events-none">
+          <div className="relative w-8 h-8 mb-3">
+            <div className="absolute inset-0 rounded-full border-2 border-gray-300/20 animate-ping" />
+            <div className="absolute inset-0 rounded-full border-2 border-t-gray-400/40 border-r-transparent border-b-transparent border-l-transparent animate-spin" />
+          </div>
+          <p className={`font-mono text-xs tracking-widest uppercase ${worldTheme === 'minimalist' ? 'text-gray-400/50' : 'text-white/20'}`}>
+            正在构建世界...
+          </p>
         </div>
       )}
     </div>

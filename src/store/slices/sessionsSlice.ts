@@ -86,6 +86,9 @@ export interface SessionsSlice {
   // Native 模式: 实时执行任务 (持久化)
   activeExecutions: TaskItem[]
   
+  // 中断任务提示
+  hasInterruptedTasks: boolean
+  
   // 静默分析
   silentAnalysis: SilentAnalysis
   
@@ -104,6 +107,11 @@ export interface SessionsSlice {
   appendExecutionStep: (taskId: string, step: ExecutionStep) => void
   clearTaskHistory: () => void
   
+  // 中断任务处理
+  checkInterruptedTasks: () => void
+  markInterruptedTasksAsFailed: () => void
+  dismissInterruptedTasksWarning: () => void
+  
   // 静默分析
   generateSilentAnalysis: () => Promise<void>
   shouldRefreshAnalysis: () => boolean
@@ -116,6 +124,8 @@ export const createSessionsSlice: StateCreator<SessionsSlice> = (set, get) => ({
   tasks: [],
   // 从 localStorage 恢复任务历史
   activeExecutions: initialTaskHistory,
+  // 检查是否有中断的任务
+  hasInterruptedTasks: initialTaskHistory.some(t => t.status === 'executing'),
   silentAnalysis: initialSilentAnalysis,
 
   setSessions: (sessions) => set({ 
@@ -193,7 +203,35 @@ export const createSessionsSlice: StateCreator<SessionsSlice> = (set, get) => ({
   clearTaskHistory: () => {
     localStorage.removeItem(STORAGE_KEYS.TASK_HISTORY)
     localStorage.removeItem(STORAGE_KEYS.SILENT_ANALYSIS)
-    set({ activeExecutions: [], silentAnalysis: emptySilentAnalysis() })
+    set({ activeExecutions: [], silentAnalysis: emptySilentAnalysis(), hasInterruptedTasks: false })
+  },
+
+  // 中断任务处理
+  checkInterruptedTasks: () => {
+    const { activeExecutions } = get()
+    const hasInterrupted = activeExecutions.some(t => t.status === 'executing')
+    set({ hasInterruptedTasks: hasInterrupted })
+  },
+
+  markInterruptedTasksAsFailed: () => {
+    const { activeExecutions } = get()
+    const newExecutions = activeExecutions.map(t => {
+      if (t.status === 'executing') {
+        return {
+          ...t,
+          status: 'terminated' as const,
+          executionError: '任务因页面刷新而中断',
+          executionDuration: Date.now() - (t.timestamp ? new Date(t.timestamp).getTime() : Date.now()),
+        }
+      }
+      return t
+    })
+    persistTaskHistory(newExecutions)
+    set({ activeExecutions: newExecutions, hasInterruptedTasks: false })
+  },
+
+  dismissInterruptedTasksWarning: () => {
+    set({ hasInterruptedTasks: false })
   },
 
   // 静默分析

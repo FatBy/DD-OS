@@ -1979,6 +1979,7 @@ class LocalClawService {
     let turnCount = 0
     let finalResponse = ''
     let lastToolResult = ''  // 保存最后一次工具结果，防止循环耗尽时返回空
+    const legacyErrorSignatureHistory: string[] = []  // 错误签名追踪 (防 Reflexion 死循环)
     
     // 🔄 升级机制状态
     let currentMaxTurns = maxTurns
@@ -2147,9 +2148,35 @@ class LocalClawService {
             const failureLesson = `工具 ${toolCall.name} 执行失败: ${toolResult.result.slice(0, 200)}`
             this.logToEphemeral(failureLesson, 'thought').catch(() => {})
             
-            messages.push({
-              role: 'user',
-              content: `[Reflexion 反思] ${toolCall.name} 执行失败。
+            // 🛡️ 错误签名追踪: 检测重复错误防止死循环
+            const legacyErrorSig = `${toolCall.name}:${toolResult.result.slice(0, 100)}`
+            legacyErrorSignatureHistory.push(legacyErrorSig)
+            const legacyRepeatCount = legacyErrorSignatureHistory.filter(e => e === legacyErrorSig).length
+            
+            if (legacyRepeatCount >= 2) {
+              // 🚨 危机干预: 相同错误已出现2+次, 强制策略变更
+              messages.push({
+                role: 'user',
+                content: `[CRITICAL - 重复错误检测] ${toolCall.name} 已连续 ${legacyRepeatCount} 次产生相同错误。
+错误信息: ${toolResult.result}
+
+禁止再次使用相同参数调用此工具。你必须选择以下策略之一:
+1. 使用完全不同的工具或方法达成目标
+2. 彻底修改参数后重试（不能与之前相同）
+3. 跳过此步骤，继续执行后续任务
+不要重复之前的失败操作。`,
+              })
+              
+              this.storeActions?.addLog({
+                id: `reflexion-crisis-${Date.now()}`,
+                timestamp: Date.now(),
+                level: 'error',
+                message: `[Reflexion] 检测到重复错误(${legacyRepeatCount}次)，强制策略变更: ${toolCall.name}`,
+              })
+            } else {
+              messages.push({
+                role: 'user',
+                content: `[Reflexion 反思] ${toolCall.name} 执行失败。
 错误信息: ${toolResult.result}
 
 请进行结构化反思:
@@ -2159,14 +2186,15 @@ class LocalClawService {
 4. **技能充足性**: 当前 Nexus 的技能是否足以完成任务？如果缺少必要技能，可使用 nexusBindSkill 添加；如果某技能不适用，可使用 nexusUnbindSkill 移除。${ctx}` : '' })()}
 
 请在 thought 中完成反思，然后执行修正后的操作。`,
-            })
+              })
             
-            this.storeActions?.addLog({
-              id: `reflexion-${Date.now()}`,
-              timestamp: Date.now(),
-              level: 'warn',
-              message: `[Reflexion] 分析 ${toolCall.name} 失败原因`,
-            })
+              this.storeActions?.addLog({
+                id: `reflexion-${Date.now()}`,
+                timestamp: Date.now(),
+                level: 'warn',
+                message: `[Reflexion] 分析 ${toolCall.name} 失败原因`,
+              })
+            }
           } else {
             lastToolResult = toolResult.result
             
@@ -2413,6 +2441,7 @@ class LocalClawService {
     let lastToolResult = ''
     let consecutiveFailures = 0  // 连续失败计数 (用于触发重规划)
     const MAX_CONSECUTIVE_FAILURES = 2  // 连续失败阈值
+    const errorSignatureHistory: string[] = []  // 错误签名追踪 (防 Reflexion 死循环)
     
     // 🔄 升级机制状态
     let currentMaxTurns = maxTurns
@@ -2578,9 +2607,38 @@ class LocalClawService {
               const failureLesson = `工具 ${toolName} 执行失败: ${toolResult.result.slice(0, 200)}`
               this.logToEphemeral(failureLesson, 'thought').catch(() => {})
               
-              // 🔄 Reflexion: 结构化反思提示 - 让 LLM 分析失败原因
-              const nexusSkillCtxFC = this.buildNexusSkillContext()
-              const reflexionHint = `
+              // 🛡️ 错误签名追踪: 检测重复错误防止死循环
+              const errorSig = `${toolName}:${toolResult.result.slice(0, 100)}`
+              errorSignatureHistory.push(errorSig)
+              const repeatCount = errorSignatureHistory.filter(e => e === errorSig).length
+              
+              if (repeatCount >= 2) {
+                // 🚨 危机干预: 相同错误已出现2+次, 强制策略变更
+                messages.push({
+                  role: 'tool',
+                  tool_call_id: tc.id,
+                  content: toolResult.result + `
+
+[CRITICAL - 重复错误检测]
+工具 ${toolName} 已连续 ${repeatCount} 次产生相同错误。禁止再次使用相同参数调用此工具。
+你必须选择以下策略之一:
+1. 使用完全不同的工具或方法达成目标
+2. 彻底修改参数后重试（不能与之前相同）
+3. 跳过此步骤，继续执行后续任务
+不要重复之前的失败操作。`,
+                  name: toolName,
+                })
+                
+                this.storeActions?.addLog({
+                  id: `reflexion-crisis-${Date.now()}`,
+                  timestamp: Date.now(),
+                  level: 'error',
+                  message: `[Reflexion] 检测到重复错误(${repeatCount}次)，强制策略变更: ${toolName}`,
+                })
+              } else {
+                // 🔄 Reflexion: 结构化反思提示 - 让 LLM 分析失败原因
+                const nexusSkillCtxFC = this.buildNexusSkillContext()
+                const reflexionHint = `
 
 [系统提示 - Reflexion 反思机制]
 工具执行失败。在下一步操作前，请先进行结构化反思：
@@ -2591,20 +2649,21 @@ class LocalClawService {
 
 请根据反思结果调整你的下一步操作。`
               
-              // 将反思提示追加到工具结果中
-              messages.push({
-                role: 'tool',
-                tool_call_id: tc.id,
-                content: toolResult.result + reflexionHint,
-                name: toolName,
-              })
-              
-              this.storeActions?.addLog({
-                id: `reflexion-${Date.now()}`,
-                timestamp: Date.now(),
-                level: 'warn',
-                message: `[Reflexion] 触发反思机制，分析 ${toolName} 失败原因`,
-              })
+                // 将反思提示追加到工具结果中
+                messages.push({
+                  role: 'tool',
+                  tool_call_id: tc.id,
+                  content: toolResult.result + reflexionHint,
+                  name: toolName,
+                })
+                
+                this.storeActions?.addLog({
+                  id: `reflexion-${Date.now()}`,
+                  timestamp: Date.now(),
+                  level: 'warn',
+                  message: `[Reflexion] 触发反思机制，分析 ${toolName} 失败原因`,
+                })
+              }
               
               // 🔄 连续失败过多 → 提示重新规划
               if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
@@ -3144,6 +3203,11 @@ ${stepsReport}
             })
             if (hasFailedDep) {
               task.status = 'blocked'
+              const failedDepNames = task.dependsOn
+                .map(depId => plan.subTasks.find(t => t.id === depId))
+                .filter(dep => dep && dep.status === 'failed')
+                .map(dep => `[${dep!.id}] ${dep!.description}`)
+              task.blockReason = `依赖的任务失败: ${failedDepNames.join(', ')}`
             }
           })
           
@@ -3595,9 +3659,13 @@ ${nexus.metrics.map((m, i) => `${i + 1}. ${m}`).join('\n')}
     return null
   }
 
-  async executeTool(tool: ToolCall): Promise<ToolResult> {
+  async executeTool(tool: ToolCall, _retryCount = 0): Promise<ToolResult> {
     // 旁路统计：记录调用
     skillStatsService.recordCall(tool.name)
+    
+    // 可重试的网络错误模式
+    const RETRYABLE_PATTERNS = ['timeout', 'ECONNREFUSED', 'fetch failed', 'ECONNRESET', 'aborted']
+    const MAX_TOOL_RETRIES = 2
     
     // 数字免疫系统自愈上下文
     const executeWithHealing = async (): Promise<ToolResult> => {
@@ -3656,6 +3724,14 @@ ${nexus.metrics.map((m, i) => `${i + 1}. ${m}`).join('\n')}
         
         // 旁路统计：记录失败
         skillStatsService.recordResult(tool.name, false)
+        
+        // 🔄 网络错误自动重试（指数退避）
+        if (_retryCount < MAX_TOOL_RETRIES && RETRYABLE_PATTERNS.some(p => errorMessage.toLowerCase().includes(p))) {
+          const backoffMs = 1000 * Math.pow(2, _retryCount)
+          console.log(`[LocalClaw] Tool ${tool.name} failed with retryable error, retry ${_retryCount + 1}/${MAX_TOOL_RETRIES} after ${backoffMs}ms`)
+          await new Promise(resolve => setTimeout(resolve, backoffMs))
+          return this.executeTool(tool, _retryCount + 1)
+        }
         
         return {
           tool: tool.name,
