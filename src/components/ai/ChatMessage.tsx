@@ -5,6 +5,29 @@ import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { cn } from '@/utils/cn'
 import type { ChatMessage as ChatMessageType, ExecutionStatus } from '@/types'
 
+/**
+ * 清理 Markdown 格式符号，转换为干净的纯文本
+ */
+function cleanMarkdown(text: string): string {
+  return text
+    // 移除粗体 **text** 或 __text__
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/__([^_]+)__/g, '$1')
+    // 移除斜体 *text* 或 _text_
+    .replace(/\*([^*]+)\*/g, '$1')
+    .replace(/(?<![a-zA-Z0-9])_([^_]+)_(?![a-zA-Z0-9])/g, '$1')
+    // 移除行内代码 `code`
+    .replace(/`([^`]+)`/g, '$1')
+    // 移除链接 [text](url) -> text
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    // 移除标题符号 ### 
+    .replace(/^#{1,6}\s+/gm, '')
+    // 移除列表符号 - 或 *
+    .replace(/^[\s]*[-*]\s+/gm, '• ')
+    // 移除数字列表 1. 2. 3.
+    .replace(/^[\s]*\d+\.\s+/gm, '')
+}
+
 // 检测输出类型
 function detectOutputType(output: string): 'weather' | 'search' | 'file' | 'command' | 'plain' {
   if (output.includes('查询时间:') || output.includes('Weather') || output.includes('°C') || output.includes('天气')) {
@@ -246,7 +269,7 @@ function ExecutionCard({ execution, content }: { execution: ExecutionStatus; con
         </div>
         
         <p className="text-sm font-mono text-white/70 mb-3 leading-relaxed">
-          {content}
+          {content ? cleanMarkdown(content) : ''}
         </p>
         
         <div className="flex items-center gap-2">
@@ -397,7 +420,7 @@ export function ChatMessage({ message }: ChatMessageProps) {
                 <span className="text-[13px]">错误</span>
               </div>
             )}
-            <div className="whitespace-pre-wrap break-words">{message.content}</div>
+            <div className="whitespace-pre-wrap break-words">{cleanMarkdown(message.content)}</div>
           </div>
         </div>
       )}
@@ -409,7 +432,7 @@ export function ChatMessage({ message }: ChatMessageProps) {
             <Bot className="w-3.5 h-3.5 text-amber-400" />
           </div>
           <div className="max-w-[80%] px-3 py-2 rounded-lg text-sm font-mono leading-relaxed bg-white/5 border border-white/10 text-white/70">
-            <div className="whitespace-pre-wrap break-words">{message.content}</div>
+            <div className="whitespace-pre-wrap break-words">{cleanMarkdown(message.content)}</div>
           </div>
         </div>
       )}
@@ -438,7 +461,7 @@ export function StreamingMessage({ content }: StreamingMessageProps) {
       </div>
       <div className="max-w-[80%] px-3 py-2 rounded-lg text-sm font-mono leading-relaxed bg-white/5 border border-amber-500/20 text-white/70">
         <div className="whitespace-pre-wrap break-words">
-          {content}
+          {cleanMarkdown(content)}
           <span className="inline-block w-1.5 h-3.5 bg-amber-400/60 ml-0.5 animate-pulse" />
         </div>
       </div>
