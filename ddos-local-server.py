@@ -23,6 +23,7 @@ API:
     POST /task/execute        - 执行任务 (兼容旧接口)
     GET  /task/status/<id>    - 查询任务状态
 """
+from __future__ import annotations
 
 import os
 import sys
