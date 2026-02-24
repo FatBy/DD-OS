@@ -65,9 +65,22 @@ fi
 
 # --- Setup data directory ---
 export DDOS_DATA_PATH="$HOME/.ddos"
+SCRIPT_DIR="$(dirname "$0")"
+
 if [ ! -d "$DDOS_DATA_PATH" ]; then
     echo "  [SETUP] Creating data directory: $DDOS_DATA_PATH"
     mkdir -p "$DDOS_DATA_PATH"
+fi
+
+# Copy bundled skills to user data directory (first run or update)
+if [ -d "$SCRIPT_DIR/skills" ]; then
+    if [ ! -d "$DDOS_DATA_PATH/skills" ] || [ -z "$(ls -A "$DDOS_DATA_PATH/skills" 2>/dev/null)" ]; then
+        echo "  [SETUP] Installing bundled skills to $DDOS_DATA_PATH/skills..."
+        mkdir -p "$DDOS_DATA_PATH/skills"
+        cp -R "$SCRIPT_DIR/skills/"* "$DDOS_DATA_PATH/skills/" 2>/dev/null
+        SKILL_COUNT=$(find "$DDOS_DATA_PATH/skills" -name "SKILL.md" | wc -l | tr -d ' ')
+        echo "  [OK] Installed $SKILL_COUNT skills"
+    fi
 fi
 
 # --- Cleanup on exit ---

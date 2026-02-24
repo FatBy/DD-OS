@@ -258,8 +258,10 @@ def count_experience_entries(exp_dir: Path) -> int:
 class ToolRegistry:
     """动态工具发现与注册 - 支持内置工具 + 插件工具 + 指令型工具 + MCP工具"""
 
-    def __init__(self, clawd_path: Path):
+    def __init__(self, clawd_path: Path, project_path: Path = None):
         self.clawd_path = clawd_path
+        # 项目目录 (脚本所在目录)，用于加载内置技能
+        self.project_path = project_path or Path(__file__).parent.resolve()
         self.builtin_tools: dict = {}      # name -> callable
         self.plugin_tools: dict = {}       # name -> ToolSpec dict (有 execute.py)
         self.instruction_tools: dict = {}  # name -> InstructionSpec (纯 SKILL.md)
@@ -270,10 +272,23 @@ class ToolRegistry:
         """注册内置工具"""
         self.builtin_tools[name] = handler
 
+    def _get_skills_dirs(self) -> list[Path]:
+        """获取所有技能目录 (用户目录 + 项目目录)"""
+        dirs = []
+        # 用户数据目录的技能 (优先级高，可覆盖内置)
+        user_skills = self.clawd_path / 'skills'
+        if user_skills.exists():
+            dirs.append(user_skills)
+        # 项目目录的内置技能
+        project_skills = self.project_path / 'skills'
+        if project_skills.exists() and project_skills != user_skills:
+            dirs.append(project_skills)
+        return dirs
+
     def scan_plugins(self):
         """递归扫描 skills/ 目录，注册可执行插件 + 指令型技能"""
-        skills_dir = self.clawd_path / 'skills'
-        if not skills_dir.exists():
+        skills_dirs = self._get_skills_dirs()
+        if not skills_dirs:
             return
 
         plugin_count = 0
@@ -281,93 +296,101 @@ class ToolRegistry:
 
         # 递归查找所有包含 SKILL.md 或 manifest.json 的目录
         seen_dirs: set = set()
+        seen_tools: set = set()  # 防止重复注册同名工具
 
-        # 1. 先扫描 manifest.json (可执行插件优先)
-        for manifest_path in skills_dir.rglob('manifest.json'):
-            skill_dir = manifest_path.parent
-            dir_key = str(skill_dir.resolve())
-            if dir_key in seen_dirs:
-                continue
-            seen_dirs.add(dir_key)
-
-            try:
-                spec = json.loads(manifest_path.read_text(encoding='utf-8'))
-
-                tools_list = spec.get('tools', [])
-                if not tools_list:
-                    tools_list = [spec]
-
-                for tool_spec in tools_list:
-                    tool_name = tool_spec.get('toolName', '')
-                    executable = tool_spec.get('executable', spec.get('executable', 'execute.py'))
-
-                    if not tool_name:
-                        continue
-
-                    exe_path = skill_dir / executable
-                    if not exe_path.exists():
-                        print(f"[ToolRegistry] Warning: {exe_path} not found, skipping {tool_name}")
-                        continue
-
-                    # 内置工具不可被覆盖
-                    if tool_name in self.builtin_tools:
-                        print(f"[ToolRegistry] Warning: plugin '{tool_name}' conflicts with builtin, skipping")
-                        continue
-
-                    self.plugin_tools[tool_name] = {
-                        'name': tool_name,
-                        'exe_path': str(exe_path),
-                        'runtime': tool_spec.get('runtime', spec.get('runtime', 'python')),
-                        'inputs': tool_spec.get('inputs', {}),
-                        'outputs': tool_spec.get('outputs', {}),
-                        'description': tool_spec.get('description', ''),
-                        'dangerLevel': tool_spec.get('dangerLevel', spec.get('dangerLevel', 'safe')),
-                        'version': tool_spec.get('version', spec.get('version', '1.0.0')),
-                        'skill_dir': str(skill_dir),
-                        'keywords': tool_spec.get('keywords', spec.get('keywords', [])),
-                    }
-                    plugin_count += 1
-                    print(f"[ToolRegistry] Registered plugin: {tool_name} ({exe_path.name})")
-
-            except Exception as e:
-                print(f"[ToolRegistry] Error loading {manifest_path}: {e}")
-
-        # 2. 扫描 SKILL.md (指令型技能 - 没有 manifest.json 或没有 executable 的)
-        for skill_md in skills_dir.rglob('SKILL.md'):
-            skill_dir = skill_md.parent
-            dir_key = str(skill_dir.resolve())
-
-            # 已被 manifest.json 扫描注册的目录跳过
-            if dir_key in seen_dirs:
-                continue
-            seen_dirs.add(dir_key)
-
-            try:
-                frontmatter = parse_skill_frontmatter(skill_md)
-                original_name = frontmatter.get('name', skill_dir.name)
-                tool_name = skill_name_to_tool_name(original_name)
-
-                # 冲突检查
-                if tool_name in self.builtin_tools or tool_name in self.plugin_tools:
-                    print(f"[ToolRegistry] Warning: instruction skill '{tool_name}' conflicts, skipping")
+        for skills_dir in skills_dirs:
+            # 1. 先扫描 manifest.json (可执行插件优先)
+            for manifest_path in skills_dir.rglob('manifest.json'):
+                skill_dir = manifest_path.parent
+                dir_key = str(skill_dir.resolve())
+                if dir_key in seen_dirs:
                     continue
+                seen_dirs.add(dir_key)
 
-                self.instruction_tools[tool_name] = {
-                    'name': tool_name,
-                    'original_name': original_name,
-                    'skill_path': str(skill_md),
-                    'skill_dir': str(skill_dir),
-                    'description': frontmatter.get('description', ''),
-                    'inputs': frontmatter.get('inputs', {}),
-                    'keywords': frontmatter.get('tags', frontmatter.get('keywords', [])),
-                    'dangerLevel': 'safe',
-                    'version': frontmatter.get('version', '1.0.0'),
-                }
-                instruction_count += 1
-                print(f"[ToolRegistry] Registered instruction skill: {tool_name} ({skill_md.relative_to(skills_dir)})")
+                try:
+                    spec = json.loads(manifest_path.read_text(encoding='utf-8'))
 
-            except Exception as e:
-                print(f"[ToolRegistry] Error loading {skill_md}: {e}")
+                    tools_list = spec.get('tools', [])
+                    if not tools_list:
+                        tools_list = [spec]
+
+                    for tool_spec in tools_list:
+                        tool_name = tool_spec.get('toolName', '')
+                        executable = tool_spec.get('executable', spec.get('executable', 'execute.py'))
+
+                        if not tool_name:
+                            continue
+
+                        # 跳过已注册的同名工具
+                        if tool_name in seen_tools:
+                            continue
+
+                        exe_path = skill_dir / executable
+                        if not exe_path.exists():
+                            print(f"[ToolRegistry] Warning: {exe_path} not found, skipping {tool_name}")
+                            continue
+
+                        # 内置工具不可被覆盖
+                        if tool_name in self.builtin_tools:
+                            print(f"[ToolRegistry] Warning: plugin '{tool_name}' conflicts with builtin, skipping")
+                            continue
+
+                        self.plugin_tools[tool_name] = {
+                            'name': tool_name,
+                            'exe_path': str(exe_path),
+                            'runtime': tool_spec.get('runtime', spec.get('runtime', 'python')),
+                            'inputs': tool_spec.get('inputs', {}),
+                            'outputs': tool_spec.get('outputs', {}),
+                            'description': tool_spec.get('description', ''),
+                            'dangerLevel': tool_spec.get('dangerLevel', spec.get('dangerLevel', 'safe')),
+                            'version': tool_spec.get('version', spec.get('version', '1.0.0')),
+                            'skill_dir': str(skill_dir),
+                            'keywords': tool_spec.get('keywords', spec.get('keywords', [])),
+                        }
+                        seen_tools.add(tool_name)
+                        plugin_count += 1
+                        print(f"[ToolRegistry] Registered plugin: {tool_name} ({exe_path.name})")
+
+                except Exception as e:
+                    print(f"[ToolRegistry] Error loading {manifest_path}: {e}")
+
+            # 2. 扫描 SKILL.md (指令型技能 - 没有 manifest.json 或没有 executable 的)
+            for skill_md in skills_dir.rglob('SKILL.md'):
+                skill_dir = skill_md.parent
+                dir_key = str(skill_dir.resolve())
+
+                # 已被 manifest.json 扫描注册的目录跳过
+                if dir_key in seen_dirs:
+                    continue
+                seen_dirs.add(dir_key)
+
+                try:
+                    frontmatter = parse_skill_frontmatter(skill_md)
+                    original_name = frontmatter.get('name', skill_dir.name)
+                    tool_name = skill_name_to_tool_name(original_name)
+
+                    # 冲突检查
+                    if tool_name in self.builtin_tools or tool_name in self.plugin_tools or tool_name in seen_tools:
+                        print(f"[ToolRegistry] Warning: instruction skill '{tool_name}' conflicts, skipping")
+                        continue
+
+                    self.instruction_tools[tool_name] = {
+                        'name': tool_name,
+                        'original_name': original_name,
+                        'skill_path': str(skill_md),
+                        'skill_dir': str(skill_dir),
+                        'description': frontmatter.get('description', ''),
+                        'inputs': frontmatter.get('inputs', {}),
+                        'keywords': frontmatter.get('tags', frontmatter.get('keywords', [])),
+                        'dangerLevel': 'safe',
+                        'version': frontmatter.get('version', '1.0.0'),
+                    }
+                    seen_tools.add(tool_name)
+                    instruction_count += 1
+                    print(f"[ToolRegistry] Registered instruction skill: {tool_name} (from {skills_dir.name})")
+
+                except Exception as e:
+                    print(f"[ToolRegistry] Error loading {skill_md}: {e}")
 
         total = plugin_count + instruction_count
         if total > 0:
@@ -472,6 +495,7 @@ class ToolRegistry:
 
 class ClawdDataHandler(BaseHTTPRequestHandler):
     clawd_path = None
+    project_path = None  # 项目目录，用于加载内置技能
     registry = None  # type: ToolRegistry
     tasks = {}
     tasks_lock = threading.Lock()
@@ -1516,79 +1540,96 @@ curl -X POST http://localhost:3001/api/tools/execute \\
             self.send_error_json(f'Read error: {str(e)}', 500)
     
     def handle_skills(self):
-        """GET /skills - 递归扫描所有技能 (SKILL.md + manifest.json)"""
+        """GET /skills - 递归扫描所有技能 (SKILL.md + manifest.json)，支持用户目录 + 项目目录"""
         skills = []
-        skills_dir = self.clawd_path / 'skills'
-
-        if not skills_dir.exists() or not skills_dir.is_dir():
+        seen = set()
+        seen_ids = set()  # 防止重复技能 (用户目录优先)
+        
+        # 获取技能目录列表：用户目录优先，项目目录作为后备
+        skills_dirs = []
+        user_skills_dir = self.clawd_path / 'skills'
+        if user_skills_dir.exists() and user_skills_dir.is_dir():
+            skills_dirs.append(('user', user_skills_dir))
+        
+        project_path = self.project_path or Path(__file__).parent.resolve()
+        project_skills_dir = project_path / 'skills'
+        if project_skills_dir.exists() and project_skills_dir.is_dir() and project_skills_dir != user_skills_dir:
+            skills_dirs.append(('bundled', project_skills_dir))
+        
+        if not skills_dirs:
             self.send_json([])
             return
 
-        seen = set()
+        for source, skills_dir in skills_dirs:
+            # Phase 1: 扫描有 SKILL.md 的目录
+            for skill_md in skills_dir.rglob('SKILL.md'):
+                skill_dir = skill_md.parent
+                dir_key = str(skill_dir.resolve())
+                skill_id = skill_dir.name
+                
+                if dir_key in seen or skill_id in seen_ids:
+                    continue
+                seen.add(dir_key)
+                seen_ids.add(skill_id)
 
-        # Phase 1: 扫描有 SKILL.md 的目录
-        for skill_md in skills_dir.rglob('SKILL.md'):
-            skill_dir = skill_md.parent
-            dir_key = str(skill_dir.resolve())
-            if dir_key in seen:
-                continue
-            seen.add(dir_key)
+                frontmatter = parse_skill_frontmatter(skill_md)
+                manifest_path = skill_dir / 'manifest.json'
 
-            frontmatter = parse_skill_frontmatter(skill_md)
-            manifest_path = skill_dir / 'manifest.json'
+                skill_data = {
+                    'id': skill_id,
+                    'name': frontmatter.get('name', skill_dir.name),
+                    'description': frontmatter.get('description', ''),
+                    'location': source,  # 'user' 或 'bundled'
+                    'path': str(skill_dir),
+                    'status': 'active',
+                    'enabled': True,
+                    'keywords': frontmatter.get('tags', frontmatter.get('keywords', [])),
+                }
 
-            skill_data = {
-                'id': skill_dir.name,  # 添加id字段，用于前端匹配
-                'name': frontmatter.get('name', skill_dir.name),
-                'description': frontmatter.get('description', ''),
-                'location': 'local',
-                'path': str(skill_dir),
-                'status': 'active',
-                'enabled': True,
-                'keywords': frontmatter.get('tags', frontmatter.get('keywords', [])),
-            }
+                # 无 frontmatter description 时提取正文首段
+                if not skill_data['description']:
+                    try:
+                        content = skill_md.read_text(encoding='utf-8')
+                        for line in content.split('\n'):
+                            line = line.strip()
+                            if line and not line.startswith('#') and not line.startswith('---'):
+                                skill_data['description'] = line[:200]
+                                break
+                    except Exception:
+                        pass
 
-            # 无 frontmatter description 时提取正文首段
-            if not skill_data['description']:
+                self._enrich_skill_from_manifest(skill_data, manifest_path, frontmatter)
+                skills.append(skill_data)
+
+            # Phase 2: 扫描有 manifest.json 但没有 SKILL.md 的目录
+            for manifest_path in skills_dir.rglob('manifest.json'):
+                skill_dir = manifest_path.parent
+                dir_key = str(skill_dir.resolve())
+                skill_id = skill_dir.name
+                
+                if dir_key in seen or skill_id in seen_ids:
+                    continue
+                seen.add(dir_key)
+                seen_ids.add(skill_id)
+
                 try:
-                    content = skill_md.read_text(encoding='utf-8')
-                    for line in content.split('\n'):
-                        line = line.strip()
-                        if line and not line.startswith('#') and not line.startswith('---'):
-                            skill_data['description'] = line[:200]
-                            break
+                    manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
                 except Exception:
-                    pass
+                    continue
 
-            self._enrich_skill_from_manifest(skill_data, manifest_path, frontmatter)
-            skills.append(skill_data)
+                skill_data = {
+                    'id': skill_id,
+                    'name': manifest.get('name', skill_dir.name),
+                    'description': manifest.get('description', ''),
+                    'location': source,
+                    'path': str(skill_dir),
+                    'status': 'active',
+                    'enabled': True,
+                    'keywords': manifest.get('keywords', []),
+                }
 
-        # Phase 2: 扫描有 manifest.json 但没有 SKILL.md 的目录
-        for manifest_path in skills_dir.rglob('manifest.json'):
-            skill_dir = manifest_path.parent
-            dir_key = str(skill_dir.resolve())
-            if dir_key in seen:
-                continue
-            seen.add(dir_key)
-
-            try:
-                manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
-            except Exception:
-                continue
-
-            skill_data = {
-                'id': skill_dir.name,  # 添加id字段，用于前端匹配
-                'name': manifest.get('name', skill_dir.name),
-                'description': manifest.get('description', ''),
-                'location': 'local',
-                'path': str(skill_dir),
-                'status': 'active',
-                'enabled': True,
-                'keywords': manifest.get('keywords', []),
-            }
-
-            self._enrich_skill_from_manifest(skill_data, manifest_path, {})
-            skills.append(skill_data)
+                self._enrich_skill_from_manifest(skill_data, manifest_path, {})
+                skills.append(skill_data)
 
         self.send_json(skills)
 
@@ -2884,7 +2925,11 @@ You are DD-OS, a local AI operating system running directly on the user's comput
     # 清理过期执行追踪 (P2: 保留最近6个月)
     cleanup_old_traces(clawd_path)
 
+    # 项目目录 (脚本所在目录)
+    project_path = Path(__file__).parent.resolve()
+    
     ClawdDataHandler.clawd_path = clawd_path
+    ClawdDataHandler.project_path = project_path
     ClawdDataHandler.registry = registry
     
     server = ThreadingHTTPServer((args.host, args.port), ClawdDataHandler)

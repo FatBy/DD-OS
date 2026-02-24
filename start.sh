@@ -32,6 +32,18 @@ if [ ! -d "$DDOS_DATA_PATH" ]; then
     mkdir -p "$DDOS_DATA_PATH"
 fi
 
+# 复制内置技能到用户数据目录（首次运行或技能目录为空时）
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ -d "$SCRIPT_DIR/skills" ]; then
+    if [ ! -d "$DDOS_DATA_PATH/skills" ] || [ -z "$(ls -A "$DDOS_DATA_PATH/skills" 2>/dev/null)" ]; then
+        echo "[SETUP] Installing bundled skills to $DDOS_DATA_PATH/skills..."
+        mkdir -p "$DDOS_DATA_PATH/skills"
+        cp -R "$SCRIPT_DIR/skills/"* "$DDOS_DATA_PATH/skills/" 2>/dev/null
+        SKILL_COUNT=$(find "$DDOS_DATA_PATH/skills" -name "SKILL.md" | wc -l | tr -d ' ')
+        echo "[OK] Installed $SKILL_COUNT skills"
+    fi
+fi
+
 # 清理函数
 cleanup() {
     echo ""

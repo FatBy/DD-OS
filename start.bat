@@ -33,6 +33,16 @@ if not exist "%DDOS_DATA_PATH%" (
     mkdir "%DDOS_DATA_PATH%"
 )
 
+:: 复制内置技能到用户数据目录（首次运行或技能目录为空时）
+set SCRIPT_DIR=%~dp0
+if exist "%SCRIPT_DIR%skills" (
+    if not exist "%DDOS_DATA_PATH%\skills" (
+        echo [SETUP] Installing bundled skills to %DDOS_DATA_PATH%\skills...
+        xcopy /E /I /Y "%SCRIPT_DIR%skills" "%DDOS_DATA_PATH%\skills" >nul 2>nul
+        echo [OK] Skills installed
+    )
+)
+
 :: 启动后端
 echo [1/2] Starting backend server...
 start "DD-OS Backend" /min cmd /c "python ddos-local-server.py --path %DDOS_DATA_PATH% 2>&1"
