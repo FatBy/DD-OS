@@ -14,6 +14,8 @@ import { AddMCPModal } from './AddMCPModal'
 import { AddSkillModal } from './AddSkillModal'
 import { CreateNexusModal, NexusInitialData } from '@/components/world/CreateNexusModal'
 import { ConversationSidebar } from './ConversationSidebar'
+import { SubagentMonitor } from './SubagentMonitor'
+import { QuestPlanConfirmation } from './QuestPlanConfirmation'
 import { useT } from '@/i18n'
 
 export function AIChatPanel() {
@@ -577,6 +579,8 @@ export function AIChatPanel() {
                         {chatError}
                       </div>
                     )}
+                    {/* Quest 交互式流程 UI */}
+                    <QuestPhaseRenderer />
                   </>
                 )}
                 <div ref={messagesEndRef} />
@@ -784,5 +788,86 @@ export function AIChatPanel() {
         initialData={nexusInitialData}
       />
     </>
+  )
+}
+
+/**
+ * Quest 阶段渲染器
+ * 根据 activeQuestSession.phase 渲染对应的交互式 UI
+ */
+function QuestPhaseRenderer() {
+  const session = useStore(s => s.activeQuestSession)
+  const subagents = useStore(s => s.questSubagents)
+  const confirmPlan = useStore(s => s.confirmQuestPlan)
+  const cancelSession = useStore(s => s.cancelQuestSession)
+
+  if (!session || session.phase === 'idle' || session.phase === 'completed') return null
+
+  const subagentsArray = Array.from(subagents.values())
+  const allSubagents = subagentsArray.length > 0 ? subagentsArray : session.subagents
+
+  return (
+    <AnimatePresence mode="wait">
+      {session.phase === 'exploring' && (
+        <motion.div
+          key="exploring"
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0 }}
+          className="mt-3"
+        >
+          <div className="p-4 bg-blue-500/10 border border-blue-500/20 rounded-xl">
+            <p className="text-sm text-blue-400 font-medium mb-2">探索代码库中...</p>
+            <SubagentMonitor subagents={allSubagents} />
+          </div>
+        </motion.div>
+      )}
+
+      {session.phase === 'planning' && (
+        <motion.div
+          key="planning"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          className="mt-3"
+        >
+          <div className="p-4 bg-purple-500/10 border border-purple-500/20 rounded-xl flex items-center gap-2">
+            <Loader2 className="w-4 h-4 animate-spin text-purple-400" />
+            <span className="text-sm text-purple-400">正在生成任务计划...</span>
+          </div>
+        </motion.div>
+      )}
+
+      {session.phase === 'confirming' && (
+        <motion.div
+          key="confirming"
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0 }}
+          className="mt-3"
+        >
+          <QuestPlanConfirmation
+            session={session}
+            onConfirm={confirmPlan}
+            onCancel={cancelSession}
+          />
+        </motion.div>
+      )}
+
+      {session.phase === 'executing' && (
+        <motion.div
+          key="executing"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          className="mt-3"
+        >
+          <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl flex items-center gap-2">
+            <Loader2 className="w-4 h-4 animate-spin text-amber-400" />
+            <span className="text-sm text-amber-400">执行中，查看任务屋了解详情</span>
+          </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
   )
 }

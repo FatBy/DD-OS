@@ -421,6 +421,29 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
     const session = get().activeQuestSession
     if (!session || !session.proposedPlan) return
     set({ activeQuestSession: { ...session, phase: 'executing' } })
+    
+    // 异步执行确认后的计划（不阻塞 UI）
+    localClawService.executeConfirmedQuestPlan(session, (step) => {
+      // 可选：实时步骤追踪
+    }).then(result => {
+      get().completeQuestSession(result)
+      // 添加最终结果消息到聊天
+      get()._addMessageToActiveConv({
+        id: `quest-result-${Date.now()}`,
+        role: 'assistant',
+        content: result,
+        timestamp: Date.now(),
+      })
+    }).catch((err: any) => {
+      get().completeQuestSession(`执行失败: ${err.message}`)
+      get()._addMessageToActiveConv({
+        id: `quest-error-${Date.now()}`,
+        role: 'assistant',
+        content: `Quest 执行失败: ${err.message}`,
+        timestamp: Date.now(),
+        error: true,
+      })
+    })
   },
 
   cancelQuestSession: () => {
@@ -825,10 +848,21 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
         // 2. 创建实时任务 (在 TaskHouse 显示，含执行步骤)
         // 注意：Quest 模式下，任务由 sendMessageWithQuestPlan 创建，这里先不创建
         const fullState = get() as any
-        const activeNexusId = fullState.activeNexusId
         
-        // 提前计算 Quest 模式条件
-        const useQuestMode = message.includes('/quest') || !!activeNexusId || message.length > 50
+        // 🔧 修复：优先使用当前会话的 nexusId，而非全局 activeNexusId
+        const activeConv = fullState.conversations?.get(fullState.activeConversationId)
+        const activeNexusId = activeConv?.nexusId || fullState.activeNexusId
+        
+        // Quest 模式触发条件（严格）：
+        // 1. 显式 /quest 命令 - 总是触发
+        // 2. 消息长度 > 120 且包含复杂任务关键词 - 真正复杂的任务
+        // 3. 消息包含多步骤标志词 - 需要分解的任务
+        const hasQuestCommand = message.includes('/quest')
+        const isComplexTask = message.length > 120 && 
+          /(?:并且|然后|之后|同时|首先|接着|最后|分步|分析.*(?:修改|重构|优化)|(?:创建|实现).*(?:系统|模块|功能)|batch|step.by.step|refactor|implement.*system)/i.test(message)
+        const isMultiStepTask = /(?:第[一二三四五]|步骤\s*[1-9]|1\.|2\.|①|②|❶)/i.test(message)
+        
+        const useQuestMode = hasQuestCommand || isComplexTask || isMultiStepTask
         
         // 仅在传统模式下预先创建任务
         if (!useQuestMode) {
@@ -858,22 +892,36 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
           let result: string
           
           if (useQuestMode) {
-            // Quest 模式：使用分步骤任务计划
-            console.log('[AI] Using Quest mode for execution')
+            // Quest 模式：交互式规划流程（探索→规划→确认→执行）
+            console.log('[AI] Using Interactive Quest mode')
             
             // 移除 /quest 标记
             const cleanMessage = message.replace(/\/quest\s*/gi, '').trim()
             
-            result = await localClawService.sendMessageWithQuestPlan(
-              cleanMessage,
-              activeNexusId || undefined,
-              // onStep: 将执行步骤追加到任务屋
-              (step) => {
-                (get() as any).appendExecutionStep?.(execId, step)
-              }
-            )
+            // 启动交互式 Quest（到确认阶段暂停，不自动执行）
+            try {
+              const session = await localClawService.startInteractiveQuest(
+                cleanMessage,
+                activeNexusId || undefined,
+                (phase) => get().updateQuestPhase(phase),
+                (explorationResult) => get().addExplorationResult(explorationResult)
+              )
+              // session.phase === 'confirming'，UI 渲染 QuestPlanConfirmation
+              // 用户点击确认后由 confirmQuestPlan 触发执行
+              result = `已生成任务计划「${session.proposedPlan?.title || cleanMessage.slice(0, 30)}」，请在下方确认执行。`
+            } catch (questError: any) {
+              console.error('[AI] Interactive Quest failed, falling back to direct execution:', questError)
+              // 降级：直接执行
+              result = await localClawService.sendMessageWithQuestPlan(
+                cleanMessage,
+                activeNexusId || undefined,
+                (step) => {
+                  (get() as any).appendExecutionStep?.(execId, step)
+                }
+              )
+            }
           } else {
-            // 传统 ReAct 模式
+            // 传统 ReAct 模式 (传入 nexusId 以注入 SOP)
             result = await localClawService.sendMessage(
               message,
               // onUpdate: 仅更新流式内容指示
@@ -883,7 +931,8 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
               // onStep: 将执行步骤追加到任务屋
               (step) => {
                 (get() as any).appendExecutionStep?.(execId, step)
-              }
+              },
+              activeNexusId || undefined
             )
           }
 
@@ -1038,6 +1087,11 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
 
       // 通过 LocalClawService 执行任务 (Native 模式)
       if (commands.length > 0) {
+        // 获取当前会话的 nexusId
+        const cmdFullState = get() as any
+        const cmdActiveConv = cmdFullState.conversations?.get(cmdFullState.activeConversationId)
+        const cmdNexusId = cmdActiveConv?.nexusId || cmdFullState.activeNexusId
+        
         for (const cmd of commands) {
           const execId = `exec-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
           
@@ -1099,7 +1153,9 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
                 set((state) => ({
                   executionStatuses: { ...state.executionStatuses, [execId]: updatedStatus },
                 }))
-              }
+              },
+              undefined,  // onStep
+              cmdNexusId || undefined
             )
             
             // 执行完成

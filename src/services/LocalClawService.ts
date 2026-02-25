@@ -127,19 +127,14 @@ const CONFIG = {
   // Reflexion 机制配置
   CRITIC_TOOLS: ['writeFile', 'runCmd', 'appendFile'], // 修改类工具需要 Critic 验证
   HIGH_RISK_TOOLS: ['runCmd'], // 高风险工具需要执行前检查
-  // P3: 危险命令模式 (触发用户审批)
+  // P3: 危险命令模式 (触发用户审批) - 仅保留真正破坏性操作
   DANGER_PATTERNS: [
     { pattern: 'rm -rf', level: 'critical' as const, reason: '递归强制删除' },
-    { pattern: 'del /f', level: 'critical' as const, reason: '强制删除文件' },
+    { pattern: 'del /f /s', level: 'critical' as const, reason: '递归强制删除' },
     { pattern: 'format', level: 'critical' as const, reason: '格式化磁盘' },
     { pattern: 'mkfs', level: 'critical' as const, reason: '创建文件系统' },
     { pattern: 'dd if=/dev', level: 'critical' as const, reason: '低级磁盘写入' },
-    { pattern: 'shutdown', level: 'high' as const, reason: '关机操作' },
-    { pattern: 'reboot', level: 'high' as const, reason: '重启操作' },
-    { pattern: 'reg delete', level: 'high' as const, reason: '删除注册表' },
-    { pattern: 'taskkill /f', level: 'high' as const, reason: '强制终止进程' },
-    { pattern: 'net stop', level: 'high' as const, reason: '停止系统服务' },
-    { pattern: 'chmod 777', level: 'high' as const, reason: '开放所有权限' },
+    { pattern: 'reg delete HKLM', level: 'critical' as const, reason: '删除系统注册表' },
   ],
 }
 
@@ -505,19 +500,19 @@ const QUEST_PLANNER_PROMPT = `你是 Quest 任务规划器。请将用户的复�
    - 空数组 [] = 无依赖，可与其他无依赖任务并行执行
    - ["t1"] = 依赖 t1 完成后才能执行
    - ["t1", "t2"] = 需要 t1 和 t2 都完成后才能执行
-4. 高风险操作必须标记 approvalRequired: true，包括：
-   - 写文件、删除文件
-   - 发送消息、邮件
-   - API 调用、付费操作
-   - 系统命令执行
+4. approvalRequired 仅用于真正破坏性操作（默认为 false）：
+   - 批量删除文件 (rm -rf, del /s)
+   - 格式化磁盘
+   - 删除系统级配置
+   - 普通的 writeFile、runCmd 不需要 approval
 
 ## 可用工具参考
 - webSearch: 网络搜索
 - webFetch: 获取网页内容
 - readFile: 读取文件
-- writeFile: 写入文件（需确认）
+- writeFile: 写入文件
 - listDir: 列出目录
-- runCmd: 执行命令（需确认）
+- runCmd: 执行命令
 - saveMemory: 保存记忆
 - searchMemory: 搜索记忆
 
@@ -543,8 +538,7 @@ const QUEST_PLANNER_PROMPT = `你是 Quest 任务规划器。请将用户的复�
       "description": "生成报告并保存",
       "toolHint": "writeFile",
       "dependsOn": ["t2"],
-      "approvalRequired": true,
-      "approvalReason": "将创建新文件"
+      "approvalRequired": false
     }
   ]
 }
@@ -1439,8 +1433,9 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
    * 构建动态上下文 (Just-In-Time Loading)
    * 根据用户查询动态注入相关上下文，避免上下文窗口膨胀
    * 返回 { context, dynamicExamples } 分别注入模板的两个占位符
+   * @param overrideNexusId 可选的 Nexus ID，优先于全局 activeNexusId
    */
-  private async buildDynamicContext(userQuery: string): Promise<{ context: string; dynamicExamples: string }> {
+  private async buildDynamicContext(userQuery: string, overrideNexusId?: string | null): Promise<{ context: string; dynamicExamples: string }> {
     const contextParts: string[] = []
     const exampleParts: string[] = []
     const queryLower = userQuery.toLowerCase()
@@ -1460,7 +1455,8 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
     }
 
     // 1.5 激活的 Nexus SOP 注入 (Phase 4)
-    const activeNexusId = this.getActiveNexusId()
+    // 优先使用传入的 nexusId，fallback 到全局 activeNexusId
+    const activeNexusId = overrideNexusId ?? this.getActiveNexusId()
     if (activeNexusId) {
       const nexusCtx = await nexusManager.buildContext(activeNexusId, queryLower)
       if (nexusCtx) {
@@ -1748,11 +1744,13 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
 
   /**
    * 发送简单消息 (ReAct 模式)
+   * @param nexusId 可选的 Nexus ID，用于注入 SOP 上下文
    */
   async sendMessage(
     prompt: string,
     onUpdate?: (content: string) => void,
-    onStep?: (step: ExecutionStep) => void
+    onStep?: (step: ExecutionStep) => void,
+    nexusId?: string | null
   ): Promise<string> {
     if (!isLLMConfigured()) {
       throw new Error('LLM 未配置。请在设置中配置 API Key。')
@@ -1761,11 +1759,14 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
     // 清空上次执行的文件创建记录
     this._lastCreatedFiles = []
 
-    // P4: Nexus 触发器匹配 - 自动激活匹配的 Nexus
-    const matchedNexus = nexusManager.matchByTriggers(prompt)
-    if (matchedNexus && !this.getActiveNexusId()) {
-      this.storeActions?.setActiveNexus?.(matchedNexus)
-      console.log(`[LocalClaw] Auto-activated Nexus by trigger: ${matchedNexus}`)
+    // P4: Nexus 触发器匹配 - 自动激活匹配的 Nexus (仅当未指定 nexusId 时)
+    const effectiveNexusId = nexusId ?? this.getActiveNexusId()
+    if (!effectiveNexusId) {
+      const matchedNexus = nexusManager.matchByTriggers(prompt)
+      if (matchedNexus) {
+        this.storeActions?.setActiveNexus?.(matchedNexus)
+        console.log(`[LocalClaw] Auto-activated Nexus by trigger: ${matchedNexus}`)
+      }
     }
 
     const execId = `native-${Date.now()}`
@@ -1782,8 +1783,11 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
     // 📝 记录用户输入到短暂层
     this.logToEphemeral(`用户: ${prompt.slice(0, 100)}${prompt.length > 100 ? '...' : ''}`, 'action').catch(() => {})
 
+    // 确定最终使用的 nexusId
+    const finalNexusId = nexusId ?? this.getActiveNexusId()
+
     try {
-      const result = await this.runReActLoop(prompt, onUpdate, onStep)
+      const result = await this.runReActLoop(prompt, onUpdate, onStep, finalNexusId)
       
       this.storeActions?.updateExecutionStatus(execId, {
         status: 'success',
@@ -2405,11 +2409,13 @@ ${explorationContext}`
   /**
    * ReAct 循环 - 路由器
    * 检测 FC 支持并自动选择合适的执行模式
+   * @param nexusId 可选的 Nexus ID，用于注入 SOP 上下文
    */
   private async runReActLoop(
     userPrompt: string,
     onUpdate?: (content: string) => void,
-    onStep?: (step: ExecutionStep) => void
+    onStep?: (step: ExecutionStep) => void,
+    nexusId?: string | null
   ): Promise<string> {
     // 检测是否应该使用 FC 模式
     // 条件: 有可用工具 && 模型支持 FC (暂时通过配置/特性检测)
@@ -2417,10 +2423,10 @@ ${explorationContext}`
     
     if (useFunctionCalling && this.availableTools.length > 0) {
       console.log('[LocalClaw] Using Function Calling mode')
-      return this.runReActLoopFC(userPrompt, onUpdate, onStep)
+      return this.runReActLoopFC(userPrompt, onUpdate, onStep, nexusId)
     } else {
       console.log('[LocalClaw] Using Legacy text-based mode')
-      return this.runReActLoopLegacy(userPrompt, onUpdate, onStep)
+      return this.runReActLoopLegacy(userPrompt, onUpdate, onStep, nexusId)
     }
   }
 
@@ -2440,11 +2446,13 @@ ${explorationContext}`
   /**
    * ReAct 循环 - Legacy 文本模式 (原实现)
    * 保留用于不支持 FC 的模型或回退场景
+   * @param nexusId 可选的 Nexus ID，用于注入 SOP 上下文
    */
   private async runReActLoopLegacy(
     userPrompt: string,
     onUpdate?: (content: string) => void,
-    onStep?: (step: ExecutionStep) => void
+    onStep?: (step: ExecutionStep) => void,
+    nexusId?: string | null
   ): Promise<string> {
     this.storeActions?.setAgentStatus('thinking')
 
@@ -2459,8 +2467,8 @@ ${explorationContext}`
     // 🎯 Nexus 驱动：为当前任务准备精准工具集
     const { tools: legacyTaskTools, matchedNexus: legacyMatchedNexus, isFiltered: legacyIsFiltered } = nexusManager.prepareToolsForTask(userPrompt)
 
-    // 🎯 JIT: 动态构建上下文
-    const { context: dynamicContext, dynamicExamples } = await this.buildDynamicContext(userPrompt)
+    // 🎯 JIT: 动态构建上下文 (传入 nexusId 注入 SOP)
+    const { context: dynamicContext, dynamicExamples } = await this.buildDynamicContext(userPrompt, nexusId)
     console.log('[LocalClaw] JIT Context built:', dynamicContext.slice(0, 200) + '...')
 
     const systemPrompt = SYSTEM_PROMPT_TEMPLATE
@@ -2923,11 +2931,13 @@ ${explorationContext}`
   /**
    * ReAct 循环 - 原生 Function Calling 模式
    * 使用 OpenAI-compatible tools API 实现工具调用
+   * @param nexusId 可选的 Nexus ID，用于注入 SOP 上下文
    */
   private async runReActLoopFC(
     userPrompt: string,
     onUpdate?: (content: string) => void,
-    onStep?: (step: ExecutionStep) => void
+    onStep?: (step: ExecutionStep) => void,
+    nexusId?: string | null
   ): Promise<string> {
     this.storeActions?.setAgentStatus('thinking')
 
@@ -2943,8 +2953,8 @@ ${explorationContext}`
     const { tools: taskTools, matchedNexus, isFiltered } = nexusManager.prepareToolsForTask(userPrompt)
     let currentTaskTools = taskTools
 
-    // JIT: 动态构建上下文
-    const { context: dynamicContext } = await this.buildDynamicContext(userPrompt)
+    // JIT: 动态构建上下文 (传入 nexusId 注入 SOP)
+    const { context: dynamicContext } = await this.buildDynamicContext(userPrompt, nexusId)
 
     // 构建精简系统提示词 (FC 模式无需工具文档)
     const soulSummary = this.soulContent ? this.extractSoulSummary(this.soulContent) : ''
