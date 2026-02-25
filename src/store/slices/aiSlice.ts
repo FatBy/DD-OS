@@ -1,8 +1,9 @@
 import type { StateCreator } from 'zustand'
-import type { ChatMessage, AISummary, LLMConfig, ViewType, ExecutionStatus, ApprovalRequest, MemoryEntry, JournalEntry, Conversation, ConversationType } from '@/types'
+import type { ChatMessage, AISummary, LLMConfig, ViewType, ExecutionStatus, ApprovalRequest, MemoryEntry, JournalEntry, Conversation, ConversationType, QuestSession, QuestPhase, ExplorationResult, Subagent, SubagentTask, ContextEntry, TaskPlan } from '@/types'
 import { getLLMConfig, saveLLMConfig, isLLMConfigured, streamChat, chat } from '@/services/llmService'
 import { buildSummaryMessages, buildChatMessages, parseExecutionCommands, stripExecutionBlocks, buildJournalPrompt, parseJournalResult } from '@/services/contextBuilder'
 import { localClawService } from '@/services/LocalClawService'
+import { localServerService } from '@/services/localServerService'
 
 // 摘要缓存时间 (5分钟)
 const SUMMARY_CACHE_MS = 5 * 60 * 1000
@@ -52,9 +53,17 @@ async function generateConversationTitle(
 }
 
 // LocalStorage 键名
+// 后端数据键名
+const DATA_KEYS = {
+  CONVERSATIONS: 'conversations',
+  ACTIVE_CONVERSATION: 'active_conversation_id',
+  EXECUTION_STATUS: 'execution_status',
+}
+
+// LocalStorage 键名 (作为备份/缓存)
 const STORAGE_KEYS = {
-  CONVERSATIONS: 'ddos_conversations_v2',      // 新会话系统
-  ACTIVE_CONVERSATION: 'ddos_active_conv_id',  // 当前激活会话 ID
+  CONVERSATIONS: 'ddos_conversations_v2',
+  ACTIVE_CONVERSATION: 'ddos_active_conv_id',
   EXECUTION_STATUS: 'ddos_execution_status',
   // 旧键名 (用于迁移)
   LEGACY_CHAT_HISTORY: 'ddos_chat_history',
@@ -62,17 +71,17 @@ const STORAGE_KEYS = {
 }
 
 // ============================================
-// 会话持久化函数
+// 会话持久化函数 (后端 + localStorage 双写)
 // ============================================
 
-function loadConversations(): Map<string, Conversation> {
+function loadConversationsFromLocalStorage(): Map<string, Conversation> {
   try {
     const data = localStorage.getItem(STORAGE_KEYS.CONVERSATIONS)
     if (!data) return new Map()
     const array = JSON.parse(data) as Conversation[]
     return new Map(array.map(c => [c.id, c]))
   } catch (e) {
-    console.warn('[AI] Failed to load conversations:', e)
+    console.warn('[AI] Failed to load conversations from localStorage:', e)
     return new Map()
   }
 }
@@ -90,7 +99,13 @@ function persistConversations(conversations: Map<string, Conversation>) {
       messages: conv.messages.slice(-MAX_MESSAGES_PER_CONV),
     }))
     
+    // 同步写入 localStorage (快速缓存)
     localStorage.setItem(STORAGE_KEYS.CONVERSATIONS, JSON.stringify(trimmed))
+    
+    // 异步写入后端 (持久化)
+    localServerService.setData(DATA_KEYS.CONVERSATIONS, trimmed).catch(() => {
+      console.warn('[AI] Failed to persist conversations to server')
+    })
   } catch (e) {
     console.warn('[AI] Failed to persist conversations:', e)
   }
@@ -108,8 +123,10 @@ function persistActiveConversationId(id: string | null) {
   try {
     if (id) {
       localStorage.setItem(STORAGE_KEYS.ACTIVE_CONVERSATION, id)
+      localServerService.setData(DATA_KEYS.ACTIVE_CONVERSATION, id).catch(() => {})
     } else {
       localStorage.removeItem(STORAGE_KEYS.ACTIVE_CONVERSATION)
+      localServerService.deleteData(DATA_KEYS.ACTIVE_CONVERSATION).catch(() => {})
     }
   } catch {}
 }
@@ -143,7 +160,7 @@ function migrateFromLegacy(): { conversations: Map<string, Conversation>; active
     const existingData = localStorage.getItem(STORAGE_KEYS.CONVERSATIONS)
     if (existingData) {
       // 已有新数据，无需迁移
-      const loaded = loadConversations()
+      const loaded = loadConversationsFromLocalStorage()
       const savedActiveId = loadActiveConversationId()
       return { 
         conversations: loaded, 
@@ -272,6 +289,28 @@ export interface AiSlice {
   isChatOpen: boolean
   setChatOpen: (open: boolean) => void
 
+  // 从后端加载数据 (应用启动后调用)
+  loadConversationsFromServer: () => Promise<void>
+
+  // ============================================
+  // 交互式 Quest 系统 (Qoder 风格)
+  // ============================================
+  activeQuestSession: QuestSession | null
+  questSubagents: Map<string, Subagent>
+  
+  // Quest Actions
+  startQuestSession: (userGoal: string) => void
+  updateQuestPhase: (phase: QuestPhase) => void
+  setQuestProposedPlan: (plan: TaskPlan | null) => void
+  addExplorationResult: (result: ExplorationResult) => void
+  spawnSubagent: (task: SubagentTask) => string
+  updateSubagent: (id: string, updates: Partial<Subagent>) => void
+  collectSubagentResults: () => ExplorationResult[]
+  confirmQuestPlan: () => void
+  cancelQuestSession: () => void
+  appendToQuestContext: (entry: ContextEntry) => void
+  completeQuestSession: (result: string) => void
+
   // 内部辅助方法
   _addMessageToActiveConv: (msg: ChatMessage) => void
   _updateMessageInActiveConv: (msgId: string, updates: Partial<ChatMessage>) => void
@@ -297,6 +336,188 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
   // 聊天面板开关
   isChatOpen: false,
   setChatOpen: (open) => set({ isChatOpen: open }),
+
+  // ============================================
+  // 交互式 Quest 系统状态
+  // ============================================
+  activeQuestSession: null,
+  questSubagents: new Map(),
+
+  startQuestSession: (userGoal) => {
+    const sessionId = `quest-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+    const session: QuestSession = {
+      id: sessionId,
+      phase: 'exploring',
+      userGoal,
+      explorationResults: [],
+      proposedPlan: null,
+      accumulatedContext: [],
+      subagents: [],
+      createdAt: Date.now(),
+    }
+    set({ activeQuestSession: session, questSubagents: new Map() })
+    console.log('[Quest] Started session:', sessionId)
+  },
+
+  updateQuestPhase: (phase) => {
+    const session = get().activeQuestSession
+    if (!session) return
+    set({ activeQuestSession: { ...session, phase } })
+  },
+
+  setQuestProposedPlan: (plan) => {
+    const session = get().activeQuestSession
+    if (!session) return
+    set({ activeQuestSession: { ...session, proposedPlan: plan, phase: plan ? 'confirming' : session.phase } })
+  },
+
+  addExplorationResult: (result) => {
+    const session = get().activeQuestSession
+    if (!session) return
+    set({ activeQuestSession: { ...session, explorationResults: [...session.explorationResults, result] } })
+  },
+
+  spawnSubagent: (task) => {
+    const agentId = `subagent-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+    const subagent: Subagent = { id: agentId, type: task.type, task: task.task, status: 'pending', tools: task.tools, startedAt: Date.now() }
+    const newMap = new Map(get().questSubagents)
+    newMap.set(agentId, subagent)
+    const session = get().activeQuestSession
+    if (session) {
+      set({ questSubagents: newMap, activeQuestSession: { ...session, subagents: [...session.subagents, subagent] } })
+    } else {
+      set({ questSubagents: newMap })
+    }
+    return agentId
+  },
+
+  updateSubagent: (id, updates) => {
+    const newMap = new Map(get().questSubagents)
+    const existing = newMap.get(id)
+    if (!existing) return
+    const updated = { ...existing, ...updates }
+    newMap.set(id, updated)
+    const session = get().activeQuestSession
+    if (session) {
+      set({ questSubagents: newMap, activeQuestSession: { ...session, subagents: session.subagents.map(s => s.id === id ? updated : s) } })
+    } else {
+      set({ questSubagents: newMap })
+    }
+  },
+
+  collectSubagentResults: () => {
+    const session = get().activeQuestSession
+    if (!session) return []
+    const results: ExplorationResult[] = []
+    for (const agent of session.subagents) {
+      if (agent.status === 'completed' && agent.result) {
+        results.push({ source: 'codebase', query: agent.task, summary: agent.result.slice(0, 500), details: [], timestamp: agent.completedAt || Date.now() })
+      }
+    }
+    return results
+  },
+
+  confirmQuestPlan: () => {
+    const session = get().activeQuestSession
+    if (!session || !session.proposedPlan) return
+    set({ activeQuestSession: { ...session, phase: 'executing' } })
+  },
+
+  cancelQuestSession: () => {
+    set({ activeQuestSession: null, questSubagents: new Map() })
+  },
+
+  appendToQuestContext: (entry) => {
+    const session = get().activeQuestSession
+    if (!session) return
+    const newContext = [...session.accumulatedContext, entry].slice(-50)
+    set({ activeQuestSession: { ...session, accumulatedContext: newContext } })
+  },
+
+  completeQuestSession: (result) => {
+    const session = get().activeQuestSession
+    if (!session) return
+    set({ activeQuestSession: { ...session, phase: 'completed', finalResult: result, completedAt: Date.now() } })
+  },
+
+  // 从后端加载数据 (应用启动后调用)
+  // 合并三个数据源: 当前 store(初始化时从 localStorage 加载) + 后端 + localStorage
+  loadConversationsFromServer: async () => {
+    try {
+      // 1. 当前 store 数据 (初始化时已从 localStorage/旧格式迁移加载)
+      const storeConversations = get().conversations
+      const storeActiveId = get().activeConversationId
+      
+      // 2. 读取后端数据
+      const serverConversations = await localServerService.getData<Conversation[]>(DATA_KEYS.CONVERSATIONS)
+      const serverActiveId = await localServerService.getData<string>(DATA_KEYS.ACTIVE_CONVERSATION)
+      
+      // 3. 读取 localStorage 数据 (可能有其他 tab 写入的新数据)
+      const localConversations = loadConversationsFromLocalStorage()
+      const localActiveId = loadActiveConversationId()
+      
+      // 4. 合并三方数据 (以 updatedAt 最新者为准)
+      const mergedMap = new Map<string, Conversation>()
+      
+      // 先添加当前 store 数据 (包含从旧格式迁移的数据)
+      for (const [id, conv] of storeConversations) {
+        mergedMap.set(id, conv)
+      }
+      
+      // 再合并 localStorage 数据 (如果更新)
+      for (const [id, localConv] of localConversations) {
+        const existing = mergedMap.get(id)
+        if (!existing || localConv.updatedAt > existing.updatedAt) {
+          mergedMap.set(id, localConv)
+        }
+      }
+      
+      // 最后合并后端数据 (如果更新)
+      if (serverConversations && serverConversations.length > 0) {
+        for (const serverConv of serverConversations) {
+          const existing = mergedMap.get(serverConv.id)
+          if (!existing || serverConv.updatedAt >= existing.updatedAt) {
+            mergedMap.set(serverConv.id, serverConv)
+          }
+        }
+      }
+      
+      // 确定活跃会话 ID (优先: 后端 > localStorage > store > 第一个)
+      const activeId = serverActiveId || localActiveId || storeActiveId || 
+        (mergedMap.size > 0 ? [...mergedMap.keys()][0] : null)
+      
+      if (mergedMap.size > 0) {
+        set({ 
+          conversations: mergedMap, 
+          activeConversationId: activeId 
+        })
+        
+        // 5. 双写同步 (确保浏览器数据也推送到后端)
+        const mergedArray = [...mergedMap.values()]
+        localStorage.setItem(STORAGE_KEYS.CONVERSATIONS, JSON.stringify(mergedArray))
+        localServerService.setData(DATA_KEYS.CONVERSATIONS, mergedArray).catch(() => {})
+        
+        if (activeId) {
+          localStorage.setItem(STORAGE_KEYS.ACTIVE_CONVERSATION, activeId)
+          localServerService.setData(DATA_KEYS.ACTIVE_CONVERSATION, activeId).catch(() => {})
+        }
+        
+        console.log('[AI] Merged conversations from 3 sources:',
+          'store=' + storeConversations.size,
+          'localStorage=' + localConversations.size,
+          'server=' + (serverConversations?.length || 0),
+          '→ total=' + mergedMap.size)
+      }
+    } catch (error) {
+      console.warn('[AI] Failed to load from server, keeping current store data:', error)
+      // 失败时确保当前 store 数据推送到后端
+      const current = get().conversations
+      if (current.size > 0) {
+        const arr = [...current.values()]
+        localServerService.setData(DATA_KEYS.CONVERSATIONS, arr).catch(() => {})
+      }
+    }
+  },
 
   // ============================================
   // 会话管理 Actions

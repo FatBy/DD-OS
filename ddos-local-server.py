@@ -40,6 +40,7 @@ from pathlib import Path
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import unquote, urlparse, parse_qs
 from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor, Future
 
 # PyYAML (skill-executor/parser.py 已依赖)
 try:
@@ -492,6 +493,16 @@ class ToolRegistry:
                     'filePath': {'type': 'string', 'description': '文件路径（支持 .pdf .docx .pptx .png .jpg 等格式）', 'required': True},
                 },
             },
+            'generateSkill': {
+                'description': '动态生成 Python SKILL 并保存。当现有工具无法完成任务时，用此工具创建新能力',
+                'inputs': {
+                    'name': {'type': 'string', 'description': '技能名称 (kebab-case，如 ppt-maker)', 'required': True},
+                    'description': {'type': 'string', 'description': '技能功能描述', 'required': True},
+                    'pythonCode': {'type': 'string', 'description': 'Python 实现代码（必须包含 main() 函数）', 'required': True},
+                    'nexusId': {'type': 'string', 'description': '关联的 Nexus ID（可选，指定后保存到 Nexus 目录）', 'required': False},
+                    'triggers': {'type': 'array', 'description': '触发关键词列表（可选）', 'required': False},
+                },
+            },
         }
         tools = []
         for name in self.builtin_tools:
@@ -528,10 +539,248 @@ class ToolRegistry:
         return tools
 
 
+# ============================================
+# 🤖 子代理管理器 (Quest 模式支持)
+# ============================================
+
+class SubagentManager:
+    """
+    子代理管理器 - 支持并行探索任务
+    用于 Quest 模式的探索阶段，可同时运行多个轻量级代理
+    """
+    MAX_CONCURRENT = 5  # 最大并发数
+    AGENT_TIMEOUT = 30  # 单个代理超时(秒)
+    
+    def __init__(self, tool_registry: ToolRegistry):
+        self.registry = tool_registry
+        self.agents: dict[str, dict] = {}  # agent_id -> agent_info
+        self.executor = ThreadPoolExecutor(max_workers=self.MAX_CONCURRENT)
+        self.futures: dict[str, Future] = {}  # agent_id -> Future
+        self.lock = threading.Lock()
+    
+    def spawn(self, agent_type: str, task: str, tools: list[str], context: str = '') -> str:
+        """
+        启动一个子代理
+        
+        Args:
+            agent_type: 代理类型 ('explore', 'plan', 'execute')
+            task: 任务描述
+            tools: 可用工具列表
+            context: 上下文信息
+        
+        Returns:
+            agent_id: 代理 ID
+        """
+        agent_id = f"subagent-{int(time.time()*1000)}-{uuid.uuid4().hex[:6]}"
+        
+        agent_info = {
+            'id': agent_id,
+            'type': agent_type,
+            'task': task,
+            'tools': tools,
+            'context': context,
+            'status': 'pending',
+            'result': None,
+            'error': None,
+            'started_at': time.time(),
+            'completed_at': None,
+        }
+        
+        with self.lock:
+            # 检查并发限制
+            running_count = sum(1 for a in self.agents.values() if a['status'] == 'running')
+            if running_count >= self.MAX_CONCURRENT:
+                agent_info['status'] = 'queued'
+                agent_info['error'] = f'Queue full, max {self.MAX_CONCURRENT} concurrent agents'
+                self.agents[agent_id] = agent_info
+                return agent_id
+            
+            self.agents[agent_id] = agent_info
+        
+        # 异步执行
+        future = self.executor.submit(self._run_agent, agent_id, task, tools, context)
+        self.futures[agent_id] = future
+        
+        with self.lock:
+            self.agents[agent_id]['status'] = 'running'
+        
+        print(f"[SubagentManager] Spawned {agent_type} agent: {agent_id}")
+        return agent_id
+    
+    def _run_agent(self, agent_id: str, task: str, tools: list[str], context: str) -> str:
+        """
+        执行子代理任务 (简化版 - 单工具调用)
+        
+        对于探索阶段，每个子代理通常只需要调用一个工具
+        """
+        try:
+            result_parts = []
+            
+            # 根据任务类型选择工具
+            for tool_name in tools:
+                if not self.registry.is_registered(tool_name):
+                    continue
+                
+                # 构建工具参数
+                args = self._build_tool_args(tool_name, task, context)
+                
+                # 执行工具
+                tool_result = self._execute_tool(tool_name, args)
+                
+                if tool_result.get('status') == 'success':
+                    result_parts.append(f"[{tool_name}] {tool_result.get('result', '')[:1000]}")
+                else:
+                    result_parts.append(f"[{tool_name}] Error: {tool_result.get('result', 'Unknown error')[:200]}")
+            
+            final_result = '\n\n'.join(result_parts) if result_parts else 'No tools executed'
+            
+            with self.lock:
+                if agent_id in self.agents:
+                    self.agents[agent_id]['status'] = 'completed'
+                    self.agents[agent_id]['result'] = final_result
+                    self.agents[agent_id]['completed_at'] = time.time()
+            
+            return final_result
+            
+        except Exception as e:
+            error_msg = str(e)
+            with self.lock:
+                if agent_id in self.agents:
+                    self.agents[agent_id]['status'] = 'failed'
+                    self.agents[agent_id]['error'] = error_msg
+                    self.agents[agent_id]['completed_at'] = time.time()
+            return f"Error: {error_msg}"
+    
+    def _build_tool_args(self, tool_name: str, task: str, context: str) -> dict:
+        """根据工具类型构建参数"""
+        # MCP quest 工具的特殊处理
+        if tool_name == 'mcp__quest__search_codebase':
+            # 提取关键词
+            keywords = self._extract_keywords(task)
+            return {
+                'query': task,
+                'key_words': ','.join(keywords[:3]),
+                'explanation': f'Exploring: {task[:50]}'
+            }
+        elif tool_name == 'mcp__quest__search_symbol':
+            # 从任务中提取符号名
+            symbols = self._extract_symbols(task)
+            return {
+                'queries': [{'symbol': s, 'relation': 'all'} for s in symbols[:2]],
+                'explanation': f'Symbol search for: {task[:50]}'
+            }
+        elif tool_name == 'readFile':
+            # 从上下文中提取文件路径
+            paths = self._extract_file_paths(context)
+            return {'path': paths[0] if paths else ''}
+        elif tool_name == 'listDir':
+            return {'path': '.', 'recursive': False}
+        else:
+            return {'query': task}
+    
+    def _extract_keywords(self, text: str) -> list[str]:
+        """从文本中提取关键词"""
+        # 简单实现：提取英文单词和中文词组
+        words = re.findall(r'[a-zA-Z_][a-zA-Z0-9_]*|[\u4e00-\u9fff]+', text)
+        # 过滤常见词
+        stopwords = {'the', 'a', 'an', 'is', 'are', 'to', 'for', 'of', 'in', 'on', 'with', '的', '是', '在', '和', '了'}
+        return [w for w in words if w.lower() not in stopwords and len(w) > 1][:5]
+    
+    def _extract_symbols(self, text: str) -> list[str]:
+        """从文本中提取可能的符号名（函数名、类名等）"""
+        # 匹配驼峰命名和下划线命名
+        symbols = re.findall(r'\b([A-Z][a-zA-Z0-9]*|[a-z][a-zA-Z0-9]*(?:_[a-zA-Z0-9]+)+)\b', text)
+        return list(set(symbols))[:3]
+    
+    def _extract_file_paths(self, text: str) -> list[str]:
+        """从文本中提取文件路径"""
+        paths = re.findall(r'[a-zA-Z0-9_./\\-]+\.[a-zA-Z]+', text)
+        return paths[:3]
+    
+    def _execute_tool(self, tool_name: str, args: dict) -> dict:
+        """执行单个工具"""
+        # 检查 MCP 工具
+        if tool_name.startswith('mcp__') and self.registry.mcp_manager:
+            try:
+                result = self.registry.mcp_manager.call_tool(tool_name, args)
+                return {'status': 'success', 'result': str(result)[:2000]}
+            except Exception as e:
+                return {'status': 'error', 'result': str(e)}
+        
+        # 内置工具需要通过 handler 执行，这里返回占位
+        return {'status': 'error', 'result': f'Tool {tool_name} not directly executable in subagent'}
+    
+    def get_status(self, agent_id: str) -> dict | None:
+        """获取子代理状态"""
+        with self.lock:
+            return self.agents.get(agent_id)
+    
+    def get_all_status(self) -> list[dict]:
+        """获取所有子代理状态"""
+        with self.lock:
+            return list(self.agents.values())
+    
+    def collect_results(self, agent_ids: list[str], timeout: float = 60.0) -> list[dict]:
+        """
+        收集多个子代理的结果
+        
+        Args:
+            agent_ids: 要收集的代理 ID 列表
+            timeout: 等待超时时间(秒)
+        
+        Returns:
+            结果列表
+        """
+        results = []
+        deadline = time.time() + timeout
+        
+        for agent_id in agent_ids:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                break
+            
+            future = self.futures.get(agent_id)
+            if future:
+                try:
+                    future.result(timeout=remaining)
+                except Exception:
+                    pass
+            
+            with self.lock:
+                agent = self.agents.get(agent_id)
+                if agent:
+                    results.append({
+                        'id': agent_id,
+                        'type': agent['type'],
+                        'task': agent['task'],
+                        'status': agent['status'],
+                        'result': agent.get('result'),
+                        'error': agent.get('error'),
+                    })
+        
+        return results
+    
+    def cleanup_old_agents(self, max_age: float = 300.0):
+        """清理超过指定时间的旧代理记录"""
+        cutoff = time.time() - max_age
+        with self.lock:
+            to_remove = [
+                aid for aid, agent in self.agents.items()
+                if agent.get('completed_at', 0) < cutoff and agent['status'] in ('completed', 'failed')
+            ]
+            for aid in to_remove:
+                del self.agents[aid]
+                self.futures.pop(aid, None)
+        
+        if to_remove:
+            print(f"[SubagentManager] Cleaned up {len(to_remove)} old agents")
+
+
 class ClawdDataHandler(BaseHTTPRequestHandler):
     clawd_path = None
     project_path = None  # 项目目录，用于加载内置技能
     registry = None  # type: ToolRegistry
+    subagent_manager = None  # type: SubagentManager
     tasks = {}
     tasks_lock = threading.Lock()
     
@@ -621,6 +870,12 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
+        content_type = self.headers.get('Content-Type', '')
+        
+        # 文件上传：multipart/form-data 单独处理（避免大文件 JSON 编码 OOM）
+        if path == '/api/files/upload' and 'multipart/form-data' in content_type:
+            self.handle_file_upload_multipart()
+            return
         
         content_length = int(self.headers.get('Content-Length', 0))
         body = self.rfile.read(content_length).decode('utf-8') if content_length > 0 else '{}'
@@ -666,6 +921,14 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
             # 前端数据写入 API
             key = path[6:]  # strip '/data/'
             self.handle_data_set(key, data)
+        # 🤖 子代理 API (Quest 模式支持)
+        elif path == '/api/subagent/spawn':
+            self.handle_subagent_spawn(data)
+        elif path == '/api/subagent/collect':
+            self.handle_subagent_collect(data)
+        elif path.startswith('/api/subagent/') and path.endswith('/status'):
+            agent_id = path[14:-7]  # strip '/api/subagent/' and '/status'
+            self.handle_subagent_status(agent_id)
         else:
             self.send_error_json(f'Unknown endpoint: {path}', 404)
     
@@ -857,6 +1120,7 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
                     'nexusUnbindSkill': self._tool_nexus_unbind_skill,
                     'openInExplorer': self._tool_open_in_explorer,
                     'parseFile': self._tool_parse_file,
+                    'generateSkill': self._tool_generate_skill,
                 }
                 handler = builtin_handlers.get(tool_name)
                 if handler:
@@ -880,6 +1144,126 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
     # ============================================
 
     UPLOAD_ALLOWED_EXT = {'.pdf', '.docx', '.pptx', '.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.webp', '.txt', '.md', '.csv'}
+
+    def handle_file_upload_multipart(self):
+        """接收 FormData multipart 上传，保存并自动解析
+        
+        使用手动 multipart boundary 解析，不依赖已废弃的 cgi.FieldStorage
+        （cgi 在 Python 3.11+ deprecated，3.13 removed）
+        """
+        content_type = self.headers.get('Content-Type', '')
+        content_length = int(self.headers.get('Content-Length', 0))
+
+        if content_length > MAX_FILE_SIZE:
+            # 消耗请求体避免连接异常
+            remaining = content_length
+            while remaining > 0:
+                chunk = min(remaining, 65536)
+                self.rfile.read(chunk)
+                remaining -= chunk
+            self.send_error_json(f'文件过大 (>{MAX_FILE_SIZE // 1024 // 1024}MB)', 413)
+            return
+
+        # 从 Content-Type 提取 boundary
+        boundary = None
+        for part in content_type.split(';'):
+            part = part.strip()
+            if part.startswith('boundary='):
+                boundary = part[len('boundary='):].strip('"')
+        if not boundary:
+            self.send_error_json('无效的 multipart 请求：缺少 boundary', 400)
+            return
+
+        # 读取整个请求体（已验证 content_length <= 10MB，内存安全）
+        try:
+            raw_body = self.rfile.read(content_length)
+        except Exception as e:
+            print(f"[ERROR] 读取请求体失败: {e}", file=sys.stderr)
+            self.send_error_json('读取上传数据失败', 400)
+            return
+
+        # 按 boundary 分割，提取包含 filename 的 part
+        boundary_bytes = ('--' + boundary).encode()
+        parts = raw_body.split(boundary_bytes)
+
+        file_bytes = None
+        file_name = 'unknown'
+        for part_data in parts:
+            if b'filename=' not in part_data:
+                continue
+            # headers 和 body 以空行 (\r\n\r\n) 分隔
+            header_end = part_data.find(b'\r\n\r\n')
+            if header_end == -1:
+                continue
+            headers_raw_bytes = part_data[:header_end]
+            # 尝试 UTF-8（浏览器 FormData），回退到 GBK（Windows curl/工具）
+            try:
+                headers_raw = headers_raw_bytes.decode('utf-8')
+            except UnicodeDecodeError:
+                headers_raw = headers_raw_bytes.decode('gbk', errors='replace')
+            file_bytes = part_data[header_end + 4:]
+            # 去掉尾部的 \r\n（multipart 格式约定）
+            if file_bytes.endswith(b'\r\n'):
+                file_bytes = file_bytes[:-2]
+            # 从 Content-Disposition 提取 filename
+            for line in headers_raw.split('\r\n'):
+                if 'filename=' in line:
+                    # 支持: filename="中文.pptx" 和 filename=file.pdf
+                    match = re.search(r'filename="?([^";\r\n]+)"?', line)
+                    if match:
+                        file_name = match.group(1).strip()
+            break  # 只取第一个文件
+
+        if file_bytes is None:
+            self.send_error_json('未找到上传文件', 400)
+            return
+
+        # 清理文件名（保留中文、字母、数字、点、横线）
+        safe_name = re.sub(r'[^\w.\-\u4e00-\u9fff]', '_', file_name)
+        # 文件名长度限制（NTFS/ext4 最大 255 字符）
+        stem, ext = os.path.splitext(safe_name)
+        ext = ext.lower()
+        if len(safe_name) > 200:
+            safe_name = stem[:200 - len(ext)] + ext
+
+        if ext not in self.UPLOAD_ALLOWED_EXT:
+            self.send_error_json(f'不支持的文件类型: {ext}，支持: {", ".join(sorted(self.UPLOAD_ALLOWED_EXT))}', 400)
+            return
+
+        if len(file_bytes) > MAX_FILE_SIZE:
+            self.send_error_json(f'文件过大 (>{MAX_FILE_SIZE // 1024 // 1024}MB)', 413)
+            return
+
+        # 保存到临时目录
+        upload_dir = self.clawd_path / 'temp' / 'uploads'
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        unique_name = f"{uuid.uuid4().hex[:8]}_{safe_name}"
+        file_path = upload_dir / unique_name
+
+        try:
+            file_path.write_bytes(file_bytes)
+        except Exception as e:
+            print(f"[ERROR] 文件保存失败: {e}", file=sys.stderr)
+            self.send_error_json('文件保存失败', 500)
+            return
+
+        # 自动解析
+        parsed_text = ''
+        try:
+            parsed_text = self._tool_parse_file({'filePath': str(file_path)})
+        except Exception as e:
+            print(f"[ERROR] 文件解析失败: {e}", file=sys.stderr)
+            parsed_text = f'[解析失败: 请检查文件格式是否正确]'
+
+        file_size = len(file_bytes)
+        self.send_json({
+            'success': True,
+            'filePath': str(file_path),
+            'originalName': file_name,
+            'fileSize': file_size,
+            'parsedText': parsed_text,
+            'timestamp': datetime.now().isoformat()
+        })
 
     def handle_file_upload(self, data: dict):
         """接收前端上传的文件（Base64），保存到临时目录并自动解析"""
@@ -1080,7 +1464,13 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
         
         # 支持绝对路径（上传的临时文件）和相对路径
         if os.path.isabs(file_path_str):
-            file_path = Path(file_path_str)
+            file_path = Path(file_path_str).resolve()
+            # 安全检查：只允许访问 clawd 工作目录下的文件
+            allowed_root = self.clawd_path.resolve()
+            try:
+                file_path.relative_to(allowed_root)
+            except ValueError:
+                raise PermissionError(f"Access denied: path outside allowed directory")
         else:
             file_path = self._resolve_path(file_path_str, allow_outside=True)
         
@@ -1148,11 +1538,15 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
         if not text.strip():
             return f"[文件 {file_path.name} 无可提取的文本内容]"
         
-        # 截断到 MAX_OUTPUT_SIZE
+        # 截断到 MAX_OUTPUT_SIZE（安全 UTF-8 边界截断）
         encoded = text.encode('utf-8')
         if len(encoded) > MAX_OUTPUT_SIZE:
-            text = encoded[:MAX_OUTPUT_SIZE].decode('utf-8', errors='ignore')
-            text += f"\n\n[内容过长，已截断至 {MAX_OUTPUT_SIZE // 1024}KB]"
+            safe_idx = MAX_OUTPUT_SIZE
+            # 回退到 UTF-8 字符边界，避免截断多字节字符导致乱码
+            while safe_idx > 0 and (encoded[safe_idx] & 0xC0) == 0x80:
+                safe_idx -= 1
+            text = encoded[:safe_idx].decode('utf-8')
+            text += f"\n\n[内容过长，已截断至约 {MAX_OUTPUT_SIZE // 1024}KB]"
         
         return text
     
@@ -1173,6 +1567,40 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
                             f"检测到高度相似的 Nexus 节点已存在 (节点 ID: {duplicate_id})。\n"
                             f"为避免知识图谱碎片化，请不要创建新目录，请直接使用 'readFile' 和 'writeFile' "
                             f"读取并更新原有的 nexuses/{duplicate_id}/NEXUS.md，或者向其追加 experience。")
+        
+        # === Nexus 格式引导 ===
+        # 检测写入 nexuses/ 目录但不是 NEXUS.md 的情况，提供格式纠正提示
+        if 'nexuses/' in path and not path.endswith('NEXUS.md'):
+            # 提取可能的 nexus id
+            import re
+            nexus_match = re.search(r'nexuses/([^/]+)', path)
+            nexus_id = nexus_match.group(1) if nexus_match else 'your-nexus-id'
+            
+            # 如果是写入 .json 或其他配置文件，返回警告并引导正确格式
+            if path.endswith('.json') or (path.endswith('.md') and 'NEXUS.md' not in path):
+                return (f"【格式提示】检测到你正在向 nexuses/ 目录写入非标准文件。\n\n"
+                        f"⚠️ Nexus 只能通过 NEXUS.md 文件定义，系统不会识别 .json 或其他 .md 文件！\n\n"
+                        f"📝 正确做法：请创建 nexuses/{nexus_id}/NEXUS.md 文件，格式如下：\n"
+                        f"```markdown\n"
+                        f"---\n"
+                        f"name: Nexus名称\n"
+                        f"description: 功能描述\n"
+                        f"version: 1.0.0\n"
+                        f"skill_dependencies:\n"
+                        f"  - 技能ID\n"
+                        f"tags:\n"
+                        f"  - 标签\n"
+                        f"triggers:\n"
+                        f"  - 触发词\n"
+                        f"objective: 核心目标\n"
+                        f"metrics:\n"
+                        f"  - 质量指标\n"
+                        f"strategy: 执行策略\n"
+                        f"---\n\n"
+                        f"# Nexus名称 SOP\n\n"
+                        f"（详细的标准作业程序）\n"
+                        f"```\n\n"
+                        f"请使用正确格式重新创建 nexuses/{nexus_id}/NEXUS.md")
         
         # 确保父目录存在
         file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1634,6 +2062,106 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
         deps.remove(skill_id)
         update_nexus_frontmatter(nexus_md, {'skill_dependencies': deps})
         return f"Skill '{skill_id}' unbound from Nexus '{nexus_id}'. Remaining: {deps}"
+
+    def _tool_generate_skill(self, args: dict) -> str:
+        """动态生成 Python SKILL 并保存
+        
+        当遇到无法完成的任务时，Agent 可以调用此工具生成新的 Python 技能来解决问题。
+        生成的技能会保存到 skills/ 目录（或 nexuses/{nexusId}/ 目录）并自动热加载。
+        
+        参数:
+        - name: 技能名称 (kebab-case, 如 "pdf-merger")
+        - description: 技能描述
+        - pythonCode: Python 实现代码 (必须包含 main() 函数)
+        - nexusId: 可选，如果指定则保存到对应 Nexus 目录
+        - triggers: 可选，触发关键词列表
+        """
+        name = args.get('name', '')
+        description = args.get('description', '')
+        python_code = args.get('pythonCode', '')
+        nexus_id = args.get('nexusId', '')
+        triggers = args.get('triggers', [])
+        
+        if not name or not description or not python_code:
+            raise ValueError("Missing required parameters: name, description, pythonCode")
+        
+        # 规范化技能名称 (kebab-case)
+        safe_name = re.sub(r'[^\w-]', '-', name.lower()).strip('-')
+        safe_name = re.sub(r'-+', '-', safe_name)
+        
+        if not safe_name:
+            raise ValueError("Invalid skill name")
+        
+        # 验证 Python 代码包含 main() 函数
+        if 'def main(' not in python_code and 'async def main(' not in python_code:
+            raise ValueError("Python code must contain a main() function")
+        
+        # 确定保存路径
+        if nexus_id:
+            # 保存到 Nexus 专属目录
+            skill_dir = self.clawd_path / 'nexuses' / nexus_id / 'skills' / safe_name
+        else:
+            # 保存到全局 skills 目录
+            skill_dir = self.clawd_path / 'skills' / safe_name
+        
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 生成 SKILL.md
+        trigger_list = '\n'.join(f'- {t}' for t in triggers) if triggers else f'- {safe_name}'
+        skill_md_content = f'''---
+name: {safe_name}
+description: {description}
+version: "1.0.0"
+author: auto-generated
+triggers:
+{trigger_list}
+---
+
+# {name}
+
+{description}
+
+## 使用方法
+
+此技能由 DD-OS Agent 自动生成，用于解决特定任务。
+
+### 执行
+
+```bash
+python {safe_name}.py
+```
+
+### 参数
+
+请参考 Python 代码中的 `main()` 函数签名。
+
+## 实现
+
+参见 `{safe_name}.py`
+'''
+        
+        # 写入文件
+        skill_md_path = skill_dir / 'SKILL.md'
+        skill_md_path.write_text(skill_md_content, encoding='utf-8')
+        
+        python_file_path = skill_dir / f'{safe_name}.py'
+        python_file_path.write_text(python_code, encoding='utf-8')
+        
+        # 热加载: 重新注册工具
+        try:
+            tool_registry.refresh_skills()
+            loaded_msg = "并已热加载到工具列表"
+        except Exception as e:
+            loaded_msg = f"但热加载失败: {e}"
+        
+        return json.dumps({
+            'action': 'skill_created',
+            'message': f'技能 "{safe_name}" 已成功创建{loaded_msg}',
+            'skillName': safe_name,
+            'skillDir': str(skill_dir),
+            'files': [str(skill_md_path), str(python_file_path)],
+            'nexusId': nexus_id or None,
+        }, ensure_ascii=False)
 
     # ============================================
     # 原有处理器 (保持兼容)
@@ -2830,6 +3358,68 @@ curl -X POST http://localhost:3001/api/tools/execute \\
             'status': 'running',
         })
     
+    # ============================================
+    # 🤖 子代理 API 处理器 (Quest 模式支持)
+    # ============================================
+    
+    def handle_subagent_spawn(self, data):
+        """启动子代理"""
+        if not self.subagent_manager:
+            self.send_error_json('SubagentManager not initialized', 500)
+            return
+        
+        agent_type = data.get('type', 'explore')
+        task = data.get('task', '')
+        tools = data.get('tools', [])
+        context = data.get('context', '')
+        
+        if not task:
+            self.send_error_json('Missing task', 400)
+            return
+        
+        try:
+            agent_id = self.subagent_manager.spawn(agent_type, task, tools, context)
+            self.send_json({
+                'status': 'success',
+                'agentId': agent_id,
+                'message': f'Spawned {agent_type} agent'
+            })
+        except Exception as e:
+            self.send_error_json(f'Failed to spawn agent: {e}', 500)
+    
+    def handle_subagent_status(self, agent_id):
+        """获取子代理状态"""
+        if not self.subagent_manager:
+            self.send_error_json('SubagentManager not initialized', 500)
+            return
+        
+        status = self.subagent_manager.get_status(agent_id)
+        if status:
+            self.send_json({'status': 'success', 'agent': status})
+        else:
+            self.send_error_json(f'Agent not found: {agent_id}', 404)
+    
+    def handle_subagent_collect(self, data):
+        """收集多个子代理的结果"""
+        if not self.subagent_manager:
+            self.send_error_json('SubagentManager not initialized', 500)
+            return
+        
+        agent_ids = data.get('agentIds', [])
+        timeout = data.get('timeout', 60.0)
+        
+        if not agent_ids:
+            # 返回所有代理状态
+            all_status = self.subagent_manager.get_all_status()
+            self.send_json({'status': 'success', 'agents': all_status})
+            return
+        
+        try:
+            results = self.subagent_manager.collect_results(agent_ids, timeout)
+            self.send_json({'status': 'success', 'results': results})
+        except Exception as e:
+            self.send_error_json(f'Failed to collect results: {e}', 500)
+    
     def handle_task_status(self, task_id, offset=0):
         with self.tasks_lock:
             task = self.tasks.get(task_id)
@@ -3119,6 +3709,7 @@ You are DD-OS, a local AI operating system running directly on the user's comput
         'readFile', 'writeFile', 'appendFile', 'listDir', 'runCmd',
         'weather', 'webSearch', 'webFetch', 'saveMemory', 'searchMemory',
         'nexusBindSkill', 'nexusUnbindSkill', 'openInExplorer', 'parseFile',
+        'generateSkill',
     ]
     for name in builtin_names:
         registry.register_builtin(name, name)  # handler resolved at dispatch time
@@ -3137,6 +3728,7 @@ You are DD-OS, a local AI operating system running directly on the user's comput
     ClawdDataHandler.clawd_path = clawd_path
     ClawdDataHandler.project_path = project_path
     ClawdDataHandler.registry = registry
+    ClawdDataHandler.subagent_manager = SubagentManager(registry)
     
     server = ThreadingHTTPServer((args.host, args.port), ClawdDataHandler)
     

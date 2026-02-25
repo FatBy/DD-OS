@@ -400,3 +400,139 @@ export function parseJournalResult(response: string): {
     keyFacts: Array.isArray(parsed.keyFacts) ? parsed.keyFacts.slice(0, 5) : [],
   }
 }
+
+// ============================================
+// Quest 上下文构建 (交互式规划支持)
+// ============================================
+
+import type { QuestSession, ExplorationResult, ContextEntry } from '@/types'
+
+/**
+ * 构建 Quest 会话的上下文字符串
+ * 用于传递给 LLM 进行规划和执行
+ */
+export function buildQuestContext(session: QuestSession): string {
+  const parts: string[] = []
+  
+  // 用户目标
+  parts.push(`## 任务目标\n${session.userGoal}`)
+  
+  // 探索结果摘要
+  if (session.explorationResults.length > 0) {
+    parts.push(`\n## 探索发现 (${session.explorationResults.length} 项)`)
+    session.explorationResults.forEach((r, i) => {
+      parts.push(`${i + 1}. [${r.source}] ${r.query}`)
+      parts.push(`   ${r.summary.slice(0, 200)}`)
+    })
+  }
+  
+  // 累积上下文（最近 15 条）
+  const recentContext = session.accumulatedContext.slice(-15)
+  if (recentContext.length > 0) {
+    parts.push(`\n## 执行历史 (${recentContext.length} 条)`)
+    recentContext.forEach(c => {
+      const prefix = c.type === 'exploration' ? '🔍' : c.type === 'execution' ? '⚡' : '💬'
+      parts.push(`${prefix} ${c.content.slice(0, 150)}`)
+    })
+  }
+  
+  // 当前计划状态
+  if (session.proposedPlan) {
+    const plan = session.proposedPlan
+    const completed = plan.subTasks.filter(t => t.status === 'done').length
+    const total = plan.subTasks.length
+    parts.push(`\n## 计划进度: ${completed}/${total}`)
+    
+    // 显示当前执行的任务
+    const executing = plan.subTasks.find(t => t.status === 'executing')
+    if (executing) {
+      parts.push(`当前: ${executing.description}`)
+    }
+  }
+  
+  return parts.join('\n')
+}
+
+/**
+ * 估算文本的 token 数量（简单实现）
+ */
+export function estimateTokens(text: string): number {
+  // 粗略估算：中文约 1.5 token/字，英文约 0.25 token/word
+  const chineseChars = (text.match(/[\u4e00-\u9fff]/g) || []).length
+  const englishWords = (text.match(/[a-zA-Z]+/g) || []).length
+  const others = text.length - chineseChars - englishWords
+  
+  return Math.ceil(chineseChars * 1.5 + englishWords * 0.25 + others * 0.5)
+}
+
+/**
+ * 压缩 Quest 上下文（超过阈值时调用 LLM 摘要）
+ * 返回压缩后的上下文条目数组
+ */
+export async function compressQuestContext(
+  context: ContextEntry[],
+  maxTokens: number = 3000,
+  summarizer?: (text: string) => Promise<string>
+): Promise<ContextEntry[]> {
+  const fullText = context.map(c => c.content).join('\n')
+  const currentTokens = estimateTokens(fullText)
+  
+  if (currentTokens <= maxTokens) {
+    return context
+  }
+  
+  // 如果没有摘要函数，简单截断
+  if (!summarizer) {
+    // 保留最近的条目，直到 token 数量低于阈值
+    const result: ContextEntry[] = []
+    let totalTokens = 0
+    
+    for (let i = context.length - 1; i >= 0 && totalTokens < maxTokens; i--) {
+      const entry = context[i]
+      const entryTokens = estimateTokens(entry.content)
+      if (totalTokens + entryTokens <= maxTokens) {
+        result.unshift(entry)
+        totalTokens += entryTokens
+      }
+    }
+    
+    return result
+  }
+  
+  // 使用 LLM 摘要压缩
+  try {
+    const summary = await summarizer(fullText)
+    return [{
+      type: 'execution',
+      content: `[历史摘要] ${summary}`,
+      timestamp: Date.now(),
+    }]
+  } catch (error) {
+    console.warn('[contextBuilder] Failed to summarize context:', error)
+    // 降级：简单截断
+    return context.slice(-5)
+  }
+}
+
+/**
+ * 合并探索结果为简洁摘要
+ */
+export function summarizeExplorationResults(results: ExplorationResult[]): string {
+  if (results.length === 0) return '无探索结果'
+  
+  const bySource: Record<string, string[]> = {}
+  
+  for (const r of results) {
+    if (!bySource[r.source]) {
+      bySource[r.source] = []
+    }
+    bySource[r.source].push(r.summary.slice(0, 100))
+  }
+  
+  const parts: string[] = []
+  for (const [source, summaries] of Object.entries(bySource)) {
+    parts.push(`[${source}] ${summaries.join('; ')}`)
+  }
+  
+  return parts.join('\n')
+}

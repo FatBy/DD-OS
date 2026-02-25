@@ -2,11 +2,15 @@ import type { StateCreator } from 'zustand'
 import type { NexusEntity, CameraState, GridPosition, RenderSettings, VisualDNA, BuildingConfig } from '@/types'
 import type { WorldTheme } from '@/rendering/types'
 import { getCityBlockSystem } from '@/rendering/isometric/CityBlockSystem'
+import { localServerService } from '@/services/localServerService'
 
 // XP 等级阈值
 const XP_THRESHOLDS = [0, 20, 100, 500] as const
 
-// localStorage key for Nexus persistence
+// 后端数据键名
+const DATA_KEY_NEXUSES = 'nexuses_state'
+
+// localStorage key for Nexus persistence (备份/缓存)
 const NEXUS_STORAGE_KEY = 'ddos_nexuses'
 
 export function xpToLevel(xp: number): number {
@@ -16,12 +20,17 @@ export function xpToLevel(xp: number): number {
   return 1
 }
 
-// ---- localStorage 持久化 ----
+// ---- 持久化函数 (后端 + localStorage 双写) ----
 
 function saveNexusesToStorage(nexuses: Map<string, NexusEntity>): void {
   try {
     const arr = Array.from(nexuses.values())
+    // 同步写入 localStorage (快速缓存)
     localStorage.setItem(NEXUS_STORAGE_KEY, JSON.stringify(arr))
+    // 异步写入后端 (持久化)
+    localServerService.setData(DATA_KEY_NEXUSES, arr).catch(() => {
+      console.warn('[WorldSlice] Failed to save nexuses to server')
+    })
   } catch (e) {
     console.warn('[WorldSlice] Failed to save nexuses to localStorage:', e)
   }
@@ -139,6 +148,9 @@ export interface WorldSlice {
   // Execution Actions
   startNexusExecution: (nexusId: string) => void
   completeNexusExecution: (nexusId: string, result: Omit<NexusExecutionResult, 'nexusId' | 'nexusName' | 'timestamp'>) => void
+
+  // 从后端加载数据 (应用启动后调用)
+  loadNexusesFromServer: () => Promise<void>
 }
 
 export const createWorldSlice: StateCreator<WorldSlice> = (set, get) => ({
@@ -255,8 +267,8 @@ export const createWorldSlice: StateCreator<WorldSlice> = (set, get) => ({
         label: serverNexus.label || serverNexus.name || serverNexus.id,
         constructionProgress: existing?.constructionProgress ?? 1,
         createdAt: existing?.createdAt || Date.now(),
-        // 统一使用 boundSkillIds
-        boundSkillIds: serverNexus.boundSkillIds || [],
+        // 统一使用 boundSkillIds (后端字段名为 skillDependencies)
+        boundSkillIds: serverNexus.skillDependencies || serverNexus.boundSkillIds || [],
         flavorText: serverNexus.flavorText || serverNexus.description || '',
         // Phase 4: File-based Nexus fields
         sopContent: serverNexus.sopContent,
@@ -357,4 +369,72 @@ export const createWorldSlice: StateCreator<WorldSlice> = (set, get) => ({
       },
     }
   }),
+
+  // 从后端加载数据 (应用启动后调用)
+  // 合并三个数据源: 当前 store(初始化时从 localStorage 加载) + 后端 + localStorage
+  loadNexusesFromServer: async () => {
+    try {
+      // 1. 当前 store 数据 (初始化时已从 localStorage 加载)
+      const storeNexuses = get().nexuses
+      
+      // 2. 读取后端数据
+      const serverNexuses = await localServerService.getData<NexusEntity[]>(DATA_KEY_NEXUSES)
+      
+      // 3. 读取 localStorage 数据 (可能有其他 tab 写入的新数据)
+      const localNexuses = loadNexusesFromStorage()
+      
+      // 4. 合并三方数据 (以 updatedAt/createdAt 最新者为准)
+      const mergedMap = new Map<string, NexusEntity>()
+      
+      // 先添加当前 store 数据
+      for (const [id, nexus] of storeNexuses) {
+        mergedMap.set(id, nexus)
+      }
+      
+      // 再合并 localStorage 数据 (如果更新)
+      for (const [id, localNexus] of localNexuses) {
+        const existing = mergedMap.get(id)
+        const localTime = localNexus.updatedAt || localNexus.createdAt || 0
+        const existingTime = existing?.updatedAt || existing?.createdAt || 0
+        if (!existing || localTime > existingTime) {
+          mergedMap.set(id, localNexus)
+        }
+      }
+      
+      // 最后合并后端数据 (如果更新)
+      if (serverNexuses && serverNexuses.length > 0) {
+        for (const serverNexus of serverNexuses) {
+          const existing = mergedMap.get(serverNexus.id)
+          const serverTime = serverNexus.updatedAt || serverNexus.createdAt || 0
+          const existingTime = existing?.updatedAt || existing?.createdAt || 0
+          if (!existing || serverTime >= existingTime) {
+            mergedMap.set(serverNexus.id, serverNexus)
+          }
+        }
+      }
+      
+      if (mergedMap.size > 0) {
+        set({ nexuses: mergedMap })
+        
+        // 5. 双写同步 (确保浏览器数据也推送到后端)
+        const mergedArray = [...mergedMap.values()]
+        localStorage.setItem(NEXUS_STORAGE_KEY, JSON.stringify(mergedArray))
+        localServerService.setData(DATA_KEY_NEXUSES, mergedArray).catch(() => {})
+        
+        console.log('[World] Merged nexuses from 3 sources:',
+          'store=' + storeNexuses.size,
+          'localStorage=' + localNexuses.size,
+          'server=' + (serverNexuses?.length || 0),
+          '→ total=' + mergedMap.size)
+      }
+    } catch (error) {
+      console.warn('[World] Failed to load from server, keeping current store data:', error)
+      // 失败时确保当前 store 数据推送到后端
+      const current = get().nexuses
+      if (current.size > 0) {
+        const arr = [...current.values()]
+        localServerService.setData(DATA_KEY_NEXUSES, arr).catch(() => {})
+      }
+    }
+  },
 })

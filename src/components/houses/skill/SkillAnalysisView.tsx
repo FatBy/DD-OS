@@ -15,6 +15,7 @@ export function SkillAnalysisView({ onShowDetail }: SkillAnalysisViewProps) {
   const openClawSkills = useStore((s) => s.openClawSkills)
   const nexuses = useStore((s) => s.nexuses)
   const setActiveNexus = useStore((s) => s.setActiveNexus)
+  const setChatOpen = useStore((s) => s.setChatOpen)
 
   const configured = isLLMConfigured()
   const skillCount = openClawSkills.length
@@ -44,6 +45,10 @@ export function SkillAnalysisView({ onShowDetail }: SkillAnalysisViewProps) {
     const nexus = nexuses.get('skill-scout')
     if (nexus) {
       setActiveNexus('skill-scout')
+      // 打开聊天面板并切换到 skill-scout 的 Nexus 会话
+      const getOrCreate = useStore.getState().getOrCreateNexusConversation
+      getOrCreate('skill-scout')
+      setChatOpen(true)
     }
     setWeaknessHighlighted(false)
   }

@@ -10,7 +10,7 @@
 
 import { chat, streamChat, isLLMConfigured, embed, cosineSimilarity, convertToolInfoToFunctions } from './llmService'
 import type { SimpleChatMessage, LLMStreamResult } from './llmService'
-import type { ExecutionStatus, OpenClawSkill, MemoryEntry, ToolInfo, ExecTrace, ExecTraceToolCall, ApprovalRequest, ExecutionStep, NexusEntity, SubTask, TaskPlan, SubTaskStatus, TaskItem } from '@/types'
+import type { ExecutionStatus, OpenClawSkill, MemoryEntry, ToolInfo, ExecTrace, ExecTraceToolCall, ApprovalRequest, ExecutionStep, NexusEntity, SubTask, TaskPlan, SubTaskStatus, TaskItem, QuestSession, QuestPhase, ExplorationResult, SymbolResult, ContextEntry } from '@/types'
 import { parseSoulMd, type ParsedSoul } from '@/utils/soulParser'
 import { skillStatsService } from './skillStatsService'
 import { immuneService } from './capsuleService'
@@ -112,10 +112,10 @@ const isTauriMode = typeof window !== 'undefined' && '__TAURI__' in window
 const CONFIG = {
   // 开发模式使用 localhost:3001，生产模式使用相对路径（Python 托管）
   LOCAL_SERVER_URL: isDevMode ? 'http://localhost:3001' : (isTauriMode ? 'http://127.0.0.1:3001' : ''),
-  MAX_REACT_TURNS: 100,    // 重型任务：实际上不限制
-  DEFAULT_TURNS: 30,       // 普通任务：30轮
-  SIMPLE_TURNS: 5,         // 简单任务：5轮
-  MAX_PLAN_STEPS: 12,
+  MAX_REACT_TURNS: 999,    // 无限制：让任务持续执行直到完成
+  DEFAULT_TURNS: 999,      // 无限制
+  SIMPLE_TURNS: 10,        // 简单任务仍有轻微限制避免死循环
+  MAX_PLAN_STEPS: 20,      // 计划步骤增加到 20
   TOOL_TIMEOUT: 60000,
   // 任务升级机制配置
   ESCALATION: {
@@ -309,9 +309,104 @@ const SYSTEM_PROMPT_FC = `你是 DD-OS，运行在用户本地电脑上的 AI �
 4. 遇到问题及时告知，不要卡住
 
 # 能力边界自检
-- 此任务是否需要你没有的工具？→ 明确告知用户缺少该能力，建议安装技能
+- 此任务是否需要你没有的工具？→ 优先使用 generateSkill 创建新能力
 - 你是在"描述步骤"还是"实际执行"？→ 区分清楚，不要假装已执行
 - 没有对应工具时，禁止用纯文本模拟工具执行结果
+
+# 动态能力扩展（重要！）
+
+当遇到以下情况时，**主动使用 generateSkill 工具**创建新的 Python 技能：
+
+## 触发条件
+1. **工具缺失**: 当前工具无法完成用户任务（如：制作PPT、生成PDF、处理特定文件格式）
+2. **重复任务**: 同类任务反复出现，值得抽象为可复用技能
+3. **执行失败**: 使用现有工具多次失败，需要自定义解决方案
+4. **复杂流程**: 任务涉及多步骤串联，适合封装为独立技能
+
+## generateSkill 参数
+- name: 技能名称 (kebab-case，如 "ppt-maker")
+- description: 技能功能描述
+- pythonCode: Python 代码（必须包含 main() 函数）
+- nexusId: 可选，关联到特定 Nexus
+- triggers: 可选，触发关键词列表
+
+## 示例场景
+- 用户要求"制作PPT" → 生成 ppt-maker 技能，使用 python-pptx 库
+- 用户要求"合并PDF" → 生成 pdf-merger 技能，使用 PyPDF2 库
+- 用户要求"批量重命名文件" → 生成 batch-renamer 技能
+
+## 生成原则
+1. Python 代码必须包含 main() 函数作为入口
+2. 使用标准库或常见第三方库（pip 可安装）
+3. 生成后技能会自动热加载，立即可用
+4. 如果是 Nexus 相关任务，指定 nexusId 保存到对应目录
+
+# Nexus 创建规范（重要！）
+
+当需要创建新的 Nexus（执行节点/专家角色）时，**必须遵循以下规范**：
+
+## 核心规则
+- Nexus 通过 \`nexuses/{nexus-id}/NEXUS.md\` 文件定义
+- **必须创建 NEXUS.md 文件**，否则系统无法识别！
+- 不要创建 .json 文件，那不是有效的 Nexus 格式
+
+## NEXUS.md 文件格式
+\`\`\`markdown
+---
+name: Nexus 名称（2-6个中文字）
+description: 一句话描述功能和适用场景
+version: 1.0.0
+skill_dependencies:
+  - 绑定的技能ID列表
+tags:
+  - 分类标签
+triggers:
+  - 触发词1
+  - 触发词2
+visual_dna:
+  primaryHue: 0-360（色相，如 210 为蓝色）
+  primarySaturation: 60-80
+  primaryLightness: 40-50
+  glowIntensity: 0.5-0.8
+objective: 核心目标（一句话）
+metrics:
+  - 质量指标1
+  - 质量指标2
+strategy: 执行策略概述
+---
+
+# Nexus 名称 SOP
+
+## 一、流程概览
+（详细的标准作业程序）
+
+## 二、执行步骤
+1. 步骤一...
+2. 步骤二...
+
+## 三、质量检查
+- [ ] 检查项...
+
+## 四、执行指令
+当用户请求相关任务时，应该如何响应...
+\`\`\`
+
+## 创建步骤
+1. 使用 writeFile 创建 \`nexuses/{nexus-id}/NEXUS.md\`
+2. 文件必须包含 YAML frontmatter（用 --- 包围）
+3. Markdown 正文是详细的 SOP
+
+## 示例
+创建一个 PPT 优化 Nexus:
+\`\`\`json
+{
+  "tool": "writeFile",
+  "args": {
+    "path": "nexuses/ppt-optimizer/NEXUS.md",
+    "content": "---\\nname: PPT智能优化\\ndescription: ...\\n---\\n\\n# PPT智能优化 SOP\\n..."
+  }
+}
+\`\`\`
 
 # 当前上下文
 {context}
@@ -1809,6 +1904,397 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
       this.storeActions?.setAgentStatus('idle')
       this.storeActions?.setCurrentTask(null, null)
     }
+  }
+
+  // ============================================
+  // 🔍 符号关系查询 (MCP quest 集成)
+  // ============================================
+
+  /**
+   * 查询符号关系（调用 MCP quest 的 search_symbol）
+   * @param symbol 符号名称（函数名、类名等）
+   * @param relation 关系类型
+   */
+  async searchSymbolRelations(
+    symbol: string,
+    relation: 'calls' | 'called_by' | 'references' | 'referenced_by' | 'extends' | 'implements' | 'all' = 'all'
+  ): Promise<SymbolResult[]> {
+    try {
+      const result = await this.executeTool({
+        name: 'mcp__quest__search_symbol',
+        args: {
+          queries: [{ symbol, relation }],
+          explanation: `Querying ${relation} relations for symbol: ${symbol}`
+        }
+      })
+      
+      if (result.status !== 'success') {
+        console.warn('[LocalClaw] Symbol search failed:', result.result)
+        return []
+      }
+      
+      return this.parseSymbolResults(result.result)
+    } catch (error) {
+      console.error('[LocalClaw] Symbol search error:', error)
+      return []
+    }
+  }
+
+  /**
+   * 解析符号查询结果
+   */
+  private parseSymbolResults(rawResult: string): SymbolResult[] {
+    const results: SymbolResult[] = []
+    
+    try {
+      // 尝试从结果中提取文件路径和行号
+      const pathMatches = rawResult.matchAll(/path="([^"]+)".*?startLine="(\d+)"/g)
+      for (const match of pathMatches) {
+        results.push({
+          symbol: '',
+          relation: 'references',
+          filePath: match[1],
+          lineNumber: parseInt(match[2]),
+          codeSnippet: '',
+          symbolType: 'unknown'
+        })
+      }
+    } catch {
+      // 解析失败时返回空数组
+    }
+    
+    return results
+  }
+
+  /**
+   * 搜索代码库（调用 MCP quest 的 search_codebase）
+   */
+  async searchCodebase(query: string, keywords?: string[]): Promise<ExplorationResult> {
+    try {
+      const result = await this.executeTool({
+        name: 'mcp__quest__search_codebase',
+        args: {
+          query,
+          key_words: keywords?.join(',') || query.split(/\s+/).slice(0, 3).join(','),
+          explanation: `Searching codebase for: ${query.slice(0, 50)}`
+        }
+      })
+      
+      return {
+        source: 'codebase',
+        query,
+        summary: result.status === 'success' ? result.result.slice(0, 500) : `Search failed: ${result.result}`,
+        details: [],
+        timestamp: Date.now()
+      }
+    } catch (error: any) {
+      return {
+        source: 'codebase',
+        query,
+        summary: `Error: ${error.message}`,
+        details: [],
+        timestamp: Date.now()
+      }
+    }
+  }
+
+  // ============================================
+  // 🤖 子代理管理 API
+  // ============================================
+
+  /**
+   * 启动子代理
+   */
+  async spawnSubagent(type: 'explore' | 'plan' | 'execute', task: string, tools: string[], context?: string): Promise<string> {
+    try {
+      const response = await fetch(`${this.serverUrl}/api/subagent/spawn`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type, task, tools, context }),
+      })
+      
+      if (!response.ok) {
+        throw new Error(`Server returned ${response.status}`)
+      }
+      
+      const result = await response.json()
+      return result.agentId
+    } catch (error: any) {
+      console.error('[LocalClaw] Failed to spawn subagent:', error)
+      throw error
+    }
+  }
+
+  /**
+   * 收集子代理结果
+   */
+  async collectSubagentResults(agentIds: string[], timeout = 60): Promise<ExplorationResult[]> {
+    try {
+      const response = await fetch(`${this.serverUrl}/api/subagent/collect`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agentIds, timeout }),
+      })
+      
+      if (!response.ok) {
+        throw new Error(`Server returned ${response.status}`)
+      }
+      
+      const data = await response.json()
+      
+      // 转换为 ExplorationResult 格式
+      return (data.results || []).map((r: any) => ({
+        source: r.type === 'explore' ? 'codebase' : 'file',
+        query: r.task,
+        summary: r.result?.slice(0, 500) || r.error || 'No result',
+        details: [],
+        timestamp: Date.now()
+      }))
+    } catch (error: any) {
+      console.error('[LocalClaw] Failed to collect subagent results:', error)
+      return []
+    }
+  }
+
+  // ============================================
+  // 🌟 交互式 Quest 流程 (Qoder 风格)
+  // ============================================
+
+  /**
+   * 启动交互式 Quest 会话
+   * 包含探索 → 规划 → 确认 → 执行四个阶段
+   */
+  async startInteractiveQuest(
+    userGoal: string,
+    nexusId?: string,
+    onPhaseChange?: (phase: QuestPhase) => void,
+    onExplorationResult?: (result: ExplorationResult) => void
+  ): Promise<QuestSession> {
+    const sessionId = `quest-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+    
+    const session: QuestSession = {
+      id: sessionId,
+      phase: 'exploring',
+      userGoal,
+      explorationResults: [],
+      proposedPlan: null,
+      accumulatedContext: [],
+      subagents: [],
+      createdAt: Date.now(),
+    }
+    
+    // 通知前端 Quest 会话开始
+    this.storeActions?.startQuestSession?.(userGoal)
+    onPhaseChange?.('exploring')
+    
+    try {
+      // Phase 1: 探索阶段
+      console.log('[LocalClaw/Quest] Starting exploration phase...')
+      const explorationResults = await this.runExplorationPhase(userGoal, nexusId, onExplorationResult)
+      session.explorationResults = explorationResults
+      
+      // 累积探索结果到上下文
+      for (const result of explorationResults) {
+        session.accumulatedContext.push({
+          type: 'exploration',
+          content: `[${result.source}] ${result.summary}`,
+          timestamp: result.timestamp,
+          source: result.query
+        })
+      }
+      
+      // Phase 2: 规划阶段
+      session.phase = 'planning'
+      onPhaseChange?.('planning')
+      this.storeActions?.updateQuestPhase?.('planning')
+      
+      console.log('[LocalClaw/Quest] Generating plan from exploration results...')
+      const plan = await this.generatePlanFromExploration(userGoal, explorationResults, nexusId)
+      session.proposedPlan = plan
+      
+      // Phase 3: 等待确认
+      session.phase = 'confirming'
+      onPhaseChange?.('confirming')
+      this.storeActions?.setQuestProposedPlan?.(plan)
+      
+      return session
+      
+    } catch (error: any) {
+      console.error('[LocalClaw/Quest] Interactive quest failed:', error)
+      session.phase = 'completed'
+      throw error
+    }
+  }
+
+  /**
+   * 探索阶段：并行启动多个子代理搜索代码
+   */
+  private async runExplorationPhase(
+    userGoal: string,
+    nexusId?: string,
+    onResult?: (result: ExplorationResult) => void
+  ): Promise<ExplorationResult[]> {
+    const results: ExplorationResult[] = []
+    
+    // 提取关键词和符号
+    const keywords = this.extractKeywords(userGoal)
+    const symbols = this.extractSymbols(userGoal)
+    
+    // 并行执行探索任务
+    const explorationPromises: Promise<ExplorationResult>[] = []
+    
+    // 1. 代码搜索
+    explorationPromises.push(
+      this.searchCodebase(userGoal, keywords).then(r => {
+        onResult?.(r)
+        this.storeActions?.addExplorationResult?.(r)
+        return r
+      })
+    )
+    
+    // 2. 符号关系查询（如果提取到符号）
+    if (symbols.length > 0) {
+      for (const symbol of symbols.slice(0, 2)) {
+        explorationPromises.push(
+          this.searchSymbolRelations(symbol, 'all').then(symbolResults => {
+            const result: ExplorationResult = {
+              source: 'symbol',
+              query: symbol,
+              summary: symbolResults.length > 0 
+                ? `Found ${symbolResults.length} relations for ${symbol}`
+                : `No relations found for ${symbol}`,
+              details: symbolResults.map(sr => ({
+                filePath: sr.filePath,
+                lineNumber: sr.lineNumber,
+                symbolName: sr.symbol,
+                symbolType: sr.symbolType,
+                relation: sr.relation
+              })),
+              timestamp: Date.now()
+            }
+            onResult?.(result)
+            this.storeActions?.addExplorationResult?.(result)
+            return result
+          })
+        )
+      }
+    }
+    
+    // 等待所有探索任务完成
+    const settledResults = await Promise.allSettled(explorationPromises)
+    
+    for (const settled of settledResults) {
+      if (settled.status === 'fulfilled') {
+        results.push(settled.value)
+      }
+    }
+    
+    return results
+  }
+
+  /**
+   * 从探索结果生成任务计划
+   */
+  private async generatePlanFromExploration(
+    userGoal: string,
+    explorationResults: ExplorationResult[],
+    nexusId?: string
+  ): Promise<TaskPlan> {
+    // 构建探索摘要作为上下文
+    const explorationContext = explorationResults.map(r => 
+      `[${r.source}] ${r.query}: ${r.summary}`
+    ).join('\n')
+    
+    // 增强的提示词，包含探索结果
+    const enhancedPrompt = `${userGoal}
+
+基于以下代码探索结果进行规划:
+${explorationContext}`
+    
+    return this.generateQuestPlan(enhancedPrompt, nexusId)
+  }
+
+  /**
+   * 执行已确认的 Quest 计划
+   */
+  async executeConfirmedQuestPlan(
+    session: QuestSession,
+    onStep?: (step: ExecutionStep) => void
+  ): Promise<string> {
+    if (!session.proposedPlan) {
+      throw new Error('No plan to execute')
+    }
+    
+    session.phase = 'executing'
+    this.storeActions?.updateQuestPhase?.('executing')
+    
+    // 构建累积上下文
+    const contextStr = session.accumulatedContext
+      .slice(-15)
+      .map(c => `[${c.type}] ${c.content}`)
+      .join('\n')
+    
+    // 执行计划
+    const result = await this.executeQuestPlan(
+      session.proposedPlan,
+      (updatedPlan) => {
+        // 更新进度
+        const executingTask = updatedPlan.subTasks.find(t => t.status === 'executing')
+        if (executingTask && onStep) {
+          onStep({
+            id: `step-${executingTask.id}`,
+            type: 'tool_call',
+            content: `执行: ${executingTask.description}`,
+            timestamp: Date.now(),
+          })
+        }
+        
+        // 累积执行结果
+        const completedTask = updatedPlan.subTasks.find(t => t.status === 'done' && t.result)
+        if (completedTask) {
+          session.accumulatedContext.push({
+            type: 'execution',
+            content: `完成: ${completedTask.description} -> ${completedTask.result?.slice(0, 100)}`,
+            timestamp: Date.now(),
+            source: completedTask.id
+          })
+        }
+      },
+      async (task) => {
+        const approved = await this.storeActions?.requestApproval({
+          toolName: 'quest_subtask',
+          args: { taskId: task.id, description: task.description },
+          dangerLevel: 'high',
+          reason: task.approvalReason || `需要确认: ${task.description}`,
+        })
+        return approved ? 'approve' : 'skip'
+      }
+    )
+    
+    session.phase = 'completed'
+    session.finalResult = result
+    session.completedAt = Date.now()
+    this.storeActions?.completeQuestSession?.(result)
+    
+    return result
+  }
+
+  /**
+   * 从文本中提取关键词
+   */
+  private extractKeywords(text: string): string[] {
+    const words = text.match(/[a-zA-Z_][a-zA-Z0-9_]*|[\u4e00-\u9fff]+/g) || []
+    const stopwords = new Set(['the', 'a', 'an', 'is', 'are', 'to', 'for', 'of', 'in', 'on', 'with', '的', '是', '在', '和', '了', '我', '你', '要', '帮'])
+    return words.filter(w => !stopwords.has(w.toLowerCase()) && w.length > 1).slice(0, 5)
+  }
+
+  /**
+   * 从文本中提取可能的符号名
+   */
+  private extractSymbols(text: string): string[] {
+    // 匹配驼峰命名和下划线命名
+    const symbols = text.match(/\b([A-Z][a-zA-Z0-9]*|[a-z][a-zA-Z0-9]*(?:_[a-zA-Z0-9]+)+)\b/g) || []
+    return [...new Set(symbols)].slice(0, 3)
   }
 
   /**

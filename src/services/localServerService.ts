@@ -178,6 +178,64 @@ class LocalServerService {
     onUpdate(timeoutResult)
     return timeoutResult
   }
+
+  // ============================================
+  // 数据持久化 API (存储到 ~/.ddos/data/)
+  // ============================================
+
+  /**
+   * 从后端读取持久化数据
+   */
+  async getData<T>(key: string): Promise<T | null> {
+    try {
+      const response = await fetch(`${this.baseUrl}/data/${key}`, {
+        method: 'GET',
+        signal: AbortSignal.timeout(5000),
+      })
+      if (!response.ok) return null
+      const result = await response.json()
+      return result.exists ? result.value : null
+    } catch (error) {
+      console.warn(`[LocalServer] Failed to get data "${key}":`, error)
+      return null
+    }
+  }
+
+  /**
+   * 向后端写入持久化数据
+   */
+  async setData<T>(key: string, value: T): Promise<boolean> {
+    try {
+      const response = await fetch(`${this.baseUrl}/data/${key}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value }),
+        signal: AbortSignal.timeout(10000),
+      })
+      return response.ok
+    } catch (error) {
+      console.warn(`[LocalServer] Failed to set data "${key}":`, error)
+      return false
+    }
+  }
+
+  /**
+   * 删除后端持久化数据
+   */
+  async deleteData(key: string): Promise<boolean> {
+    try {
+      const response = await fetch(`${this.baseUrl}/data/${key}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: null }),
+        signal: AbortSignal.timeout(5000),
+      })
+      return response.ok
+    } catch (error) {
+      console.warn(`[LocalServer] Failed to delete data "${key}":`, error)
+      return false
+    }
+  }
 }
 
 // 导出单例

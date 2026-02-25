@@ -3,7 +3,7 @@ import { motion, AnimatePresence, useDragControls } from 'framer-motion'
 import { 
   MessageSquare, X, Send, Trash2, Square, Sparkles, Loader2, Zap,
   Image, Paperclip, Puzzle, Server, Command, GripHorizontal, Wand2,
-  PanelLeftClose, PanelLeft
+  PanelLeftClose, PanelLeft, CheckCircle, AlertCircle
 } from 'lucide-react'
 import { useStore } from '@/store'
 import { isLLMConfigured } from '@/services/llmService'
@@ -28,12 +28,15 @@ export function AIChatPanel() {
   const [nexusInitialData, setNexusInitialData] = useState<NexusInitialData | undefined>()
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [parsingFiles, setParsingFiles] = useState(false)
+  const [parseProgress, setParseProgress] = useState<Array<{ name: string; status: 'uploading' | 'done' | 'error' }>>([])
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const imageInputRef = useRef<HTMLInputElement>(null)
   const constraintsRef = useRef<HTMLDivElement>(null)
   const dragControls = useDragControls()
+  const sendingRef = useRef(false)
+  const uploadAbortRef = useRef<AbortController | null>(null)
   
   // 存储后台分析的结果
   const pendingAnalysisResult = useRef<NexusInitialData | null>(null)
@@ -95,22 +98,17 @@ export function AIChatPanel() {
     }
   }, [input])
 
-  const readFileAsBase64 = (file: File): Promise<string> => {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader()
-      reader.onload = () => resolve(reader.result as string)
-      reader.onerror = reject
-      reader.readAsDataURL(file)
-    })
-  }
-
   const getServerUrl = () => {
     return localStorage.getItem('ddos_server_url') || 'http://localhost:3001'
   }
 
+  const MAX_UPLOAD_SIZE = 10 * 1024 * 1024 // 10MB，与后端 MAX_FILE_SIZE 一致
+
   const handleSend = async () => {
+    if (sendingRef.current) return
     const msg = input.trim()
     if ((!msg && attachments.length === 0) || chatStreaming || parsingFiles) return
+    sendingRef.current = true
 
     // 需要上传解析的文件/图片附件
     const fileAttachments = attachments.filter(a => a.file && (a.type === 'file' || a.type === 'image'))
@@ -121,29 +119,49 @@ export function AIChatPanel() {
 
     if (fileAttachments.length > 0) {
       setParsingFiles(true)
+      setParseProgress(fileAttachments.map(a => ({ name: a.name, status: 'uploading' as const })))
+      uploadAbortRef.current = new AbortController()
       try {
-        const parsed = await Promise.all(fileAttachments.map(async (att) => {
-          const base64Data = att.data || await readFileAsBase64(att.file!)
+        const parsed = await Promise.all(fileAttachments.map(async (att, idx) => {
+          const formData = new FormData()
+          formData.append('file', att.file!, att.name)
           const res = await fetch(`${getServerUrl()}/api/files/upload`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ fileName: att.name, dataBase64: base64Data }),
+            body: formData,
+            signal: uploadAbortRef.current?.signal,
           })
           const result = await res.json()
-          if (!res.ok) return { name: att.name, text: `[解析失败: ${result.error || '未知错误'}]` }
-          return { name: att.name, text: result.parsedText || '[无内容]' }
+          if (!res.ok) {
+            setParseProgress(prev => prev.map((p, i) => i === idx ? { ...p, status: 'error' } : p))
+            return { name: att.name, text: `[解析失败: ${result.error || '未知错误'}]` }
+          }
+          setParseProgress(prev => prev.map((p, i) => i === idx ? { ...p, status: 'done' } : p))
+          return { name: att.name, text: result.parsedText || '[无内容]', filePath: result.filePath || '' }
         }))
 
-        const parsedContent = parsed.map(p => `📎 ${p.name}:\n${p.text}`).join('\n\n---\n\n')
+        const parsedContent = parsed.map(p => {
+          const header = p.filePath ? `📎 ${p.name} (路径: ${p.filePath})` : `📎 ${p.name}`
+          return `${header}:\n${p.text}`
+        }).join('\n\n---\n\n')
         fullMessage = fullMessage
           ? `${fullMessage}\n\n[附件解析内容]\n${parsedContent}`
           : `[附件解析内容]\n${parsedContent}`
-      } catch (e) {
+      } catch (e: unknown) {
+        if (e instanceof Error && e.name === 'AbortError') {
+          addToast({ type: 'info', title: '已取消', message: '文件上传已取消' })
+          setParsingFiles(false)
+          setParseProgress([])
+          uploadAbortRef.current = null
+          sendingRef.current = false
+          return
+        }
         console.error('文件解析失败:', e)
         const fallback = fileAttachments.map(a => `[附件: ${a.type}/${a.name}]`).join(' ')
         fullMessage = fullMessage ? `${fullMessage}\n\n${fallback}` : fallback
       } finally {
         setParsingFiles(false)
+        setParseProgress([])
+        uploadAbortRef.current = null
       }
     }
 
@@ -155,6 +173,7 @@ export function AIChatPanel() {
     setInput('')
     setAttachments([])
     sendChat(fullMessage, currentView)
+    sendingRef.current = false
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -169,6 +188,10 @@ export function AIChatPanel() {
     if (!files) return
     
     Array.from(files).forEach(file => {
+      if (file.size > MAX_UPLOAD_SIZE) {
+        addToast({ type: 'error', title: '文件过大', message: `${file.name} 超过 10MB 限制` })
+        return
+      }
       if (file.type.startsWith('image/')) {
         const reader = new FileReader()
         reader.onload = () => {
@@ -190,6 +213,10 @@ export function AIChatPanel() {
     if (!files) return
     
     Array.from(files).forEach(file => {
+      if (file.size > MAX_UPLOAD_SIZE) {
+        addToast({ type: 'error', title: '文件过大', message: `${file.name} 超过 10MB 限制` })
+        return
+      }
       setAttachments(prev => [...prev, {
         type: 'file',
         name: file.name,
@@ -197,6 +224,10 @@ export function AIChatPanel() {
       }])
     })
     e.target.value = ''
+  }
+
+  const handleCancelUpload = () => {
+    uploadAbortRef.current?.abort()
   }
 
   const handleAddSkill = (skillName: string) => {
@@ -386,8 +417,8 @@ export function AIChatPanel() {
               dragConstraints={constraintsRef}
               dragElastic={0.05}
               dragMomentum={false}
-              className="fixed inset-0 m-auto z-[52]
-                         w-[1200px] max-w-[95vw] h-[80vh] max-h-[850px]
+              className="fixed top-0 bottom-0 left-[70px] right-0 m-auto z-[52]
+                         w-[1200px] max-w-[calc(100%-90px)] h-[80vh] max-h-[850px]
                          bg-skin-bg-primary/92 backdrop-blur-2xl 
                          border border-skin-border/20
                          rounded-2xl
@@ -573,10 +604,26 @@ export function AIChatPanel() {
               {/* Input */}
               {configured && (
                 <div className="px-6 py-5 border-t border-skin-border/15 bg-skin-bg-secondary/25">
-                  {/* 附件预览 */}
-                  {attachments.length > 0 && (
+                  {/* 附件预览 / 解析进度 */}
+                  {(attachments.length > 0 || parseProgress.length > 0) && (
                     <div className="flex flex-wrap gap-2.5 mb-4">
-                      {attachments.map((att, idx) => (
+                      {parsingFiles ? parseProgress.map((p, idx) => (
+                        <div
+                          key={`parse-${idx}`}
+                          className={`flex items-center gap-2 px-3.5 py-2 border rounded-xl text-sm font-mono
+                            ${p.status === 'done' ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' :
+                              p.status === 'error' ? 'bg-red-500/10 border-red-500/30 text-red-400' :
+                              'bg-skin-bg-secondary/40 border-skin-accent-amber/30 text-skin-text-secondary'}`}
+                        >
+                          {p.status === 'uploading' && <Loader2 className="w-4 h-4 animate-spin text-skin-accent-amber" />}
+                          {p.status === 'done' && <CheckCircle className="w-4 h-4" />}
+                          {p.status === 'error' && <AlertCircle className="w-4 h-4" />}
+                          <span className="max-w-[160px] truncate">{p.name}</span>
+                          <span className="text-[10px] opacity-60">
+                            {p.status === 'uploading' ? '解析中...' : p.status === 'done' ? '完成' : '失败'}
+                          </span>
+                        </div>
+                      )) : attachments.map((att, idx) => (
                         <div
                           key={idx}
                           className="flex items-center gap-2 px-3.5 py-2 bg-skin-bg-secondary/40 border border-skin-border/15 
@@ -675,10 +722,16 @@ export function AIChatPanel() {
                     
                     {/* 发送/停止按钮 */}
                     {parsingFiles ? (
-                      <div className="p-4 flex flex-col items-center gap-1">
-                        <Loader2 className="w-6 h-6 text-skin-accent-amber animate-spin" />
-                        <span className="text-[10px] text-skin-text-tertiary">解析中</span>
-                      </div>
+                      <button
+                        onClick={handleCancelUpload}
+                        className="p-4 flex flex-col items-center gap-1 bg-skin-bg-secondary/40 border border-skin-accent-amber/30 
+                                   rounded-xl hover:bg-red-500/20 hover:border-red-500/30 transition-colors group"
+                        title="取消上传"
+                      >
+                        <Loader2 className="w-6 h-6 text-skin-accent-amber animate-spin group-hover:hidden" />
+                        <X className="w-6 h-6 text-red-400 hidden group-hover:block" />
+                        <span className="text-[10px] text-skin-text-tertiary group-hover:text-red-400">解析中</span>
+                      </button>
                     ) : chatStreaming ? (
                       <button
                         onClick={abortChat}

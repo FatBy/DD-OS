@@ -110,6 +110,91 @@ export interface TaskPlan {
   autoApprove?: boolean         // 自动批准低风险操作
 }
 
+// ============================================
+// 交互式 Quest 系统 (Qoder 风格)
+// ============================================
+
+// Quest 阶段状态机
+export type QuestPhase = 
+  | 'idle'           // 空闲
+  | 'exploring'      // 探索阶段（并行子代理搜索代码）
+  | 'planning'       // 规划阶段（生成任务计划）
+  | 'confirming'     // 确认阶段（用户审查计划）
+  | 'executing'      // 执行阶段
+  | 'completed'      // 完成
+
+// Quest 会话（完整的交互式任务流程）
+export interface QuestSession {
+  id: string
+  phase: QuestPhase
+  userGoal: string                         // 用户原始目标
+  explorationResults: ExplorationResult[]  // 探索阶段收集的结果
+  proposedPlan: TaskPlan | null            // 生成的任务计划
+  accumulatedContext: ContextEntry[]       // 累积的上下文
+  subagents: Subagent[]                    // 活跃的子代理
+  createdAt: number
+  completedAt?: number
+  finalResult?: string                     // 最终执行结果
+}
+
+// 探索结果
+export interface ExplorationResult {
+  source: 'codebase' | 'symbol' | 'file' | 'grep'
+  query: string
+  summary: string
+  details: ExplorationDetail[]
+  timestamp: number
+}
+
+export interface ExplorationDetail {
+  filePath?: string
+  lineNumber?: number
+  content?: string
+  symbolName?: string
+  symbolType?: string
+  relation?: string
+}
+
+// 子代理
+export interface Subagent {
+  id: string
+  type: 'explore' | 'plan' | 'execute'
+  task: string
+  status: 'pending' | 'running' | 'completed' | 'failed'
+  progress?: number                       // 0-100
+  result?: string
+  error?: string
+  startedAt?: number
+  completedAt?: number
+  tools: string[]                         // 可用工具列表
+}
+
+// 子代理任务定义
+export interface SubagentTask {
+  type: 'explore' | 'plan' | 'execute'
+  task: string
+  tools: string[]
+  context?: string                        // 上下文信息
+}
+
+// 上下文条目（用于跨步骤累积）
+export interface ContextEntry {
+  type: 'exploration' | 'execution' | 'clarification' | 'user_feedback'
+  content: string
+  timestamp: number
+  source?: string                         // 来源（子代理ID、工具名等）
+}
+
+// 符号查询结果
+export interface SymbolResult {
+  symbol: string
+  relation: 'calls' | 'called_by' | 'references' | 'referenced_by' | 'extends' | 'implements'
+  filePath: string
+  lineNumber: number
+  codeSnippet: string
+  symbolType: string
+}
+
 // 技能节点 (映射自 OpenClaw Skill)
 export interface SkillNode {
   id: string

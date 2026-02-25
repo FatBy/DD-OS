@@ -197,9 +197,18 @@ function App() {
 
         // Native 模式: 静默尝试连接本地服务器
         console.log('[App] Auto-reconnecting to Native server...')
-        localClawService.connect().then(success => {
+        localClawService.connect().then(async success => {
           if (success) {
             console.log('[App] Auto-reconnect successful')
+            
+            // 从后端加载持久化数据 (会话、Nexus 状态)
+            try {
+              await useStore.getState().loadConversationsFromServer()
+              await useStore.getState().loadNexusesFromServer()
+              console.log('[App] Loaded persisted data from server')
+            } catch (e) {
+              console.warn('[App] Failed to load persisted data:', e)
+            }
           } else {
             console.log('[App] Auto-reconnect failed, server may not be running')
             // 静默失败 - 不显示错误状态，保持断开
