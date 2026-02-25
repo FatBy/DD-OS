@@ -11,6 +11,46 @@ const SUMMARY_CACHE_MS = 5 * 60 * 1000
 const MAX_CONVERSATIONS = 20          // 最多保留 20 个会话
 const MAX_MESSAGES_PER_CONV = 50      // 每个会话最多保留 50 条消息
 
+// 自动标题生成 (异步，不阻塞消息发送)
+async function generateConversationTitle(
+  convId: string,
+  firstMessage: string,
+  get: () => AiSlice,
+  set: (partial: Partial<AiSlice> | ((s: AiSlice) => Partial<AiSlice>)) => void,
+) {
+  // 立即标记 autoTitled 防止重复触发
+  set((state) => {
+    const conv = state.conversations.get(convId)
+    if (!conv) return state
+    const updated = new Map(state.conversations)
+    updated.set(convId, { ...conv, autoTitled: true })
+    return { conversations: updated }
+  })
+
+  try {
+    if (!isLLMConfigured()) return
+
+    const title = await chat([{
+      role: 'user',
+      content: `用5-10个中文字给这段对话起一个简短标题，只输出标题本身，不要引号不要标点：\n${firstMessage.slice(0, 200)}`,
+    }])
+
+    const cleanTitle = title.trim().replace(/^["'「《]|["'」》]$/g, '').slice(0, 20)
+    if (!cleanTitle) return
+
+    set((state) => {
+      const conv = state.conversations.get(convId)
+      if (!conv) return state
+      const updated = new Map(state.conversations)
+      updated.set(convId, { ...conv, title: cleanTitle })
+      return { conversations: updated }
+    })
+    persistConversations(get().conversations)
+  } catch {
+    // 静默失败，保留默认标题
+  }
+}
+
 // LocalStorage 键名
 const STORAGE_KEYS = {
   CONVERSATIONS: 'ddos_conversations_v2',      // 新会话系统
@@ -231,6 +271,10 @@ export interface AiSlice {
   // 聊天面板开关
   isChatOpen: boolean
   setChatOpen: (open: boolean) => void
+
+  // 内部辅助方法
+  _addMessageToActiveConv: (msg: ChatMessage) => void
+  _updateMessageInActiveConv: (msgId: string, updates: Partial<ChatMessage>) => void
 }
 
 export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) => ({
@@ -263,7 +307,7 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
       ? `nexus-${options.nexusId}` 
       : `${type}-${Date.now()}`
     
-    const title = options.title || (type === 'general' ? '新对话' : `Nexus-${options.nexusId?.slice(-6) || 'unknown'}`)
+    const title = options.title || '新对话'
     
     const conversation: Conversation = {
       id,
@@ -396,9 +440,18 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
       })
     }
     persistConversations(get().conversations)
-  },
 
-  // 内部辅助：更新当前会话中的消息
+    // 自动标题生成: 第一条用户消息触发
+    if (msg.role === 'user') {
+      const activeId = get().activeConversationId
+      if (activeId) {
+        const conv = get().conversations.get(activeId)
+        if (conv && !conv.autoTitled && (conv.title === '新对话' || conv.title.startsWith('Nexus-'))) {
+          generateConversationTitle(activeId, msg.content, get, set)
+        }
+      }
+    }
+  },
   _updateMessageInActiveConv: (msgId: string, updates: Partial<ChatMessage>) => {
     const { conversations, activeConversationId } = get()
     if (!activeConversationId) return

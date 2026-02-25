@@ -91,7 +91,7 @@ export function ConversationSidebar({ className }: ConversationSidebarProps) {
   
   return (
     <div className={cn(
-      'w-60 h-full flex flex-col bg-black/20 border-r border-white/10',
+      'w-60 h-full flex flex-col bg-black/40 border-r border-white/10',
       className
     )}>
       {/* Header */}
@@ -209,10 +209,10 @@ export function ConversationSidebar({ className }: ConversationSidebarProps) {
         {conversationList.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center px-4">
             <MessageSquare className="w-8 h-8 text-white/10 mb-2" />
-            <p className="text-xs font-mono text-white/30">
+            <p className="text-sm font-mono text-white/30">
               {searchQuery ? '没有匹配的会话' : '还没有会话'}
             </p>
-            <p className="text-xs font-mono text-white/20 mt-1">
+            <p className="text-sm font-mono text-white/20 mt-1">
               点击上方按钮创建新会话
             </p>
           </div>
@@ -278,23 +278,22 @@ export function ConversationSidebar({ className }: ConversationSidebarProps) {
                       </div>
                     ) : (
                       <>
-                        <div className="flex items-center gap-1">
-                          <span className="text-xs font-mono text-white/80 truncate">
+                        <div>
+                          <span className="text-sm font-mono text-white/80 truncate block">
                             {conv.title}
                           </span>
                           {nexus && (
                             <span 
-                              className="px-1 py-0.5 text-[10px] font-mono rounded"
+                              className="text-xs font-mono truncate block mt-0.5"
                               style={{ 
-                                backgroundColor: `hsla(${nexus.visualDNA?.primaryHue || 270}, 50%, 50%, 0.2)`,
                                 color: `hsl(${nexus.visualDNA?.primaryHue || 270}, 70%, 70%)`
                               }}
                             >
-                              {nexus.label?.slice(0, 8)}
+                              {nexus.label}
                             </span>
                           )}
                         </div>
-                        <p className="text-[10px] font-mono text-white/30 truncate mt-0.5">
+                        <p className="text-xs font-mono text-white/30 truncate mt-0.5">
                           {preview}
                         </p>
                       </>
@@ -324,10 +323,10 @@ export function ConversationSidebar({ className }: ConversationSidebarProps) {
                 
                 {/* Timestamp */}
                 <div className="flex items-center justify-between mt-1.5">
-                  <span className="text-[10px] font-mono text-white/20">
+                  <span className="text-xs font-mono text-white/20">
                     {conv.messages.length} 条消息
                   </span>
-                  <span className="text-[10px] font-mono text-white/20">
+                  <span className="text-xs font-mono text-white/20">
                     {formatTime(conv.updatedAt)}
                   </span>
                 </div>

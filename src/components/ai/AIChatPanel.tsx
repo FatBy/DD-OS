@@ -21,12 +21,13 @@ export function AIChatPanel() {
   const isOpen = useStore((s) => s.isChatOpen)
   const setIsOpen = useStore((s) => s.setChatOpen)
   const [input, setInput] = useState('')
-  const [attachments, setAttachments] = useState<Array<{ type: string; name: string; data?: string }>>([])
+  const [attachments, setAttachments] = useState<Array<{ type: string; name: string; data?: string; file?: File }>>([])
   const [showMCPModal, setShowMCPModal] = useState(false)
   const [showSkillModal, setShowSkillModal] = useState(false)
   const [showNexusModal, setShowNexusModal] = useState(false)
   const [nexusInitialData, setNexusInitialData] = useState<NexusInitialData | undefined>()
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [parsingFiles, setParsingFiles] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -94,16 +95,63 @@ export function AIChatPanel() {
     }
   }, [input])
 
-  const handleSend = () => {
+  const readFileAsBase64 = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(reader.result as string)
+      reader.onerror = reject
+      reader.readAsDataURL(file)
+    })
+  }
+
+  const getServerUrl = () => {
+    return localStorage.getItem('ddos_server_url') || 'http://localhost:3001'
+  }
+
+  const handleSend = async () => {
     const msg = input.trim()
-    if ((!msg && attachments.length === 0) || chatStreaming) return
-    
+    if ((!msg && attachments.length === 0) || chatStreaming || parsingFiles) return
+
+    // 需要上传解析的文件/图片附件
+    const fileAttachments = attachments.filter(a => a.file && (a.type === 'file' || a.type === 'image'))
+    // 其他附件（skill、mcp 等保持原样）
+    const otherAttachments = attachments.filter(a => !a.file || (a.type !== 'file' && a.type !== 'image'))
+
     let fullMessage = msg
-    if (attachments.length > 0) {
-      const attachmentInfo = attachments.map(a => `[附件: ${a.type}/${a.name}]`).join(' ')
-      fullMessage = fullMessage ? `${fullMessage}\n\n${attachmentInfo}` : attachmentInfo
+
+    if (fileAttachments.length > 0) {
+      setParsingFiles(true)
+      try {
+        const parsed = await Promise.all(fileAttachments.map(async (att) => {
+          const base64Data = att.data || await readFileAsBase64(att.file!)
+          const res = await fetch(`${getServerUrl()}/api/files/upload`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ fileName: att.name, dataBase64: base64Data }),
+          })
+          const result = await res.json()
+          if (!res.ok) return { name: att.name, text: `[解析失败: ${result.error || '未知错误'}]` }
+          return { name: att.name, text: result.parsedText || '[无内容]' }
+        }))
+
+        const parsedContent = parsed.map(p => `📎 ${p.name}:\n${p.text}`).join('\n\n---\n\n')
+        fullMessage = fullMessage
+          ? `${fullMessage}\n\n[附件解析内容]\n${parsedContent}`
+          : `[附件解析内容]\n${parsedContent}`
+      } catch (e) {
+        console.error('文件解析失败:', e)
+        const fallback = fileAttachments.map(a => `[附件: ${a.type}/${a.name}]`).join(' ')
+        fullMessage = fullMessage ? `${fullMessage}\n\n${fallback}` : fallback
+      } finally {
+        setParsingFiles(false)
+      }
     }
-    
+
+    if (otherAttachments.length > 0) {
+      const info = otherAttachments.map(a => `[附件: ${a.type}/${a.name}]`).join(' ')
+      fullMessage = fullMessage ? `${fullMessage}\n\n${info}` : info
+    }
+
     setInput('')
     setAttachments([])
     sendChat(fullMessage, currentView)
@@ -127,7 +175,8 @@ export function AIChatPanel() {
           setAttachments(prev => [...prev, {
             type: 'image',
             name: file.name,
-            data: reader.result as string
+            data: reader.result as string,
+            file,
           }])
         }
         reader.readAsDataURL(file)
@@ -143,7 +192,8 @@ export function AIChatPanel() {
     Array.from(files).forEach(file => {
       setAttachments(prev => [...prev, {
         type: 'file',
-        name: file.name
+        name: file.name,
+        file,
       }])
     })
     e.target.value = ''
@@ -338,7 +388,7 @@ export function AIChatPanel() {
               dragMomentum={false}
               className="fixed inset-0 m-auto z-[52]
                          w-[1200px] max-w-[95vw] h-[80vh] max-h-[850px]
-                         bg-skin-bg-primary/98 backdrop-blur-2xl 
+                         bg-skin-bg-primary/92 backdrop-blur-2xl 
                          border border-skin-border/20
                          rounded-2xl
                          flex flex-col overflow-hidden
@@ -563,6 +613,7 @@ export function AIChatPanel() {
                       <input
                         ref={fileInputRef}
                         type="file"
+                        accept=".pdf,.docx,.pptx,.txt,.md,.csv"
                         multiple
                         onChange={handleFileUpload}
                         className="hidden"
@@ -623,7 +674,12 @@ export function AIChatPanel() {
                     </div>
                     
                     {/* 发送/停止按钮 */}
-                    {chatStreaming ? (
+                    {parsingFiles ? (
+                      <div className="p-4 flex flex-col items-center gap-1">
+                        <Loader2 className="w-6 h-6 text-skin-accent-amber animate-spin" />
+                        <span className="text-[10px] text-skin-text-tertiary">解析中</span>
+                      </div>
+                    ) : chatStreaming ? (
                       <button
                         onClick={abortChat}
                         className="p-4 bg-red-500/20 border border-red-500/30 rounded-xl 
@@ -634,7 +690,7 @@ export function AIChatPanel() {
                     ) : (
                       <button
                         onClick={handleSend}
-                        disabled={!input.trim() && attachments.length === 0}
+                        disabled={(!input.trim() && attachments.length === 0) || parsingFiles}
                         className="p-4 bg-skin-accent-amber/20 border border-skin-accent-amber/30 rounded-xl 
                                    text-skin-accent-amber hover:bg-skin-accent-amber/30 transition-colors
                                    disabled:opacity-30 disabled:cursor-not-allowed"

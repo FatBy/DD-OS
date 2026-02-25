@@ -413,6 +413,7 @@ export interface Conversation {
   createdAt: number
   updatedAt: number
   pinned?: boolean
+  autoTitled?: boolean      // 标记是否已自动生成标题
 }
 
 export interface AISummary {
@@ -508,8 +509,6 @@ export interface ToolInfo {
 // ============================================
 
 // [已废弃] 固定类型限制已移除，改为基于 ID 动态生成视觉样式
-// 保留类型别名仅用于向后兼容
-export type NexusArchetype = string
 
 // 建筑配置 (城市主题)
 export interface BuildingConfig {
@@ -525,7 +524,6 @@ export interface VisualDNA {
   primarySaturation: number // 40-100
   primaryLightness: number  // 30-70
   accentHue: number         // 0-360
-  archetype?: string            // [已废弃] 保留仅用于向后兼容
   textureMode: 'solid' | 'wireframe' | 'gradient'
   // 星球纹理配置 (cosmos 主题)
   planetTexture?: 'bands' | 'storm' | 'core' | 'crystal'
@@ -546,7 +544,6 @@ export interface GridPosition {
 
 export interface NexusEntity {
   id: string
-  archetype?: string            // [已废弃] 保留仅用于向后兼容
   position: GridPosition
   level: number             // 1-4
   xp: number
@@ -555,8 +552,7 @@ export interface NexusEntity {
   constructionProgress: number // 0-1 (1 = fully built)
   createdAt: number
   // Phase 2: 涌现式 Nexus
-  boundSkillId?: string     // 绑定的 Skill ID
-  boundSkillIds?: string[]  // 绑定的多个 Skill ID
+  boundSkillIds?: string[]  // 绑定的 Skill ID 列表
   flavorText?: string       // LLM 生成的描述
   lastUsedAt?: number       // 最后使用时间（用于 XP 计算）
   // Phase 3: 模型绑定
@@ -567,7 +563,6 @@ export interface NexusEntity {
   }
   // Phase 4: File-based Nexus (NEXUS.md)
   sopContent?: string             // NEXUS.md Markdown 正文 (Mission + SOP)
-  skillDependencies?: string[]    // 依赖的 Skill ID 列表
   triggers?: string[]             // 自动激活关键词
   version?: string                // Nexus 版本
   location?: 'local' | 'bundled'  // 来源
@@ -608,7 +603,6 @@ export interface TriggerPattern {
   type: TriggerType
   confidence: number           // 0-1 置信度
   evidence: string[]           // 证据摘要（相关消息片段）
-  suggestedArchetype?: string   // [已废弃] 不再使用
   detectedAt: number
   // 新增：技能和SOP推荐
   suggestedSkills?: string[]   // 建议绑定的工具/技能名列表
@@ -619,10 +613,8 @@ export interface BuildProposal {
   id: string
   triggerPattern: TriggerPattern
   suggestedName: string        // 建议的 Nexus 名称
-  suggestedArchetype?: string  // [已废弃] 不再使用
   previewVisualDNA: VisualDNA
-  boundSkillId?: string        // 兼容旧字段：单个 Skill
-  boundSkillIds?: string[]     // 新增：多技能绑定列表
+  boundSkillIds?: string[]     // 多技能绑定列表
   sopContent?: string          // 新增：系统提示词/SOP
   purposeSummary: string       // 一句话概括此 Nexus 的功能目标
   status: 'pending' | 'accepted' | 'rejected'
@@ -698,111 +690,5 @@ export interface AbilitySnapshot {
   }
   milestones: string[]         // 已达成里程碑
   updatedAt: number            // 更新时间
-}
-
-// ============================================
-// EvoMap GEP-A2A 协议类型
-// ============================================
-
-// GEP-A2A 协议信封
-export interface GepA2AEnvelope {
-  protocol: 'gep-a2a'
-  protocol_version: string     // "1.0.0"
-  message_type: 'hello' | 'publish' | 'fetch' | 'report' | 'decision' | 'revoke'
-  message_id: string           // "msg_<timestamp>_<random_hex>"
-  sender_id: string            // "node_<node_id>"
-  timestamp: string            // ISO 8601 UTC
-  payload: Record<string, unknown>
-}
-
-// Hello 请求载荷
-export interface EvoMapHelloPayload {
-  capabilities: Record<string, unknown>
-  gene_count: number
-  capsule_count: number
-  env_fingerprint: {
-    platform: string
-    arch: string
-  }
-  webhook_url?: string
-}
-
-// Hello 响应
-export interface EvoMapHelloResponse {
-  status: 'acknowledged'
-  claim_code: string
-  claim_url: string
-}
-
-// Fetch 请求载荷
-export interface EvoMapFetchPayload {
-  asset_type?: 'Gene' | 'Capsule' | 'EvolutionEvent'
-  include_tasks?: boolean
-  limit?: number
-  since?: string  // ISO 8601
-}
-
-// 资产基础结构
-export interface EvoMapAsset {
-  asset_id: string              // SHA256 哈希
-  asset_type: 'Gene' | 'Capsule' | 'EvolutionEvent'
-  summary: string
-  confidence: number            // 0-1
-  blast_radius?: {
-    files: number
-    lines: number
-  }
-  signals_match?: string[]
-  created_at: string
-  status: 'candidate' | 'promoted' | 'revoked'
-}
-
-// Gene 资产
-export interface EvoMapGene extends EvoMapAsset {
-  asset_type: 'Gene'
-  strategy: string              // 策略描述
-  applicable_patterns: string[] // 适用场景
-}
-
-// Capsule 资产
-export interface EvoMapCapsule extends EvoMapAsset {
-  asset_type: 'Capsule'
-  implementation: string        // 实现细节
-  dependencies?: string[]       // 依赖的 Gene IDs
-  tool_chain?: string[]         // 使用的工具链
-}
-
-// Publish 请求载荷
-export interface EvoMapPublishPayload {
-  assets: EvoMapAsset[]         // Gene + Capsule + EvolutionEvent 捆绑
-}
-
-// Publish 响应
-export interface EvoMapPublishResponse {
-  status: 'accepted' | 'rejected'
-  asset_ids?: string[]
-  errors?: Array<{ asset_id: string; error: string }>
-}
-
-// 任务 (赏金)
-export interface EvoMapTask {
-  task_id: string
-  title: string
-  description: string
-  bounty_credits: number
-  required_reputation: number
-  deadline?: string
-  status: 'open' | 'claimed' | 'completed'
-}
-
-// EvoMap 节点状态
-export interface EvoMapNodeState {
-  sender_id: string
-  claim_code?: string
-  claim_url?: string
-  reputation: number            // 0-100
-  credits: number
-  registered_at: string
-  last_sync_at: string
 }
 

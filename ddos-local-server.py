@@ -56,6 +56,35 @@ except ImportError:
     HAS_MCP = False
     MCPClientManager = None
 
+# 文件解析 (可选依赖，缺失时降级)
+try:
+    import pdfplumber
+    HAS_PDF = True
+except ImportError:
+    HAS_PDF = False
+
+try:
+    from docx import Document as DocxDocument
+    HAS_DOCX = True
+except ImportError:
+    HAS_DOCX = False
+
+try:
+    from pptx import Presentation as PptxPresentation
+    HAS_PPTX = True
+except ImportError:
+    HAS_PPTX = False
+
+try:
+    import pytesseract
+    from PIL import Image
+    HAS_OCR = True
+except ImportError:
+    HAS_OCR = False
+
+import base64
+import io
+
 VERSION = "4.0.0"
 
 # 🛡️ 安全配置
@@ -457,6 +486,12 @@ class ToolRegistry:
                     'skillId': {'type': 'string', 'description': '要移除的技能 ID', 'required': True},
                 },
             },
+            'parseFile': {
+                'description': '解析文档文件（PDF/DOCX/PPTX）或对图像进行OCR文字识别，返回提取的文本内容',
+                'inputs': {
+                    'filePath': {'type': 'string', 'description': '文件路径（支持 .pdf .docx .pptx .png .jpg 等格式）', 'required': True},
+                },
+            },
         }
         tools = []
         for name in self.builtin_tools:
@@ -599,6 +634,8 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
         # 🌟 新增：工具执行接口
         if path == '/api/tools/execute':
             self.handle_tool_execution(data)
+        elif path == '/api/files/upload':
+            self.handle_file_upload(data)
         elif path == '/tools/reload':
             self.handle_tools_reload(data)
         elif path == '/api/traces/save':
@@ -819,6 +856,7 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
                     'nexusBindSkill': self._tool_nexus_bind_skill,
                     'nexusUnbindSkill': self._tool_nexus_unbind_skill,
                     'openInExplorer': self._tool_open_in_explorer,
+                    'parseFile': self._tool_parse_file,
                 }
                 handler = builtin_handlers.get(tool_name)
                 if handler:
@@ -834,6 +872,69 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
             'tool': tool_name,
             'status': status,
             'result': result,
+            'timestamp': datetime.now().isoformat()
+        })
+
+    # ============================================
+    # 📎 文件上传 + 自动解析
+    # ============================================
+
+    UPLOAD_ALLOWED_EXT = {'.pdf', '.docx', '.pptx', '.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.webp', '.txt', '.md', '.csv'}
+
+    def handle_file_upload(self, data: dict):
+        """接收前端上传的文件（Base64），保存到临时目录并自动解析"""
+        file_name = data.get('fileName', '')
+        data_base64 = data.get('dataBase64', '')
+
+        if not file_name or not data_base64:
+            self.send_error_json('fileName and dataBase64 are required', 400)
+            return
+
+        # 清理文件名
+        safe_name = re.sub(r'[^\w.\-\u4e00-\u9fff]', '_', file_name)
+        ext = os.path.splitext(safe_name)[1].lower()
+
+        if ext not in self.UPLOAD_ALLOWED_EXT:
+            self.send_error_json(f'不支持的文件类型: {ext}，支持: {", ".join(sorted(self.UPLOAD_ALLOWED_EXT))}', 400)
+            return
+
+        # 解码 Base64 (去掉 data:xxx;base64, 前缀)
+        try:
+            if ';base64,' in data_base64:
+                data_base64 = data_base64.split(';base64,')[1]
+            file_bytes = base64.b64decode(data_base64)
+        except Exception as e:
+            self.send_error_json(f'Base64 解码失败: {str(e)}', 400)
+            return
+
+        if len(file_bytes) > MAX_FILE_SIZE:
+            self.send_error_json(f'文件过大 (>{MAX_FILE_SIZE // 1024 // 1024}MB)', 413)
+            return
+
+        # 保存到临时目录
+        upload_dir = self.clawd_path / 'temp' / 'uploads'
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        unique_name = f"{uuid.uuid4().hex[:8]}_{safe_name}"
+        file_path = upload_dir / unique_name
+
+        try:
+            file_path.write_bytes(file_bytes)
+        except Exception as e:
+            self.send_error_json(f'文件保存失败: {str(e)}', 500)
+            return
+
+        # 自动解析
+        parsed_text = ''
+        try:
+            parsed_text = self._tool_parse_file({'filePath': str(file_path)})
+        except Exception as e:
+            parsed_text = f'[解析失败: {str(e)}]'
+
+        self.send_json({
+            'success': True,
+            'filePath': str(file_path),
+            'originalName': file_name,
+            'parsedText': parsed_text,
             'timestamp': datetime.now().isoformat()
         })
 
@@ -970,6 +1071,90 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
             raise ValueError(f"File too large (>{MAX_FILE_SIZE} bytes)")
         
         return file_path.read_text(encoding='utf-8')
+    
+    def _tool_parse_file(self, args: dict) -> str:
+        """解析文档或图像文件，返回提取的文本内容"""
+        file_path_str = args.get('filePath') or args.get('path', '')
+        if not file_path_str:
+            raise ValueError("filePath is required")
+        
+        # 支持绝对路径（上传的临时文件）和相对路径
+        if os.path.isabs(file_path_str):
+            file_path = Path(file_path_str)
+        else:
+            file_path = self._resolve_path(file_path_str, allow_outside=True)
+        
+        if not file_path.exists():
+            raise FileNotFoundError(f"File not found: {file_path_str}")
+        if file_path.stat().st_size > MAX_FILE_SIZE:
+            raise ValueError(f"File too large (>{MAX_FILE_SIZE // 1024 // 1024}MB)")
+        
+        ext = file_path.suffix.lower()
+        text = ""
+        
+        if ext == '.pdf':
+            if not HAS_PDF:
+                raise RuntimeError("pdfplumber 未安装，请运行 pip install pdfplumber")
+            with pdfplumber.open(str(file_path)) as pdf:
+                pages = []
+                for i, page in enumerate(pdf.pages):
+                    page_text = page.extract_text() or ''
+                    if page_text.strip():
+                        pages.append(f"--- 第{i+1}页 ---\n{page_text}")
+                text = "\n\n".join(pages)
+        
+        elif ext == '.docx':
+            if not HAS_DOCX:
+                raise RuntimeError("python-docx 未安装，请运行 pip install python-docx")
+            doc = DocxDocument(str(file_path))
+            paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+            for table in doc.tables:
+                for row in table.rows:
+                    cells = [cell.text.strip() for cell in row.cells]
+                    paragraphs.append(" | ".join(cells))
+            text = "\n".join(paragraphs)
+        
+        elif ext == '.pptx':
+            if not HAS_PPTX:
+                raise RuntimeError("python-pptx 未安装，请运行 pip install python-pptx")
+            prs = PptxPresentation(str(file_path))
+            slides = []
+            for i, slide in enumerate(prs.slides):
+                parts = []
+                for shape in slide.shapes:
+                    if shape.has_text_frame:
+                        for para in shape.text_frame.paragraphs:
+                            t = para.text.strip()
+                            if t:
+                                parts.append(t)
+                if parts:
+                    slides.append(f"--- 幻灯片{i+1} ---\n" + "\n".join(parts))
+            text = "\n\n".join(slides)
+        
+        elif ext in ('.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.webp'):
+            if not HAS_OCR:
+                raise RuntimeError("pytesseract/Pillow 未安装，请运行 pip install pytesseract Pillow")
+            img = Image.open(str(file_path))
+            lang = args.get('language', 'eng+chi_sim')
+            text = pytesseract.image_to_string(img, lang=lang)
+        
+        else:
+            # 回退：尝试当纯文本读取
+            try:
+                text = file_path.read_text(encoding='utf-8')
+            except Exception:
+                raise ValueError(f"不支持的文件类型: {ext}")
+        
+        if not text.strip():
+            return f"[文件 {file_path.name} 无可提取的文本内容]"
+        
+        # 截断到 MAX_OUTPUT_SIZE
+        encoded = text.encode('utf-8')
+        if len(encoded) > MAX_OUTPUT_SIZE:
+            text = encoded[:MAX_OUTPUT_SIZE].decode('utf-8', errors='ignore')
+            text += f"\n\n[内容过长，已截断至 {MAX_OUTPUT_SIZE // 1024}KB]"
+        
+        return text
     
     def _tool_write_file(self, args: dict) -> str:
         """写入文件"""
@@ -2856,6 +3041,26 @@ def cleanup_old_traces(clawd_path, max_months=6):
             pass
 
 
+def cleanup_temp_uploads(clawd_path, max_age_hours=1):
+    """清理超过指定时间的临时上传文件"""
+    upload_dir = clawd_path / 'temp' / 'uploads'
+    if not upload_dir.exists():
+        return
+    
+    now = time.time()
+    count = 0
+    for f in upload_dir.iterdir():
+        try:
+            if f.is_file() and (now - f.stat().st_mtime) > max_age_hours * 3600:
+                f.unlink()
+                count += 1
+        except:
+            pass
+    
+    if count > 0:
+        print(f"[Cleanup] Removed {count} old temp upload files")
+
+
 def main():
     parser = argparse.ArgumentParser(description='DD-OS Native Server')
     parser.add_argument('--port', type=int, default=3001, help='Server port (default: 3001)')
@@ -2913,7 +3118,7 @@ You are DD-OS, a local AI operating system running directly on the user's comput
     builtin_names = [
         'readFile', 'writeFile', 'appendFile', 'listDir', 'runCmd',
         'weather', 'webSearch', 'webFetch', 'saveMemory', 'searchMemory',
-        'nexusBindSkill', 'nexusUnbindSkill', 'openInExplorer',
+        'nexusBindSkill', 'nexusUnbindSkill', 'openInExplorer', 'parseFile',
     ]
     for name in builtin_names:
         registry.register_builtin(name, name)  # handler resolved at dispatch time
@@ -2924,6 +3129,7 @@ You are DD-OS, a local AI operating system running directly on the user's comput
 
     # 清理过期执行追踪 (P2: 保留最近6个月)
     cleanup_old_traces(clawd_path)
+    cleanup_temp_uploads(clawd_path)
 
     # 项目目录 (脚本所在目录)
     project_path = Path(__file__).parent.resolve()

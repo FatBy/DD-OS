@@ -24,7 +24,6 @@ const WORLD_THEME_OPTIONS: Array<{
   { id: 'cityscape', labelKey: 'settings.world_cityscape', descKey: 'settings.world_cityscape_desc', color: 'rgb(251, 191, 36)' },
   { id: 'village', labelKey: 'settings.world_village', descKey: 'settings.world_village_desc', color: 'rgb(126, 200, 80)' },
   { id: 'minimalist', labelKey: 'settings.world_minimalist', descKey: 'settings.world_minimalist_desc', color: 'rgb(168, 162, 158)' },
-  { id: 'wildlife', labelKey: 'settings.world_wildlife', descKey: 'settings.world_wildlife_desc', color: 'rgb(52, 211, 153)' },
 ]
 
 const settingsData: Array<{

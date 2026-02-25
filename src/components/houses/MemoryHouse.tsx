@@ -360,7 +360,7 @@ function DiaryCard({
 export function MemoryHouse() {
   const t = useT()
   const storeMemories = useStore(s => s.memories)
-  const chatMessages = useStore(s => s.chatMessages)
+  const chatMessages = useStore(s => s.getCurrentMessages())
   const journalEntries = useStore(s => s.journalEntries)
   const journalLoading = useStore(s => s.journalLoading)
   const connectionStatus = useStore(s => s.connectionStatus)

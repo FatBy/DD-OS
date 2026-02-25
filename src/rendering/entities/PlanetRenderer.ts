@@ -81,7 +81,7 @@ export class PlanetRenderer implements EntityRenderer {
     }
 
     // === 2. 实时动画：卫星轨道 (绑定的 Skill) ===
-    if (nexus.boundSkillId) {
+    if (nexus.boundSkillIds?.length) {
       this.renderSatellite(c, nexus, x, y, size, timestamp, accentHue)
     }
 

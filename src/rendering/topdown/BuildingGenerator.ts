@@ -79,7 +79,6 @@ export function inferBuildingStyle(nexus: NexusEntity): BuildingStyle {
   if (nexus.label) texts.push(nexus.label.toLowerCase())
   if (nexus.flavorText) texts.push(nexus.flavorText.toLowerCase())
   if (nexus.sopContent) texts.push(nexus.sopContent.toLowerCase())
-  if (nexus.boundSkillId) texts.push(nexus.boundSkillId.toLowerCase())
   if (nexus.boundSkillIds) {
     texts.push(...nexus.boundSkillIds.map(s => s.toLowerCase()))
   }

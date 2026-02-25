@@ -181,7 +181,6 @@ function App() {
           label: 'Skill Scout',
           constructionProgress: 1,
           createdAt: Date.now(),
-          boundSkillId: 'skill-scout',
           boundSkillIds: ['skill-scout', 'skill-generator'],
           flavorText: '持续扫描全球 SKILL 社区，发现并安装新能力',
         })

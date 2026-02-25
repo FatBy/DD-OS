@@ -14,7 +14,8 @@ import type { ExecutionStatus, OpenClawSkill, MemoryEntry, ToolInfo, ExecTrace, 
 import { parseSoulMd, type ParsedSoul } from '@/utils/soulParser'
 import { skillStatsService } from './skillStatsService'
 import { immuneService } from './capsuleService'
-import { evomapService } from './evomapService'
+import { nexusRuleEngine } from './nexusRuleEngine'
+import { nexusManager } from './nexusManager'
 
 // ============================================
 // 类型定义
@@ -45,88 +46,7 @@ interface AgentMessage {
   content: string
 }
 
-// ============================================
-// Nexus 性能统计类型
-// ============================================
-
-interface ToolUsageStat {
-  calls: number
-  errors: number
-}
-
-interface NexusStats {
-  nexusId: string
-  totalTasks: number
-  successCount: number
-  failureCount: number
-  toolUsage: Record<string, ToolUsageStat>
-  totalTurns: number        // 用于计算平均值
-  totalDuration: number     // 用于计算平均值 (ms)
-  topErrors: string[]       // 最近的错误模式（去重，最多5条）
-  lastUpdated: number
-}
-
-type NexusStatsMap = Record<string, NexusStats>
-
-// ============================================
-// 自适应规则引擎类型
-// ============================================
-
-type RuleType =
-  | 'TOOL_ERROR_RATE'
-  | 'SUCCESS_RATE_DECLINE'
-  | 'EFFICIENCY_DEGRADATION'
-  | 'TOOL_SELECTION_HINT'
-  | 'TASK_DECOMPOSITION'
-  | 'ERROR_PATTERN_MEMORY'
-
-interface NexusRule {
-  id: string
-  nexusId: string
-  type: RuleType
-  active: boolean
-  injectedPrompt: string
-  createdAt: number
-  expiresAt: number
-  cooldownUntil: number
-  metadata: {
-    toolName?: string
-    triggerValue: number
-    threshold: number
-    samples: number
-  }
-}
-
-interface NexusRulesStorage {
-  version: string
-  rules: Record<string, NexusRule[]>
-  lastUpdated: number
-}
-
-const RULE_PRIORITY: Record<RuleType, number> = {
-  'ERROR_PATTERN_MEMORY': 10,
-  'SUCCESS_RATE_DECLINE': 9,
-  'TOOL_ERROR_RATE': 8,
-  'TASK_DECOMPOSITION': 7,
-  'EFFICIENCY_DEGRADATION': 6,
-  'TOOL_SELECTION_HINT': 5,
-}
-
-const RULE_LABELS: Record<RuleType, string> = {
-  'TOOL_ERROR_RATE': '工具错误率预警',
-  'SUCCESS_RATE_DECLINE': '成功率下降警报',
-  'EFFICIENCY_DEGRADATION': '效率退化警告',
-  'TOOL_SELECTION_HINT': '工具选择优化',
-  'TASK_DECOMPOSITION': '任务分解建议',
-  'ERROR_PATTERN_MEMORY': '错误模式记忆',
-}
-
-const RULE_CONFIG = {
-  MIN_TASKS: 5,
-  MAX_ACTIVE_RULES: 3,
-  COOLDOWN_MS: 24 * 60 * 60 * 1000,  // 24 hours
-  EXPIRY_MS: 7 * 24 * 60 * 60 * 1000, // 7 days
-}
+// Nexus 性能统计类型 (已迁移到 nexusRuleEngine.ts / nexusManager.ts)
 
 /**
  * 任务完成度验证结果
@@ -806,380 +726,31 @@ class LocalClawService {
     }
   }
 
-  // ============================================
-  // 📊 Nexus 性能统计系统
-  // ============================================
-
-  /** 内存中的统计缓存 */
-  private nexusStatsCache: NexusStatsMap = {}
-
-  /**
-   * 启动时加载已有的统计数据
-   */
-  private async loadNexusStats(): Promise<void> {
-    try {
-      const result = await this.executeTool({
-        name: 'readFile',
-        args: { path: 'memory/nexus_stats.json' },
-      })
-      if (result.status === 'success' && result.result) {
-        this.nexusStatsCache = JSON.parse(result.result)
-        console.log(`[LocalClaw] Loaded nexus stats for ${Object.keys(this.nexusStatsCache).length} nexuses`)
-      }
-    } catch {
-      // 文件不存在，从空开始
-    }
-  }
-
-  /**
-   * 持久化统计数据到文件
-   */
-  private async saveNexusStats(): Promise<void> {
-    try {
-      await this.executeTool({
-        name: 'writeFile',
-        args: {
-          path: 'memory/nexus_stats.json',
-          content: JSON.stringify(this.nexusStatsCache, null, 2),
-        },
-      })
-    } catch (err) {
-      console.warn('[LocalClaw] Failed to save nexus stats:', err)
-    }
-  }
-
-  /**
-   * 任务完成后记录统计数据
-   * 从 ExecTrace 中提取关键指标，累加到对应 Nexus 的统计中
-   */
-  recordNexusPerformance(trace: ExecTrace): void {
-    const nexusId = trace.activeNexusId || '_global'
-
-    // 获取或初始化
-    if (!this.nexusStatsCache[nexusId]) {
-      this.nexusStatsCache[nexusId] = {
-        nexusId,
-        totalTasks: 0,
-        successCount: 0,
-        failureCount: 0,
-        toolUsage: {},
-        totalTurns: 0,
-        totalDuration: 0,
-        topErrors: [],
-        lastUpdated: Date.now(),
-      }
-    }
-
-    const stats = this.nexusStatsCache[nexusId]
-    stats.totalTasks++
-    stats.totalTurns += trace.turnCount || 0
-    stats.totalDuration += trace.duration || 0
-    stats.lastUpdated = Date.now()
-
-    if (trace.success) {
-      stats.successCount++
-    } else {
-      stats.failureCount++
-    }
-
-    // 统计每个工具的调用和错误
-    for (const tool of trace.tools) {
-      if (!stats.toolUsage[tool.name]) {
-        stats.toolUsage[tool.name] = { calls: 0, errors: 0 }
-      }
-      stats.toolUsage[tool.name].calls++
-      if (tool.status === 'error') {
-        stats.toolUsage[tool.name].errors++
-
-        // 记录错误模式（去重，保留最近5条）
-        const errSnippet = (tool.result || '').slice(0, 60)
-        if (errSnippet && !stats.topErrors.includes(errSnippet)) {
-          stats.topErrors.push(errSnippet)
-          if (stats.topErrors.length > 5) stats.topErrors.shift()
-        }
-      }
-    }
-
-    // 异步持久化（不阻塞）
-    this.saveNexusStats().catch(() => {})
-
-    // 🤖 触发规则引擎评估
-    this.evaluateAndActivateRules(nexusId)
-  }
-
-  /**
-   * 生成 Nexus 性能洞察文本
-   * 纯代码逻辑，不调用 LLM，直接从统计数据计算
-   */
-  buildNexusInsight(nexusId?: string | null): string {
-    const id = nexusId || '_global'
-    const stats = this.nexusStatsCache[id]
-    if (!stats || stats.totalTasks < 2) return ''  // 数据不足，不注入
-
-    const successRate = Math.round((stats.successCount / stats.totalTasks) * 100)
-    const avgTurns = Math.round(stats.totalTurns / stats.totalTasks)
-    const avgDuration = Math.round(stats.totalDuration / stats.totalTasks / 1000)  // 秒
-
-    const lines: string[] = [`## 📊 历史表现 (${stats.totalTasks}次任务)`]
-
-    // 成功率
-    if (successRate >= 80) {
-      lines.push(`成功率: ${successRate}% — 表现稳定`)
-    } else if (successRate >= 50) {
-      lines.push(`成功率: ${successRate}% — 有改进空间，注意失败模式`)
-    } else {
-      lines.push(`成功率: ${successRate}% — 失败率偏高，执行前仔细规划`)
-    }
-
-    // 效率
-    lines.push(`平均轮次: ${avgTurns} | 平均耗时: ${avgDuration}s`)
-
-    // 最常用工具 Top 3
-    const sortedTools = Object.entries(stats.toolUsage)
-      .sort((a, b) => b[1].calls - a[1].calls)
-      .slice(0, 3)
-    if (sortedTools.length > 0) {
-      const toolHints = sortedTools.map(([name, u]) => {
-        const errRate = u.calls > 0 ? Math.round((u.errors / u.calls) * 100) : 0
-        return errRate > 30
-          ? `${name}(${u.calls}次, ⚠️错误率${errRate}%)`
-          : `${name}(${u.calls}次)`
-      })
-      lines.push(`常用工具: ${toolHints.join(', ')}`)
-    }
-
-    // 高错误率工具预警
-    const riskyTools = Object.entries(stats.toolUsage)
-      .filter(([, u]) => u.calls >= 3 && (u.errors / u.calls) > 0.4)
-      .map(([name]) => name)
-    if (riskyTools.length > 0) {
-      lines.push(`⚠️ 高风险工具: ${riskyTools.join(', ')} — 使用前确认参数正确`)
-    }
-
-    // 策略建议
-    if (successRate < 60 && avgTurns > 15) {
-      lines.push(`建议: 失败率高且轮次多，优先拆分为更小的子任务`)
-    } else if (avgTurns > 20) {
-      lines.push(`建议: 平均轮次偏高，考虑更精确的工具选择`)
-    }
-
-    return lines.join('\n') + '\n'
-  }
-
-  // ============================================
-  // 🤖 自适应规则引擎
-  // ============================================
-
-  private nexusRulesCache: NexusRulesStorage = { version: '1.0', rules: {}, lastUpdated: 0 }
-
-  private async loadNexusRules(): Promise<void> {
-    try {
-      const result = await this.executeTool({
-        name: 'readFile',
-        args: { path: 'memory/nexus_rules.json' },
-      })
-      if (result.status === 'success' && result.result) {
-        this.nexusRulesCache = JSON.parse(result.result)
-        // 启动时清理过期规则
-        const now = Date.now()
-        for (const nexusId of Object.keys(this.nexusRulesCache.rules)) {
-          this.nexusRulesCache.rules[nexusId] = this.nexusRulesCache.rules[nexusId]
-            .filter(r => r.expiresAt > now)
-        }
-        console.log(`[RuleEngine] Loaded rules for ${Object.keys(this.nexusRulesCache.rules).length} nexuses`)
-      }
-    } catch {
-      // 文件不存在，从空开始
-    }
-  }
-
-  private async saveNexusRules(): Promise<void> {
-    this.nexusRulesCache.lastUpdated = Date.now()
-    try {
-      await this.executeTool({
-        name: 'writeFile',
-        args: {
-          path: 'memory/nexus_rules.json',
-          content: JSON.stringify(this.nexusRulesCache, null, 2),
-        },
-      })
-    } catch (err) {
-      console.warn('[RuleEngine] Failed to save rules:', err)
-    }
-  }
-
-  /**
-   * 获取 Nexus 的活跃规则（已过期的自动过滤）
-   */
-  getActiveRulesForNexus(nexusId: string | null): NexusRule[] {
-    if (!nexusId) return []
-    const rules = this.nexusRulesCache.rules[nexusId] || []
-    const now = Date.now()
-    return rules.filter(r => r.active && r.expiresAt > now)
-  }
-
-  /**
-   * 核心：评估统计数据，激活/创建规则
-   * 在 recordNexusPerformance 之后调用，纯 if/else 逻辑
-   */
-  private evaluateAndActivateRules(nexusId: string): void {
-    const stats = this.nexusStatsCache[nexusId]
-    if (!stats || stats.totalTasks < RULE_CONFIG.MIN_TASKS) return
-
-    const existing = this.nexusRulesCache.rules[nexusId] || []
-    const now = Date.now()
-
-    // 清理过期规则
-    this.nexusRulesCache.rules[nexusId] = existing.filter(r => r.expiresAt > now)
-    const activeCount = this.getActiveRulesForNexus(nexusId).length
-
-    const candidates: NexusRule[] = []
-
-    // --- 规则 1: 工具错误率预警 ---
-    for (const [toolName, usage] of Object.entries(stats.toolUsage)) {
-      if (usage.calls >= 5) {
-        const errorRate = Math.round((usage.errors / usage.calls) * 100)
-        if (errorRate > 40 && !this.hasActiveRule(nexusId, 'TOOL_ERROR_RATE', toolName)) {
-          candidates.push(this.createRule(nexusId, 'TOOL_ERROR_RATE',
-            `工具 ${toolName} 历史错误率 ${errorRate}%。调用前务必验证参数格式和路径，如有疑问先用 readFile 确认。`,
-            { toolName, triggerValue: errorRate, threshold: 40, samples: usage.calls }
-          ))
-        }
-      }
-    }
-
-    // --- 规则 2: 成功率下降 ---
-    if (stats.totalTasks >= 10) {
-      const successRate = Math.round((stats.successCount / stats.totalTasks) * 100)
-      if (successRate < 50 && !this.hasActiveRule(nexusId, 'SUCCESS_RATE_DECLINE')) {
-        candidates.push(this.createRule(nexusId, 'SUCCESS_RATE_DECLINE',
-          `当前成功率 ${successRate}%，低于健康水平。执行前制定详细计划，拆分为 3-5 个子步骤，每步验证后再继续。`,
-          { triggerValue: successRate, threshold: 50, samples: stats.totalTasks }
-        ))
-      }
-    }
-
-    // --- 规则 3: 效率退化 ---
-    const avgTurns = Math.round(stats.totalTurns / stats.totalTasks)
-    if (avgTurns > 20 && !this.hasActiveRule(nexusId, 'EFFICIENCY_DEGRADATION')) {
-      candidates.push(this.createRule(nexusId, 'EFFICIENCY_DEGRADATION',
-        `平均执行轮次 ${avgTurns}，效率偏低。优先使用直接相关的工具，避免试错式调用，参考历史成功案例的工具序列。`,
-        { triggerValue: avgTurns, threshold: 20, samples: stats.totalTasks }
-      ))
-    }
-
-    // --- 规则 4: 正向工具推荐 ---
-    for (const [toolName, usage] of Object.entries(stats.toolUsage)) {
-      if (usage.calls >= 5) {
-        const successRate = Math.round(((usage.calls - usage.errors) / usage.calls) * 100)
-        if (successRate > 80 && !this.hasActiveRule(nexusId, 'TOOL_SELECTION_HINT', toolName)) {
-          candidates.push(this.createRule(nexusId, 'TOOL_SELECTION_HINT',
-            `工具 ${toolName} 历史表现优秀（成功率 ${successRate}%），遇到相关任务时优先考虑。`,
-            { toolName, triggerValue: successRate, threshold: 80, samples: usage.calls }
-          ))
-        }
-      }
-    }
-
-    // --- 规则 5: 任务分解 ---
-    if (stats.failureCount >= 5) {
-      const failRate = Math.round((stats.failureCount / stats.totalTasks) * 100)
-      if (failRate > 60 && avgTurns > 15 && !this.hasActiveRule(nexusId, 'TASK_DECOMPOSITION')) {
-        candidates.push(this.createRule(nexusId, 'TASK_DECOMPOSITION',
-          `复杂任务失败率 ${failRate}%。接到任务时先输出 3-5 步执行计划，每步完成后检查结果再继续。`,
-          { triggerValue: failRate, threshold: 60, samples: stats.totalTasks }
-        ))
-      }
-    }
-
-    // --- 规则 6: 错误模式记忆 ---
-    const errorCounts = new Map<string, number>()
-    for (const err of stats.topErrors) {
-      const key = err.slice(0, 40)
-      errorCounts.set(key, (errorCounts.get(key) || 0) + 1)
-    }
-    for (const [pattern, count] of errorCounts) {
-      if (count >= 3 && !this.hasActiveRule(nexusId, 'ERROR_PATTERN_MEMORY', pattern)) {
-        candidates.push(this.createRule(nexusId, 'ERROR_PATTERN_MEMORY',
-          `历史错误模式: "${pattern}"（出现${count}次）。遇到类似错误时停止重试，寻求用户确认或换用备选方案。`,
-          { toolName: pattern, triggerValue: count, threshold: 3, samples: stats.totalTasks }
-        ))
-      }
-    }
-
-    // 按优先级排序，取可激活的
-    const sorted = candidates
-      .filter(r => !this.isInCooldown(nexusId, r.type, r.metadata.toolName))
-      .sort((a, b) => RULE_PRIORITY[b.type] - RULE_PRIORITY[a.type])
-
-    const maxNew = Math.max(0, RULE_CONFIG.MAX_ACTIVE_RULES - activeCount)
-    const toActivate = sorted.slice(0, maxNew)
-
-    if (toActivate.length === 0) return
-
-    // 激活规则
-    if (!this.nexusRulesCache.rules[nexusId]) {
-      this.nexusRulesCache.rules[nexusId] = []
-    }
-
-    for (const rule of toActivate) {
-      this.nexusRulesCache.rules[nexusId].push(rule)
-      console.log(`[RuleEngine] Activated: ${RULE_LABELS[rule.type]} for ${nexusId}`)
-
-      // Toast 通知
-      this.storeActions?.addToast({
-        type: 'info',
-        title: `规则引擎: ${RULE_LABELS[rule.type]}`,
-        message: rule.injectedPrompt.slice(0, 80),
-      })
-    }
-
-    // 异步保存
-    this.saveNexusRules().catch(() => {})
-  }
-
-  private createRule(
-    nexusId: string,
-    type: RuleType,
-    prompt: string,
-    metadata: NexusRule['metadata']
-  ): NexusRule {
-    const now = Date.now()
-    return {
-      id: `rule-${now}-${Math.random().toString(36).slice(2, 6)}`,
-      nexusId,
-      type,
-      active: true,
-      injectedPrompt: prompt,
-      createdAt: now,
-      expiresAt: now + RULE_CONFIG.EXPIRY_MS,
-      cooldownUntil: now + RULE_CONFIG.COOLDOWN_MS,
-      metadata,
-    }
-  }
-
-  private hasActiveRule(nexusId: string, type: RuleType, toolName?: string): boolean {
-    const rules = this.getActiveRulesForNexus(nexusId)
-    return rules.some(r =>
-      r.type === type && (!toolName || r.metadata.toolName === toolName)
-    )
-  }
-
-  private isInCooldown(nexusId: string, type: RuleType, toolName?: string): boolean {
-    const all = this.nexusRulesCache.rules[nexusId] || []
-    const now = Date.now()
-    return all.some(r =>
-      r.type === type &&
-      (!toolName || r.metadata.toolName === toolName) &&
-      r.cooldownUntil > now
-    )
-  }
-
   /**
    * 注入 Store Actions
    */
   injectStore(actions: StoreActions) {
     this.storeActions = actions
+
+    // 接线提取出的服务
+    nexusRuleEngine.setIO({
+      readFile: (path: string) => this.executeTool({ name: 'readFile', args: { path } }),
+      writeFile: (path: string, content: string) =>
+        this.executeTool({ name: 'writeFile', args: { path, content } }).then(() => {}),
+      addToast: (toast: { type: string; title: string; message: string }) =>
+        this.storeActions?.addToast(toast),
+    })
+
+    nexusManager.setIO({
+      executeTool: (call: { name: string; args: Record<string, unknown> }) => this.executeTool(call),
+      readFileWithCache: (path: string) => this.readFileWithCache(path),
+      getActiveNexusId: () => this.getActiveNexusId(),
+      getNexuses: () => (this.storeActions as any)?.nexuses as Map<string, NexusEntity> | undefined,
+      getAvailableTools: () => this.availableTools,
+      getServerUrl: () => this.serverUrl,
+      addToast: (toast: { type: string; title: string; message: string }) =>
+        this.storeActions?.addToast(toast),
+    })
   }
 
   /**
@@ -1434,10 +1005,10 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
       await this.loadCapabilityGapHistory()
 
       // 加载 Nexus 性能统计
-      await this.loadNexusStats()
+      await nexusManager.loadStats()
 
       // 加载自适应规则
-      await this.loadNexusRules()
+      await nexusRuleEngine.load()
 
       // 初始化今日日志
       await this.initDailyLog()
@@ -1673,8 +1244,7 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
           // P1: 从 manifest.keywords 动态构建技能触发器
           this.buildSkillTriggersFromManifest(skills)
           
-          // P6: 尝试连接 EvoMap 网络 (后台，不阻塞)
-          this.initEvoMap().catch(e => console.warn('[LocalClaw] EvoMap init failed:', e))
+          // P6: EvoMap 已移除 (死代码清理)
         } else {
           console.log('[LocalClaw] No skills found (empty array)')
         }
@@ -1797,20 +1367,20 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
     // 1.5 激活的 Nexus SOP 注入 (Phase 4)
     const activeNexusId = this.getActiveNexusId()
     if (activeNexusId) {
-      const nexusCtx = await this.buildNexusContext(activeNexusId, queryLower)
+      const nexusCtx = await nexusManager.buildContext(activeNexusId, queryLower)
       if (nexusCtx) {
         contextParts.push(nexusCtx)
       }
     }
 
     // 1.6 📊 Nexus 性能洞察注入
-    const performanceInsight = this.buildNexusInsight(activeNexusId)
+    const performanceInsight = nexusManager.buildInsight(activeNexusId)
     if (performanceInsight) {
       contextParts.push(performanceInsight)
     }
 
     // 1.7 🤖 自适应规则引擎注入
-    const activeRules = this.getActiveRulesForNexus(activeNexusId)
+    const activeRules = nexusRuleEngine.getActiveRulesForNexus(activeNexusId)
     if (activeRules.length > 0) {
       const ruleTexts = activeRules.map(r => `- ${r.injectedPrompt}`).join('\n')
       contextParts.push(`## 🤖 自适应约束\n${ruleTexts}`)
@@ -1879,7 +1449,7 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
   }
 
   // ============================================
-  // 🌌 Nexus 上下文 & 经验系统 (Phase 4)
+  // 🌌 Nexus 上下文 (委托给提取的服务)
   // ============================================
 
   /**
@@ -1888,376 +1458,6 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
   private getActiveNexusId(): string | null {
     // 从 storeActions 中读取 (Zustand 状态)
     return (this.storeActions as any)?.activeNexusId ?? null
-  }
-
-  /**
-   * 构建 Nexus 专用上下文 (Mission + SOP + 相关经验)
-   */
-  private async buildNexusContext(nexusId: string, userQuery: string): Promise<string | null> {
-    // 先尝试从 store 中获取 SOP
-    const nexuses: Map<string, NexusEntity> | undefined = (this.storeActions as any)?.nexuses
-    const nexus = nexuses?.get(nexusId)
-    
-    let sopContent = nexus?.sopContent
-    
-    // 如果 store 中没有 SOP，从后端加载
-    if (!sopContent) {
-      try {
-        const res = await fetch(`${this.serverUrl}/nexuses/${nexusId}`)
-        if (res.ok) {
-          const detail = await res.json()
-          sopContent = detail.sopContent
-        }
-      } catch {
-        // 静默失败
-      }
-    }
-    
-    if (!sopContent) return null
-
-    // 截断 SOP 到 ~2000 token 预算 (约 8000 字符)
-    const maxChars = 8000
-    const trimmedSOP = sopContent.length > maxChars 
-      ? sopContent.slice(0, maxChars) + '\n... [truncated]'
-      : sopContent
-
-    let ctx = `## 🌌 Active Nexus: ${nexus?.label || nexusId}\n\n`
-    
-    // 🎯 目标函数驱动上下文 (Objective-Driven Execution)
-    const objective = nexus?.objective
-    const metrics = nexus?.metrics
-    const strategy = nexus?.strategy
-    
-    if (objective) {
-      ctx += `### 🎯 核心目标 (Objective)\n${objective}\n\n`
-      
-      if (metrics && metrics.length > 0) {
-        ctx += `### ✓ 验收标准 (Metrics)\n`
-        ctx += `执行过程中，请自我检查是否满足以下条件：\n`
-        metrics.forEach((m, i) => {
-          ctx += `${i + 1}. ${m}\n`
-        })
-        ctx += `\n`
-      }
-      
-      if (strategy) {
-        ctx += `### 🔄 动态调整策略\n${strategy}\n\n`
-      }
-      
-      ctx += `---\n\n`
-    }
-    
-    ctx += trimmedSOP
-
-    // 加载相关经验 (简单关键词匹配)
-    const experiences = await this.searchNexusExperiences(nexusId, userQuery)
-    if (experiences.length > 0) {
-      ctx += `\n\n### 相关历史经验\n${experiences.join('\n---\n')}`
-    }
-
-    return ctx
-  }
-
-  /**
-   * 搜索 Nexus 相关经验条目 (关键词匹配)
-   */
-  private async searchNexusExperiences(nexusId: string, query: string): Promise<string[]> {
-    const results: string[] = []
-    
-    for (const fileName of ['successes.md', 'failures.md']) {
-      const content = await this.readFileWithCache(`nexuses/${nexusId}/experience/${fileName}`)
-      if (!content) continue
-
-      const entries = content.split('\n### ').filter(e => e.trim())
-      const queryWords = query.split(/\s+/).filter(w => w.length > 2)
-      
-      for (const entry of entries) {
-        const entryLower = entry.toLowerCase()
-        const matchCount = queryWords.filter(w => entryLower.includes(w.toLowerCase())).length
-        if (matchCount > 0) {
-          const prefix = fileName.includes('success') ? '[SUCCESS]' : '[FAILURE]'
-          results.push(`${prefix} ### ${entry.slice(0, 500)}`)
-        }
-      }
-    }
-
-    return results.slice(0, 5) // 最多返回 5 条
-  }
-
-  // ============================================================
-  // 🎯 Nexus 驱动的上下文装配系统 (三层匹配)
-  // ============================================================
-
-  /**
-   * Layer 1: Nexus 路由匹配
-   * 四个优先级: P0 显式激活 → P1 触发词命中 → P2 关键词评分 → P3 经验匹配
-   * 返回匹配到的 NexusEntity 或 null（降级到全量工具）
-   */
-  private matchNexusForTask(userInput: string): NexusEntity | null {
-    const nexuses: Map<string, NexusEntity> | undefined = (this.storeActions as any)?.nexuses
-    if (!nexuses || nexuses.size === 0) return null
-
-    const inputLower = userInput.toLowerCase()
-
-    // P0: 显式激活（用户已选中 Nexus）
-    const activeNexusId = this.getActiveNexusId()
-    if (activeNexusId) {
-      const active = nexuses.get(activeNexusId)
-      if (active) return active
-    }
-
-    const nexusList = Array.from(nexuses.values()).filter(n => n.constructionProgress >= 1)
-
-    // P1: 触发词命中（精确匹配，命中即返回）
-    for (const nexus of nexusList) {
-      const triggers = nexus.triggers || []
-      if (triggers.length > 0 && triggers.some(t => inputLower.includes(t.toLowerCase()))) {
-        console.log(`[NexusRouter] P1 trigger match: "${nexus.label}" via triggers`)
-        return nexus
-      }
-    }
-
-    // P2: 关键词综合评分
-    let bestMatch: NexusEntity | null = null
-    let bestScore = 0
-
-    for (const nexus of nexusList) {
-      let score = 0
-
-      // 标签命中（权重 3）
-      const triggers = nexus.triggers || []
-      score += triggers.filter(t => inputLower.includes(t.toLowerCase())).length * 3
-
-      // 技能名命中（权重 2）—— "web-search" 拆分为 ["web", "search"]
-      const skills = [...(nexus.boundSkillIds || []), ...(nexus.skillDependencies || [])]
-      score += skills.filter(s => {
-        const parts = s.toLowerCase().split('-')
-        return parts.some(p => p.length > 2 && inputLower.includes(p))
-      }).length * 2
-
-      // SOP/描述关键词命中（权重 1）
-      const desc = `${nexus.flavorText || ''} ${nexus.label || ''}`
-      const descWords = desc.toLowerCase().split(/\s+/).filter(w => w.length > 2)
-      score += descWords.filter(w => inputLower.includes(w)).length
-
-      if (score > bestScore) {
-        bestScore = score
-        bestMatch = nexus
-      }
-    }
-
-    if (bestScore >= 3 && bestMatch) {
-      console.log(`[NexusRouter] P2 keyword match: "${bestMatch.label}" (score: ${bestScore})`)
-      return bestMatch
-    }
-
-    // P3: 经验匹配（查看历史成功追踪中关联的 Nexus）
-    // 暂时通过现有 exec_traces 实现，后续可增强
-    // 当前阶段跳过，降级到全量工具
-
-    console.log('[NexusRouter] No Nexus matched, using full toolset')
-    return null
-  }
-
-  /**
-   * Layer 2: 工具过滤
-   * 根据匹配到的 Nexus，组装精准工具集
-   * 公式: 基础工具 ∪ 绑定工具 ∪ 经验工具
-   */
-  private assembleToolsForNexus(nexus: NexusEntity): ToolInfo[] {
-    const result: ToolInfo[] = []
-    const included = new Set<string>()
-
-    // 1. 基础工具（builtin 类型永远包含）
-    for (const tool of this.availableTools) {
-      if (tool.type === 'builtin') {
-        result.push(tool)
-        included.add(tool.name)
-      }
-    }
-
-    // 2. 绑定工具（boundSkillIds + skillDependencies）
-    const boundIds = new Set<string>([
-      ...(nexus.boundSkillIds || []),
-      ...(nexus.skillDependencies || []),
-    ])
-    for (const tool of this.availableTools) {
-      if (!included.has(tool.name) && boundIds.has(tool.name)) {
-        result.push(tool)
-        included.add(tool.name)
-      }
-    }
-
-    // 3. MCP 工具：如果绑定的技能名与 MCP server 名有交集，包含该 MCP 的所有工具
-    for (const tool of this.availableTools) {
-      if (tool.type === 'mcp' && !included.has(tool.name)) {
-        // MCP 工具名通常是 server__toolName 格式
-        const mcpServer = tool.name.split('__')[0] || ''
-        if (boundIds.has(mcpServer) || Array.from(boundIds).some(bid => tool.name.includes(bid))) {
-          result.push(tool)
-          included.add(tool.name)
-        }
-      }
-    }
-
-    // 4. 如果绑定工具太少（<3 个非 builtin），可能是新 Nexus，补充相关技能
-    const nonBuiltinCount = result.filter(t => t.type !== 'builtin').length
-    if (nonBuiltinCount < 3) {
-      // 通过技能名模糊匹配补充
-      const nexusKeywords = [
-        ...(nexus.triggers || []),
-        ...(nexus.label ? nexus.label.toLowerCase().split(/\s+/) : []),
-      ].map(k => k.toLowerCase()).filter(k => k.length > 2)
-
-      for (const tool of this.availableTools) {
-        if (included.has(tool.name)) continue
-        if (result.length >= 15) break // 上限 15 个工具
-
-        const toolLower = tool.name.toLowerCase()
-        const descLower = (tool.description || '').toLowerCase()
-        if (nexusKeywords.some(k => toolLower.includes(k) || descLower.includes(k))) {
-          result.push(tool)
-          included.add(tool.name)
-        }
-      }
-    }
-
-    console.log(`[NexusRouter] Assembled ${result.length} tools for "${nexus.label}" (${result.filter(t => t.type !== 'builtin').map(t => t.name).join(', ')})`)
-    return result
-  }
-
-  /**
-   * Layer 3: 运行时动态扩展
-   * 当 Reflexion 检测到工具不足时，扩展可用工具集
-   * 返回扩展后的工具列表，或 null 表示不需要扩展
-   */
-  private expandToolsForReflexion(
-    currentTools: ToolInfo[],
-    failedToolName: string,
-    errorMsg: string,
-  ): ToolInfo[] | null {
-    // 检测是否是"工具未找到"类型的错误
-    const isToolMissing = /unknown tool|tool not found|不支持|no such tool|未找到工具|not available/i.test(errorMsg)
-    if (!isToolMissing) return null
-
-    // 在全量工具中查找请求的工具
-    const currentNames = new Set(currentTools.map(t => t.name))
-    const missingTool = this.availableTools.find(t => t.name === failedToolName && !currentNames.has(t.name))
-
-    if (missingTool) {
-      console.log(`[NexusRouter] Runtime expansion: adding "${failedToolName}" to toolset`)
-      return [...currentTools, missingTool]
-    }
-
-    // 工具完全不存在，返回 null
-    return null
-  }
-
-  /**
-   * 核心入口：为当前任务准备工具集
-   * 返回 { tools, matchedNexus, isFiltered }
-   */
-  private prepareToolsForTask(userInput: string): {
-    tools: ToolInfo[]
-    matchedNexus: NexusEntity | null
-    isFiltered: boolean
-  } {
-    const matchedNexus = this.matchNexusForTask(userInput)
-
-    if (matchedNexus) {
-      const filteredTools = this.assembleToolsForNexus(matchedNexus)
-      // 安全阀：如果过滤后工具太少（仅有 builtin），降级到全量
-      const nonBuiltin = filteredTools.filter(t => t.type !== 'builtin').length
-      if (nonBuiltin === 0) {
-        console.log('[NexusRouter] Safety fallback: no non-builtin tools after filtering, using full toolset')
-        return { tools: this.availableTools, matchedNexus, isFiltered: false }
-      }
-      return { tools: filteredTools, matchedNexus, isFiltered: true }
-    }
-
-    return { tools: this.availableTools, matchedNexus: null, isFiltered: false }
-  }
-
-  /**
-   * 构建 Nexus 技能上下文 (用于 Reflexion/Critic 提示词增强)
-   * 返回当前 Nexus 的已绑定技能和可用技能库信息
-   */
-  private buildNexusSkillContext(): string {
-    const activeNexusId = this.getActiveNexusId()
-    if (!activeNexusId) return ''
-
-    const nexuses: Map<string, NexusEntity> | undefined = (this.storeActions as any)?.nexuses
-    const nexus = nexuses?.get(activeNexusId)
-    if (!nexus) return ''
-
-    const boundSkills = nexus.boundSkillIds || nexus.skillDependencies || []
-
-    // 从 availableTools 中提取可用技能名 (instruction + plugin 类型)
-    const availableSkillNames = this.availableTools
-      .filter((t: ToolInfo) => t.type === 'instruction' || t.type === 'plugin')
-      .map((t: ToolInfo) => t.name)
-
-    return `\n当前 Nexus: ${nexus.label || activeNexusId}
-已绑定技能: ${boundSkills.join(', ') || '无'}
-可用技能库: ${availableSkillNames.slice(0, 15).join(', ')}${availableSkillNames.length > 15 ? '...' : ''}`
-  }
-
-  /**
-   * 记录 Nexus 经验 (在 ReAct 循环完成后调用)
-   */
-  private async recordNexusExperience(
-    nexusId: string,
-    task: string,
-    toolsUsed: string[],
-    success: boolean,
-    finalResponse: string
-  ): Promise<void> {
-    try {
-      const insight = this.extractKeyInsight(toolsUsed, finalResponse)
-      await fetch(`${this.serverUrl}/nexuses/${nexusId}/experience`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          task: task.slice(0, 200),
-          tools_used: toolsUsed,
-          outcome: success ? 'success' : 'failure',
-          key_insight: insight,
-        }),
-      })
-      console.log(`[LocalClaw] Recorded ${success ? 'success' : 'failure'} experience for Nexus: ${nexusId}`)
-    } catch (e) {
-      console.warn('[LocalClaw] Failed to record Nexus experience:', e)
-    }
-  }
-
-  /**
-   * 从工具列表和最终回复中提取关键洞察
-   */
-  private extractKeyInsight(toolsUsed: string[], finalResponse: string): string {
-    if (toolsUsed.length === 0) return 'Direct response without tool usage'
-    const toolSeq = toolsUsed.join(' → ')
-    const summary = finalResponse.slice(0, 100).replace(/\n/g, ' ')
-    return `Tool sequence: ${toolSeq}. Result: ${summary}...`
-  }
-
-  /**
-   * 从用户查询匹配 Nexus 触发器
-   */
-  matchNexusByTriggers(userQuery: string): string | null {
-    const query = userQuery.toLowerCase()
-    const nexuses: Map<string, NexusEntity> | undefined = (this.storeActions as any)?.nexuses
-    if (!nexuses) return null
-
-    for (const [, nexus] of nexuses) {
-      if (nexus.triggers && nexus.triggers.length > 0) {
-        for (const trigger of nexus.triggers) {
-          if (query.includes(trigger.toLowerCase())) {
-            return nexus.id
-          }
-        }
-      }
-    }
-    return null
   }
 
   /**
@@ -2467,7 +1667,7 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
     this._lastCreatedFiles = []
 
     // P4: Nexus 触发器匹配 - 自动激活匹配的 Nexus
-    const matchedNexus = this.matchNexusByTriggers(prompt)
+    const matchedNexus = nexusManager.matchByTriggers(prompt)
     if (matchedNexus && !this.getActiveNexusId()) {
       this.storeActions?.setActiveNexus?.(matchedNexus)
       console.log(`[LocalClaw] Auto-activated Nexus by trigger: ${matchedNexus}`)
@@ -2771,7 +1971,7 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
     console.log(`[LocalClaw] Task complexity: ${isSimpleTask ? 'simple' : isHeavyTask ? 'heavy' : 'normal'}, maxTurns: ${maxTurns}`)
 
     // 🎯 Nexus 驱动：为当前任务准备精准工具集
-    const { tools: legacyTaskTools, matchedNexus: legacyMatchedNexus, isFiltered: legacyIsFiltered } = this.prepareToolsForTask(userPrompt)
+    const { tools: legacyTaskTools, matchedNexus: legacyMatchedNexus, isFiltered: legacyIsFiltered } = nexusManager.prepareToolsForTask(userPrompt)
 
     // 🎯 JIT: 动态构建上下文
     const { context: dynamicContext, dynamicExamples } = await this.buildDynamicContext(userPrompt)
@@ -3000,7 +2200,7 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
 请进行结构化反思:
 1. **根本原因**: 是路径错误？参数类型错误？权限问题？工具不支持？
 2. **修正方案**: 如何调整参数或换用其他方法？
-3. **预防措施**: 下次如何避免此类错误？${(() => { const ctx = this.buildNexusSkillContext(); return ctx ? `
+3. **预防措施**: 下次如何避免此类错误？${(() => { const ctx = nexusManager.buildSkillContext(); return ctx ? `
 4. **技能充足性**: 当前 Nexus 的技能是否足以完成任务？如果缺少必要技能，可使用 nexusBindSkill 添加；如果某技能不适用，可使用 nexusUnbindSkill 移除。${ctx}` : '' })()}
 
 请在 thought 中完成反思，然后执行修正后的操作。`,
@@ -3081,7 +2281,7 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
             const needsCritic = CONFIG.CRITIC_TOOLS.includes(toolCall.name)
             
             if (needsCritic) {
-              const nexusSkillCtxCritic = this.buildNexusSkillContext()
+              const nexusSkillCtxCritic = nexusManager.buildSkillContext()
               const recentToolNames = traceTools.slice(-5).map(t => t.name).join(', ')
 
               messages.push({
@@ -3165,7 +2365,7 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
       })
 
       // 📊 记录 Nexus 性能统计
-      this.recordNexusPerformance(trace)
+      nexusManager.recordPerformance(trace)
     }
 
     // 🔍 任务完成度验证 - 当没有最终响应或达到最大轮次时触发 (Legacy 模式)
@@ -3254,7 +2454,7 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
     console.log(`[LocalClaw/FC] Task complexity: ${isSimpleTask ? 'simple' : isHeavyTask ? 'heavy' : 'normal'}, maxTurns: ${maxTurns}`)
 
     // 🎯 Nexus 驱动：为当前任务准备精准工具集
-    const { tools: taskTools, matchedNexus, isFiltered } = this.prepareToolsForTask(userPrompt)
+    const { tools: taskTools, matchedNexus, isFiltered } = nexusManager.prepareToolsForTask(userPrompt)
     let currentTaskTools = taskTools
 
     // JIT: 动态构建上下文
@@ -3452,7 +2652,7 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
 
               // 🎯 Layer 3: 运行时动态扩展 - 工具不足时自动补充
               if (isFiltered) {
-                const expanded = this.expandToolsForReflexion(currentTaskTools, toolName, toolResult.result)
+                const expanded = nexusManager.expandToolsForReflexion(currentTaskTools, toolName, toolResult.result)
                 if (expanded) {
                   currentTaskTools = expanded
                   tools = convertToolInfoToFunctions(currentTaskTools)
@@ -3496,7 +2696,7 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
                 })
               } else {
                 // 🔄 Reflexion: 结构化反思提示 - 让 LLM 分析失败原因
-                const nexusSkillCtxFC = this.buildNexusSkillContext()
+                const nexusSkillCtxFC = nexusManager.buildSkillContext()
                 const reflexionHint = `
 
 [系统提示 - Reflexion 反思机制]
@@ -3553,7 +2753,7 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
               const needsCritic = CONFIG.CRITIC_TOOLS.includes(toolName)
               
               if (needsCritic) {
-                const nexusSkillCtxFCCritic = this.buildNexusSkillContext()
+                const nexusSkillCtxFCCritic = nexusManager.buildSkillContext()
                 const recentToolNamesFC = traceTools.slice(-5).map(t => t.name).join(', ')
                 const criticHint = `
 
@@ -3691,12 +2891,12 @@ ${toolName} 执行成功。请验证：
       })
 
       // 📊 记录 Nexus 性能统计
-      this.recordNexusPerformance(trace)
+      nexusManager.recordPerformance(trace)
 
       // P4: Nexus 经验记录
       if (activeNexusId) {
         const success = traceTools.every(t => t.status === 'success')
-        this.recordNexusExperience(
+        nexusManager.recordExperience(
           activeNexusId,
           userPrompt,
           traceTools.map(t => t.name),
@@ -3891,7 +3091,7 @@ ${stepsReport}
     // 构建 Nexus 上下文（如果有）
     let nexusContext = '无'
     if (nexusId) {
-      const nexusCtx = await this.buildNexusContext(nexusId, userPrompt)
+      const nexusCtx = await nexusManager.buildContext(nexusId, userPrompt)
       if (nexusCtx) {
         nexusContext = nexusCtx
       }
@@ -4896,73 +4096,6 @@ ${ephemeralContent.slice(-2000)}
     return result.result
   }
 
-  // ============================================
-  // EvoMap 集成 (GEP-A2A 协议)
-  // ============================================
-
-  /**
-   * 初始化 EvoMap 连接
-   * 后台执行，不阻塞主流程
-   */
-  private async initEvoMap(): Promise<void> {
-    try {
-      // 如果尚未注册，发送 hello
-      if (!evomapService.isRegistered()) {
-        const response = await evomapService.hello()
-        console.log(`[LocalClaw] EvoMap registered! Claim: ${response.claim_url}`)
-        
-        // 提示用户
-        this.storeActions?.addToast({
-          type: 'info',
-          title: 'EvoMap 已连接',
-          message: `认领链接: ${response.claim_code}`,
-        })
-      }
-
-      // 尝试获取已验证的 Capsule 资产
-      const capsules = await evomapService.fetchCapsules(10)
-      if (capsules.length > 0) {
-        console.log(`[LocalClaw] Fetched ${capsules.length} EvoMap capsules`)
-      }
-    } catch (error) {
-      // EvoMap 连接失败不影响主流程
-      console.warn('[LocalClaw] EvoMap connection failed (non-blocking):', error)
-    }
-  }
-
-  /**
-   * 发布成功经验到 EvoMap
-   * 在任务成功完成后调用
-   */
-  async publishToEvoMap(
-    summary: string,
-    implementation: string,
-    toolsUsed: string[]
-  ): Promise<boolean> {
-    try {
-      const response = await evomapService.publish(summary, implementation, toolsUsed)
-      if (response.status === 'accepted') {
-        console.log(`[LocalClaw] Published to EvoMap: ${response.asset_ids?.join(', ')}`)
-        this.storeActions?.addToast({
-          type: 'success',
-          title: 'EvoMap 发布成功',
-          message: '解决方案已共享到网络',
-        })
-        return true
-      }
-      return false
-    } catch (error) {
-      console.warn('[LocalClaw] EvoMap publish failed:', error)
-      return false
-    }
-  }
-
-  /**
-   * 获取 EvoMap 节点状态
-   */
-  getEvoMapState() {
-    return evomapService.getNodeState()
-  }
 }
 
 // 导出单例

@@ -9,7 +9,7 @@ import type { CanvasPalette } from '@/types/theme'
 // 世界主题
 // ============================================
 
-export type WorldTheme = 'cosmos' | 'cityscape' | 'village' | 'minimalist' | 'wildlife'
+export type WorldTheme = 'cosmos' | 'cityscape' | 'village' | 'minimalist'
 
 // ============================================
 // 坐标与几何

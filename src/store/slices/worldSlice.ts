@@ -255,12 +255,11 @@ export const createWorldSlice: StateCreator<WorldSlice> = (set, get) => ({
         label: serverNexus.label || serverNexus.name || serverNexus.id,
         constructionProgress: existing?.constructionProgress ?? 1,
         createdAt: existing?.createdAt || Date.now(),
-        // 映射 skillDependencies 到 boundSkillIds
-        boundSkillIds: serverNexus.skillDependencies || serverNexus.boundSkillIds || [],
+        // 统一使用 boundSkillIds
+        boundSkillIds: serverNexus.boundSkillIds || [],
         flavorText: serverNexus.flavorText || serverNexus.description || '',
         // Phase 4: File-based Nexus fields
         sopContent: serverNexus.sopContent,
-        skillDependencies: serverNexus.skillDependencies,
         triggers: serverNexus.triggers,
         version: serverNexus.version,
         location: serverNexus.location,

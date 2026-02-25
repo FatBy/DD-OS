@@ -14,7 +14,6 @@ import { RendererRegistry } from './RendererRegistry'
 import { createCosmosRenderers, createCityscapeRenderers, createVillageRenderers, createMinimalistRenderers } from './index'
 import { worldToScreen as wts, screenToWorld as stw } from './utils/coordinateTransforms'
 import { PlanetRenderer } from './entities/PlanetRenderer'
-import { BuildingRenderer } from './entities/BuildingRenderer'
 import { BlockRenderer } from './entities/BlockRenderer'
 import { TopDownBuildingRenderer } from './topdown/TopDownBuildingRenderer'
 import { IsometricBuildingRenderer } from './isometric/IsometricBuildingRenderer'
@@ -123,18 +122,10 @@ export class GameCanvas {
       renderers?.core?.initParticles?.(state.energyCore)
     }
     
-    // 更新执行状态到 PlanetRenderer 或 BuildingRenderer
+    // 更新执行状态到各实体渲染器
     const planetRenderer = this.getPlanetRenderer()
     if (planetRenderer) {
       planetRenderer.setExecutionState(
-        state.executingNexusId ?? null,
-        state.executionStartTime ?? null,
-      )
-    }
-    
-    const buildingRenderer = this.getBuildingRenderer()
-    if (buildingRenderer) {
-      buildingRenderer.setExecutionState(
         state.executingNexusId ?? null,
         state.executionStartTime ?? null,
       )
@@ -306,13 +297,6 @@ export class GameCanvas {
     return planet as PlanetRenderer | null
   }
 
-  private getBuildingRenderer(): BuildingRenderer | null {
-    const renderers = this.registry.getCurrent()
-    if (!renderers) return null
-    const building = renderers.entities.find(e => e.id === 'building-renderer')
-    return building as BuildingRenderer | null
-  }
-
   private getBlockRenderer(): BlockRenderer | null {
     const renderers = this.registry.getCurrent()
     if (!renderers) return null
@@ -347,10 +331,6 @@ export class GameCanvas {
     const planetRenderer = this.getPlanetRenderer()
     if (planetRenderer) {
       planetRenderer.setDpr(this.dpr)
-    }
-    const buildingRenderer = this.getBuildingRenderer()
-    if (buildingRenderer) {
-      buildingRenderer.setDpr(this.dpr)
     }
     const blockRenderer = this.getBlockRenderer()
     if (blockRenderer) {

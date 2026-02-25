@@ -152,7 +152,7 @@ export function NexusDetailPanel() {
   // Resolve all bound skills (标记未加载为 unavailable)
   const boundSkills = useMemo(() => {
     if (!nexus) return []
-    const ids = nexus.boundSkillIds || nexus.skillDependencies || (nexus.boundSkillId ? [nexus.boundSkillId] : [])
+    const ids = nexus.boundSkillIds || []
     return ids.map(id => {
       const fromStore = skills.find(s => s.id === id || s.name === id)
       const fromOC = openClawSkills.find(s => s.name === id)
@@ -624,7 +624,7 @@ export function NexusDetailPanel() {
                             <button
                               onClick={() => {
                                 if (!nexus) return
-                                const ids = nexus.boundSkillIds || nexus.skillDependencies || []
+                                const ids = nexus.boundSkillIds || []
                                 const updated = { ...nexus, boundSkillIds: ids.filter(sid => sid !== skill.id && sid !== skill.name) }
                                 removeNexus(nexus.id)
                                 addNexus(updated)

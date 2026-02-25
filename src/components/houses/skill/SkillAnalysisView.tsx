@@ -15,7 +15,6 @@ export function SkillAnalysisView({ onShowDetail }: SkillAnalysisViewProps) {
   const openClawSkills = useStore((s) => s.openClawSkills)
   const nexuses = useStore((s) => s.nexuses)
   const setActiveNexus = useStore((s) => s.setActiveNexus)
-  const addNexusActivationMessage = useStore((s) => s.addNexusActivationMessage)
 
   const configured = isLLMConfigured()
   const skillCount = openClawSkills.length
@@ -45,7 +44,6 @@ export function SkillAnalysisView({ onShowDetail }: SkillAnalysisViewProps) {
     const nexus = nexuses.get('skill-scout')
     if (nexus) {
       setActiveNexus('skill-scout')
-      addNexusActivationMessage(nexus.label || 'skill-scout', nexus.flavorText)
     }
     setWeaknessHighlighted(false)
   }
