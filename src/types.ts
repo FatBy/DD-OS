@@ -398,6 +398,23 @@ export interface ChatMessage {
   createdFiles?: { filePath: string; fileName: string; message: string; fileSize?: number }[]
 }
 
+// ============================================
+// 会话管理类型
+// ============================================
+
+export type ConversationType = 'general' | 'nexus'
+
+export interface Conversation {
+  id: string
+  type: ConversationType
+  title: string
+  nexusId?: string          // 仅 'nexus' 类型使用
+  messages: ChatMessage[]
+  createdAt: number
+  updatedAt: number
+  pinned?: boolean
+}
+
 export interface AISummary {
   content: string
   loading: boolean
@@ -470,6 +487,7 @@ export interface ExecTraceToolCall {
   name: string
   args: Record<string, unknown>
   status: 'success' | 'error'
+  result?: string
   latency: number
   order: number
 }

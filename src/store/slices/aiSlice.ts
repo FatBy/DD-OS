@@ -1,5 +1,5 @@
 import type { StateCreator } from 'zustand'
-import type { ChatMessage, AISummary, LLMConfig, ViewType, ExecutionStatus, ApprovalRequest, MemoryEntry, JournalEntry } from '@/types'
+import type { ChatMessage, AISummary, LLMConfig, ViewType, ExecutionStatus, ApprovalRequest, MemoryEntry, JournalEntry, Conversation, ConversationType } from '@/types'
 import { getLLMConfig, saveLLMConfig, isLLMConfigured, streamChat, chat } from '@/services/llmService'
 import { buildSummaryMessages, buildChatMessages, parseExecutionCommands, stripExecutionBlocks, buildJournalPrompt, parseJournalResult } from '@/services/contextBuilder'
 import { localClawService } from '@/services/LocalClawService'
@@ -8,78 +8,168 @@ import { localClawService } from '@/services/LocalClawService'
 const SUMMARY_CACHE_MS = 5 * 60 * 1000
 
 // 内存限制常量 - 防止 OOM
-const MAX_CHAT_MESSAGES = 100        // 主聊天最多保留 100 条消息
-const MAX_NEXUS_MESSAGES = 50        // 每个 Nexus 对话最多保留 50 条消息
+const MAX_CONVERSATIONS = 20          // 最多保留 20 个会话
+const MAX_MESSAGES_PER_CONV = 50      // 每个会话最多保留 50 条消息
 
 // LocalStorage 键名
 const STORAGE_KEYS = {
-  CHAT_HISTORY: 'ddos_chat_history',
+  CONVERSATIONS: 'ddos_conversations_v2',      // 新会话系统
+  ACTIVE_CONVERSATION: 'ddos_active_conv_id',  // 当前激活会话 ID
   EXECUTION_STATUS: 'ddos_execution_status',
-  NEXUS_CHAT_MAP: 'ddos_nexus_chat_map',
+  // 旧键名 (用于迁移)
+  LEGACY_CHAT_HISTORY: 'ddos_chat_history',
+  LEGACY_NEXUS_CHAT_MAP: 'ddos_nexus_chat_map',
 }
 
-// 聊天记录持久化
-function loadChatHistory(): { messages: ChatMessage[]; statuses: Record<string, ExecutionStatus> } {
+// ============================================
+// 会话持久化函数
+// ============================================
+
+function loadConversations(): Map<string, Conversation> {
   try {
-    const msgs = localStorage.getItem(STORAGE_KEYS.CHAT_HISTORY)
-    const stats = localStorage.getItem(STORAGE_KEYS.EXECUTION_STATUS)
-    return {
-      messages: msgs ? JSON.parse(msgs) : [],
-      statuses: stats ? JSON.parse(stats) : {},
-    }
+    const data = localStorage.getItem(STORAGE_KEYS.CONVERSATIONS)
+    if (!data) return new Map()
+    const array = JSON.parse(data) as Conversation[]
+    return new Map(array.map(c => [c.id, c]))
   } catch (e) {
-    console.warn('[AI] Failed to load chat history from localStorage:', e)
-    return { messages: [], statuses: {} }
+    console.warn('[AI] Failed to load conversations:', e)
+    return new Map()
   }
 }
 
-function persistChatState(messages: ChatMessage[], statuses: Record<string, ExecutionStatus>) {
+function persistConversations(conversations: Map<string, Conversation>) {
   try {
-    // 只存最近 50 条消息，避免 localStorage 溢出
-    const trimmed = messages.slice(-50)
-    // 清理 outputLines (太大不适合存 localStorage)
-    const cleanStatuses: Record<string, ExecutionStatus> = {}
-    for (const [k, v] of Object.entries(statuses)) {
-      cleanStatuses[k] = { ...v, outputLines: undefined }
-    }
-    localStorage.setItem(STORAGE_KEYS.CHAT_HISTORY, JSON.stringify(trimmed))
-    localStorage.setItem(STORAGE_KEYS.EXECUTION_STATUS, JSON.stringify(cleanStatuses))
+    // 按更新时间排序，只保留最近 MAX_CONVERSATIONS 个
+    const sorted = [...conversations.values()]
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .slice(0, MAX_CONVERSATIONS)
+    
+    // 每个会话只保留最近 MAX_MESSAGES_PER_CONV 条消息
+    const trimmed = sorted.map(conv => ({
+      ...conv,
+      messages: conv.messages.slice(-MAX_MESSAGES_PER_CONV),
+    }))
+    
+    localStorage.setItem(STORAGE_KEYS.CONVERSATIONS, JSON.stringify(trimmed))
   } catch (e) {
-    console.warn('[AI] Failed to persist chat state:', e)
+    console.warn('[AI] Failed to persist conversations:', e)
   }
 }
 
-// Nexus 聊天记录持久化
-function loadNexusChatMap(): Record<string, ChatMessage[]> {
+function loadActiveConversationId(): string | null {
   try {
-    const data = localStorage.getItem(STORAGE_KEYS.NEXUS_CHAT_MAP)
+    return localStorage.getItem(STORAGE_KEYS.ACTIVE_CONVERSATION)
+  } catch {
+    return null
+  }
+}
+
+function persistActiveConversationId(id: string | null) {
+  try {
+    if (id) {
+      localStorage.setItem(STORAGE_KEYS.ACTIVE_CONVERSATION, id)
+    } else {
+      localStorage.removeItem(STORAGE_KEYS.ACTIVE_CONVERSATION)
+    }
+  } catch {}
+}
+
+function loadExecutionStatuses(): Record<string, ExecutionStatus> {
+  try {
+    const data = localStorage.getItem(STORAGE_KEYS.EXECUTION_STATUS)
     return data ? JSON.parse(data) : {}
-  } catch (e) {
-    console.warn('[AI] Failed to load nexus chat map:', e)
+  } catch {
     return {}
   }
 }
 
-function persistNexusChatMap(map: Record<string, ChatMessage[]>) {
+function persistExecutionStatuses(statuses: Record<string, ExecutionStatus>) {
   try {
-    // 每个 Nexus 只保留最近 30 条消息，避免 localStorage 溢出
-    const trimmed: Record<string, ChatMessage[]> = {}
-    for (const [nexusId, msgs] of Object.entries(map)) {
-      if (msgs.length > 0) {
-        trimmed[nexusId] = msgs.slice(-30)
+    const cleanStatuses: Record<string, ExecutionStatus> = {}
+    for (const [k, v] of Object.entries(statuses)) {
+      cleanStatuses[k] = { ...v, outputLines: undefined }
+    }
+    localStorage.setItem(STORAGE_KEYS.EXECUTION_STATUS, JSON.stringify(cleanStatuses))
+  } catch {}
+}
+
+// 迁移旧数据到新会话系统
+function migrateFromLegacy(): { conversations: Map<string, Conversation>; activeId: string | null } {
+  const conversations = new Map<string, Conversation>()
+  let activeId: string | null = null
+  
+  try {
+    // 检查是否已经有新格式数据
+    const existingData = localStorage.getItem(STORAGE_KEYS.CONVERSATIONS)
+    if (existingData) {
+      // 已有新数据，无需迁移
+      const loaded = loadConversations()
+      const savedActiveId = loadActiveConversationId()
+      return { 
+        conversations: loaded, 
+        activeId: savedActiveId || (loaded.size > 0 ? [...loaded.keys()][0] : null)
       }
     }
-    localStorage.setItem(STORAGE_KEYS.NEXUS_CHAT_MAP, JSON.stringify(trimmed))
+    
+    // 迁移旧主聊天记录
+    const oldChatHistory = localStorage.getItem(STORAGE_KEYS.LEGACY_CHAT_HISTORY)
+    if (oldChatHistory) {
+      const messages: ChatMessage[] = JSON.parse(oldChatHistory)
+      if (messages.length > 0) {
+        const convId = `general-${Date.now()}`
+        conversations.set(convId, {
+          id: convId,
+          type: 'general',
+          title: '主对话',
+          messages,
+          createdAt: messages[0]?.timestamp || Date.now(),
+          updatedAt: messages[messages.length - 1]?.timestamp || Date.now(),
+        })
+        activeId = convId
+      }
+    }
+    
+    // 迁移旧 Nexus 聊天记录
+    const oldNexusMap = localStorage.getItem(STORAGE_KEYS.LEGACY_NEXUS_CHAT_MAP)
+    if (oldNexusMap) {
+      const nexusChats: Record<string, ChatMessage[]> = JSON.parse(oldNexusMap)
+      for (const [nexusId, messages] of Object.entries(nexusChats)) {
+        if (messages.length > 0) {
+          const convId = `nexus-${nexusId}`
+          conversations.set(convId, {
+            id: convId,
+            type: 'nexus',
+            title: `Nexus-${nexusId.slice(-6)}`,
+            nexusId,
+            messages,
+            createdAt: messages[0].timestamp,
+            updatedAt: messages[messages.length - 1].timestamp,
+          })
+        }
+      }
+    }
+    
+    // 持久化新格式并清理旧键
+    if (conversations.size > 0) {
+      persistConversations(conversations)
+      if (activeId) persistActiveConversationId(activeId)
+      localStorage.removeItem(STORAGE_KEYS.LEGACY_CHAT_HISTORY)
+      localStorage.removeItem(STORAGE_KEYS.LEGACY_NEXUS_CHAT_MAP)
+      console.log('[AI] Migrated', conversations.size, 'conversations from legacy format')
+    }
+    
   } catch (e) {
-    console.warn('[AI] Failed to persist nexus chat map:', e)
+    console.warn('[AI] Migration failed:', e)
   }
+  
+  return { conversations, activeId }
 }
 
 const emptySummary = (): AISummary => ({ content: '', loading: false, error: null, timestamp: 0 })
 
 // 初始化时加载持久化数据
-const initialChatHistory = loadChatHistory()
-const initialNexusChatMap = loadNexusChatMap()
+const { conversations: initialConversations, activeId: initialActiveId } = migrateFromLegacy()
+const initialExecutionStatuses = loadExecutionStatuses()
 
 export interface AiSlice {
   // LLM 配置
@@ -89,15 +179,26 @@ export interface AiSlice {
   // 每页独立摘要
   summaries: Record<string, AISummary>
 
-  // 全局聊天
-  chatMessages: ChatMessage[]
+  // ============================================
+  // 多会话系统
+  // ============================================
+  conversations: Map<string, Conversation>
+  activeConversationId: string | null
+  
+  // 流式状态 (全局共享，同时只有一个流)
   chatStreaming: boolean
   chatStreamContent: string
   chatContext: ViewType
   chatError: string | null
-
-  // AbortController 引用
   _chatAbort: AbortController | null
+
+  // 会话管理 Actions
+  createConversation: (type: ConversationType, options?: { nexusId?: string; title?: string }) => string
+  switchConversation: (id: string) => void
+  deleteConversation: (id: string) => void
+  renameConversation: (id: string, title: string) => void
+  getOrCreateNexusConversation: (nexusId: string) => string
+  getCurrentMessages: () => ChatMessage[]
 
   // Actions
   setLlmConfig: (config: Partial<LLMConfig>) => void
@@ -108,12 +209,11 @@ export interface AiSlice {
   getSummary: (view: ViewType) => AISummary
   clearSummary: (view: ViewType) => void
 
-  // 聊天
+  // 聊天 (基于当前激活会话)
   sendChat: (message: string, view: ViewType) => Promise<void>
   clearChat: () => void
   abortChat: () => void
   setChatContext: (view: ViewType) => void
-  addNexusActivationMessage: (nexusName: string, nexusDescription?: string) => void
 
   // AI 执行
   executionStatuses: Record<string, ExecutionStatus>
@@ -131,305 +231,191 @@ export interface AiSlice {
   // 聊天面板开关
   isChatOpen: boolean
   setChatOpen: (open: boolean) => void
-
-  // ============================================
-  // Nexus 独立对话 (Phase 2: 按 Nexus 隔离)
-  // ============================================
-  nexusChatMap: Record<string, ChatMessage[]>
-  nexusChatStreaming: string | null  // 当前正在流式输出的 nexusId
-  nexusChatStreamContent: string
-  nexusChatError: string | null
-  sendNexusChat: (nexusId: string, message: string) => Promise<void>
-  clearNexusChat: (nexusId: string) => void
-  getNexusChatMessages: (nexusId: string) => ChatMessage[]
 }
 
 export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) => ({
   llmConfig: getLLMConfig(),
   llmConnected: false,
   summaries: {},
-  chatMessages: initialChatHistory.messages,
+  
+  // 多会话系统
+  conversations: initialConversations,
+  activeConversationId: initialActiveId,
+  
+  // 流式状态
   chatStreaming: false,
   chatStreamContent: '',
   chatContext: 'world',
   chatError: null,
   _chatAbort: null,
-  executionStatuses: initialChatHistory.statuses,
+  executionStatuses: initialExecutionStatuses,
 
-  // 聊天面板开关 - 有历史对话时自动打开
-  isChatOpen: false, // 默认关闭，让用户主动打开
+  // 聊天面板开关
+  isChatOpen: false,
   setChatOpen: (open) => set({ isChatOpen: open }),
 
   // ============================================
-  // Nexus 独立对话 (Phase 2)
+  // 会话管理 Actions
   // ============================================
-  nexusChatMap: initialNexusChatMap,
-  nexusChatStreaming: null,
-  nexusChatStreamContent: '',
-  nexusChatError: null,
-
-  getNexusChatMessages: (nexusId) => {
-    return get().nexusChatMap[nexusId] || []
-  },
-
-  clearNexusChat: (nexusId) => {
-    set((state) => {
-      const newMap = { ...state.nexusChatMap }
-      delete newMap[nexusId]
-      return { nexusChatMap: newMap }
-    })
-    persistNexusChatMap(get().nexusChatMap)
-  },
-
-  sendNexusChat: async (nexusId, message) => {
-    if (!isLLMConfigured()) return
-
-    // 用户消息
-    const userMsg: ChatMessage = {
-      id: `nexus-user-${Date.now()}`,
-      role: 'user',
-      content: message,
-      timestamp: Date.now(),
+  
+  createConversation: (type, options = {}) => {
+    const id = type === 'nexus' && options.nexusId 
+      ? `nexus-${options.nexusId}` 
+      : `${type}-${Date.now()}`
+    
+    const title = options.title || (type === 'general' ? '新对话' : `Nexus-${options.nexusId?.slice(-6) || 'unknown'}`)
+    
+    const conversation: Conversation = {
+      id,
+      type,
+      title,
+      nexusId: options.nexusId,
+      messages: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
     }
-
+    
     set((state) => {
-      const prev = state.nexusChatMap[nexusId] || []
-      return {
-        nexusChatMap: { ...state.nexusChatMap, [nexusId]: [...prev, userMsg].slice(-MAX_NEXUS_MESSAGES) },
-        nexusChatStreaming: nexusId,
-        nexusChatStreamContent: '',
-        nexusChatError: null,
+      const newConversations = new Map(state.conversations)
+      newConversations.set(id, conversation)
+      return { 
+        conversations: newConversations, 
+        activeConversationId: id 
       }
     })
-
+    
+    persistConversations(get().conversations)
+    persistActiveConversationId(id)
+    
+    return id
+  },
+  
+  switchConversation: (id) => {
+    const conversations = get().conversations
+    if (conversations.has(id)) {
+      set({ activeConversationId: id })
+      persistActiveConversationId(id)
+    }
+  },
+  
+  deleteConversation: (id) => {
+    set((state) => {
+      const newConversations = new Map(state.conversations)
+      newConversations.delete(id)
+      
+      // 如果删除的是当前会话，切换到第一个会话
+      let newActiveId = state.activeConversationId
+      if (newActiveId === id) {
+        newActiveId = newConversations.size > 0 ? [...newConversations.keys()][0] : null
+      }
+      
+      return { 
+        conversations: newConversations, 
+        activeConversationId: newActiveId 
+      }
+    })
+    
+    persistConversations(get().conversations)
+    persistActiveConversationId(get().activeConversationId)
+  },
+  
+  renameConversation: (id, title) => {
+    set((state) => {
+      const conv = state.conversations.get(id)
+      if (!conv) return state
+      
+      const newConversations = new Map(state.conversations)
+      newConversations.set(id, { ...conv, title, updatedAt: Date.now() })
+      return { conversations: newConversations }
+    })
+    
+    persistConversations(get().conversations)
+  },
+  
+  getOrCreateNexusConversation: (nexusId) => {
+    const conversations = get().conversations
+    
+    // 查找已存在的 Nexus 会话
+    for (const [id, conv] of conversations) {
+      if (conv.type === 'nexus' && conv.nexusId === nexusId) {
+        set({ activeConversationId: id })
+        persistActiveConversationId(id)
+        return id
+      }
+    }
+    
+    // 创建新的 Nexus 会话
+    // 尝试获取 Nexus 名称
+    let nexusTitle = `Nexus-${nexusId.slice(-6)}`
     try {
       const fullState = get() as any
-      const connectionMode = fullState.connectionMode || 'native'
-      const connectionStatus = fullState.connectionStatus || 'disconnected'
-      const isNativeConnected = connectionMode === 'native' && connectionStatus === 'connected'
-
-      if (isNativeConnected) {
-        // Native 模式: 根据任务复杂度选择路径
-        const taskComplexity = localClawService.classifyTaskComplexity(message)
-        console.log('[NexusChat] Task complexity:', taskComplexity, 'for:', message.slice(0, 50))
-        
-        if (taskComplexity === 'simple') {
-          // ===== 简单任务：直接流式 LLM 响应 =====
-          const msgId = `nexus-simple-${Date.now()}`
-          
-          // 占位消息
-          set((state) => {
-            const prev = state.nexusChatMap[nexusId] || []
-            return {
-              nexusChatMap: { 
-                ...state.nexusChatMap, 
-                [nexusId]: [...prev, { id: msgId, role: 'assistant' as const, content: '', timestamp: Date.now() }].slice(-MAX_NEXUS_MESSAGES) 
-              },
-            }
-          })
-
-          try {
-            const result = await localClawService.sendSimpleChat(
-              message,
-              nexusId,
-              (chunk) => {
-                // 流式更新
-                set((state) => ({
-                  nexusChatStreamContent: (state.nexusChatStreamContent || '') + chunk,
-                }))
-              }
-            )
-
-            // 完成：替换为最终内容
-            set((state) => {
-              const msgs = (state.nexusChatMap[nexusId] || []).map(m =>
-                m.id === msgId ? { ...m, content: result } : m
-              )
-              return {
-                nexusChatMap: { ...state.nexusChatMap, [nexusId]: msgs },
-                nexusChatStreaming: null,
-                nexusChatStreamContent: '',
-              }
-            })
-            persistNexusChatMap(get().nexusChatMap)
-
-          } catch (err: any) {
-            set((state) => {
-              const msgs = (state.nexusChatMap[nexusId] || []).map(m =>
-                m.id === msgId ? { ...m, content: `对话失败: ${err.message}`, error: true } : m
-              )
-              return {
-                nexusChatMap: { ...state.nexusChatMap, [nexusId]: msgs },
-                nexusChatStreaming: null,
-                nexusChatStreamContent: '',
-                nexusChatError: err.message,
-              }
-            })
-          }
-
-        } else {
-          // ===== 复杂任务：走 Quest ReAct 循环 =====
-          const execId = `nexus-exec-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
-          const execStartTime = Date.now()
-
-          // 占位消息
-          const placeholderMsg: ChatMessage = {
-            id: execId,
-            role: 'assistant',
-            content: '',
-            timestamp: Date.now(),
-            execution: { id: execId, status: 'running', timestamp: Date.now() },
-          }
-          set((state) => {
-            const prev = state.nexusChatMap[nexusId] || []
-            return {
-              nexusChatMap: { ...state.nexusChatMap, [nexusId]: [...prev, placeholderMsg].slice(-MAX_NEXUS_MESSAGES) },
-            }
-          })
-
-          // 激活 Nexus 并执行
-          fullState.setActiveNexus?.(nexusId)
-          fullState.startNexusExecution?.(nexusId)
-
-          // 创建实时任务
-          fullState.addActiveExecution?.({
-            id: execId,
-            title: message.slice(0, 50),
-            description: message,
-            status: 'executing',
-            priority: 'high',
-            timestamp: new Date().toISOString(),
-            executionSteps: [],
-            taskPlan: { nexusId },
-          })
-
-          try {
-            const result = await localClawService.sendMessageWithQuestPlan(
-              message,
-              nexusId,
-              (step) => {
-                fullState.appendExecutionStep?.(execId, step)
-              }
-            )
-
-            const execDuration = Date.now() - execStartTime
-            const nexusCreatedFiles = localClawService.lastCreatedFiles.length > 0
-              ? [...localClawService.lastCreatedFiles]
-              : undefined
-
-            // 替换占位消息为最终结果
-            set((state) => {
-              const msgs = (state.nexusChatMap[nexusId] || []).map(m =>
-                m.id === execId ? { ...m, content: result, execution: undefined, createdFiles: nexusCreatedFiles } : m
-              )
-              return {
-                nexusChatMap: { ...state.nexusChatMap, [nexusId]: msgs },
-                nexusChatStreaming: null,
-                nexusChatStreamContent: '',
-              }
-            })
-
-            fullState.updateActiveExecution?.(execId, {
-              status: 'done',
-              executionOutput: result,
-              executionDuration: execDuration,
-            })
-            fullState.completeNexusExecution?.(nexusId, { status: 'success', output: result.slice(0, 200) })
-            persistNexusChatMap(get().nexusChatMap)
-
-          } catch (err: any) {
-            const execDuration = Date.now() - execStartTime
-            set((state) => {
-              const msgs = (state.nexusChatMap[nexusId] || []).map(m =>
-                m.id === execId ? { ...m, content: `执行失败: ${err.message}`, error: true, execution: undefined } : m
-              )
-              return {
-                nexusChatMap: { ...state.nexusChatMap, [nexusId]: msgs },
-                nexusChatStreaming: null,
-                nexusChatStreamContent: '',
-                nexusChatError: err.message,
-              }
-            })
-            fullState.updateActiveExecution?.(execId, {
-              status: 'done',
-              executionError: err.message,
-              executionDuration: execDuration,
-            })
-            fullState.completeNexusExecution?.(nexusId, { status: 'error', error: err.message })
-            persistNexusChatMap(get().nexusChatMap)
-          }
-        }
-
-      } else {
-        // 非 Native 模式: 使用 streamChat 进行前端 LLM 对话
-        const execId = `nexus-chat-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
-
-        // 写入 activeExecutions 以便任务监控栏可见
-        fullState.addActiveExecution?.({
-          id: execId,
-          title: message.slice(0, 50),
-          description: message,
-          status: 'executing',
-          priority: 'medium',
-          timestamp: new Date().toISOString(),
-          executionSteps: [],
-          taskPlan: { nexusId },
-        })
-
-        const storeData = {
-          tasks: fullState.tasks || [],
-          skills: fullState.skills || [],
-          memories: fullState.memories || [],
-          soulCoreTruths: fullState.soulCoreTruths || [],
-          soulBoundaries: fullState.soulBoundaries || [],
-          soulVibeStatement: fullState.soulVibeStatement || '',
-          soulRawContent: fullState.soulRawContent || '',
-          connectionStatus: fullState.connectionStatus || 'disconnected',
-        }
-
-        const nexusMsgs = get().nexusChatMap[nexusId] || []
-        const messages = buildChatMessages('world', storeData, nexusMsgs, message)
-
-        let fullContent = ''
-        await streamChat(
-          messages,
-          (chunk) => {
-            fullContent += chunk
-            set({ nexusChatStreamContent: fullContent })
-          },
-        )
-
-        const assistantMsg: ChatMessage = {
-          id: `nexus-assistant-${Date.now()}`,
-          role: 'assistant',
-          content: fullContent,
-          timestamp: Date.now(),
-        }
-
-        set((state) => {
-          const prev = state.nexusChatMap[nexusId] || []
-          return {
-            nexusChatMap: { ...state.nexusChatMap, [nexusId]: [...prev, assistantMsg].slice(-MAX_NEXUS_MESSAGES) },
-            nexusChatStreaming: null,
-            nexusChatStreamContent: '',
-          }
-        })
-        persistNexusChatMap(get().nexusChatMap)
-
-        fullState.updateActiveExecution?.(execId, {
-          status: 'done',
-          executionOutput: fullContent.slice(0, 200),
-          executionDuration: Date.now() - (new Date(fullState.activeExecutions?.find((t: any) => t.id === execId)?.timestamp || Date.now()).getTime()),
-        })
+      const nexus = fullState.nexuses?.get?.(nexusId)
+      if (nexus?.label) {
+        nexusTitle = nexus.label
       }
+    } catch {}
+    
+    return get().createConversation('nexus', { nexusId, title: nexusTitle })
+  },
+  
+  getCurrentMessages: () => {
+    const { conversations, activeConversationId } = get()
+    if (!activeConversationId) return []
+    return conversations.get(activeConversationId)?.messages || []
+  },
 
-    } catch (err: any) {
-      set({
-        nexusChatStreaming: null,
-        nexusChatStreamContent: '',
-        nexusChatError: err.message,
+  // 内部辅助：向当前会话添加消息
+  _addMessageToActiveConv: (msg: ChatMessage) => {
+    const { conversations, activeConversationId } = get()
+    if (!activeConversationId) {
+      // 如果没有活跃会话，创建一个
+      const newId = get().createConversation('general')
+      const conv = get().conversations.get(newId)!
+      const updated = { 
+        ...conv, 
+        messages: [...conv.messages, msg].slice(-MAX_MESSAGES_PER_CONV),
+        updatedAt: Date.now()
+      }
+      set((state) => {
+        const newConversations = new Map(state.conversations)
+        newConversations.set(newId, updated)
+        return { conversations: newConversations }
+      })
+    } else {
+      const conv = conversations.get(activeConversationId)
+      if (!conv) return
+      const updated = { 
+        ...conv, 
+        messages: [...conv.messages, msg].slice(-MAX_MESSAGES_PER_CONV),
+        updatedAt: Date.now()
+      }
+      set((state) => {
+        const newConversations = new Map(state.conversations)
+        newConversations.set(activeConversationId, updated)
+        return { conversations: newConversations }
       })
     }
+    persistConversations(get().conversations)
+  },
+
+  // 内部辅助：更新当前会话中的消息
+  _updateMessageInActiveConv: (msgId: string, updates: Partial<ChatMessage>) => {
+    const { conversations, activeConversationId } = get()
+    if (!activeConversationId) return
+    const conv = conversations.get(activeConversationId)
+    if (!conv) return
+    
+    const updated = {
+      ...conv,
+      messages: conv.messages.map(m => m.id === msgId ? { ...m, ...updates } : m),
+      updatedAt: Date.now()
+    }
+    set((state) => {
+      const newConversations = new Map(state.conversations)
+      newConversations.set(activeConversationId, updated)
+      return { conversations: newConversations }
+    })
+    persistConversations(get().conversations)
   },
 
   setLlmConfig: (config) => {
@@ -506,6 +492,12 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
   sendChat: async (message, view) => {
     if (!isLLMConfigured()) return
 
+    // 确保有活跃会话
+    let activeId = get().activeConversationId
+    if (!activeId) {
+      activeId = get().createConversation('general')
+    }
+
     // 中止之前的请求
     const prevAbort = get()._chatAbort
     if (prevAbort) prevAbort.abort()
@@ -520,16 +512,15 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
       timestamp: Date.now(),
     }
 
-    set((state) => ({
-      chatMessages: [...state.chatMessages, userMsg].slice(-MAX_CHAT_MESSAGES),
+    // 添加到当前会话
+    get()._addMessageToActiveConv(userMsg)
+    set({
       chatStreaming: true,
       chatStreamContent: '',
       chatError: null,
       chatContext: view,
       _chatAbort: abortController,
-    }))
-    // 持久化用户消息
-    persistChatState(get().chatMessages, get().executionStatuses)
+    })
 
     try {
       const state = get() as any
@@ -550,8 +541,8 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
           timestamp: Date.now(),
           execution: { id: execId, status: 'running', timestamp: Date.now() },
         }
+        get()._addMessageToActiveConv(placeholderMsg)
         set((s) => ({
-          chatMessages: [...s.chatMessages, placeholderMsg].slice(-MAX_CHAT_MESSAGES),
           chatStreaming: true,
           chatStreamContent: '',
           executionStatuses: { ...s.executionStatuses, [execId]: placeholderMsg.execution! },
@@ -627,6 +618,8 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
           const createdFiles = localClawService.lastCreatedFiles.length > 0
             ? [...localClawService.lastCreatedFiles]
             : undefined
+          // 替换占位消息为最终结果（无 execution 卡片，附带创建的文件列表）
+          get()._updateMessageInActiveConv(execId, { content: result, execution: undefined, createdFiles })
           set((s) => ({
             chatStreaming: false,
             chatStreamContent: '',
@@ -635,10 +628,6 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
               ...s.executionStatuses,
               [execId]: { id: execId, status: 'success', output: result, timestamp: Date.now() },
             },
-            // 替换占位消息为最终结果（无 execution 卡片，附带创建的文件列表）
-            chatMessages: s.chatMessages.map(m =>
-              m.id === execId ? { ...m, content: result, execution: undefined, createdFiles } : m
-            ),
           }))
           // 更新任务状态 + 存储执行结果
           fullState.updateActiveExecution?.(execId, {
@@ -646,7 +635,7 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
             executionOutput: result,
             executionDuration: execDuration,
           })
-          persistChatState(get().chatMessages, get().executionStatuses)
+          persistExecutionStatuses(get().executionStatuses)
 
           // 5. 完成 Nexus 执行状态 + 发送 Toast 通知
           const executingNexusId = fullState.executingNexusId
@@ -671,6 +660,8 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
 
         } catch (err: any) {
           const execDuration = Date.now() - execStartTime
+          // 显示错误消息（普通文本，无执行卡片）
+          get()._updateMessageInActiveConv(execId, { content: `执行失败: ${err.message}`, error: true, execution: undefined })
           set((s) => ({
             chatStreaming: false,
             chatStreamContent: '',
@@ -679,17 +670,13 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
               ...s.executionStatuses,
               [execId]: { id: execId, status: 'error', error: err.message, timestamp: Date.now() },
             },
-            // 显示错误消息（普通文本，无执行卡片）
-            chatMessages: s.chatMessages.map(m =>
-              m.id === execId ? { ...m, content: `执行失败: ${err.message}`, error: true, execution: undefined } : m
-            ),
           }))
           fullState.updateActiveExecution?.(execId, {
             status: 'done',
             executionError: err.message,
             executionDuration: execDuration,
           })
-          persistChatState(get().chatMessages, get().executionStatuses)
+          persistExecutionStatuses(get().executionStatuses)
 
           // 完成 Nexus 执行状态 + 发送错误 Toast 通知
           const executingNexusId = fullState.executingNexusId
@@ -733,7 +720,7 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
         connectionStatus: state.connectionStatus || 'disconnected',
       }
 
-      const history = get().chatMessages
+      const history = get().getCurrentMessages()
       const messages = buildChatMessages(view, storeData, history, message)
 
       let fullContent = ''
@@ -759,14 +746,12 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
         timestamp: Date.now(),
       }
 
-      set((state) => ({
-        chatMessages: [...state.chatMessages, assistantMsg].slice(-MAX_CHAT_MESSAGES),
+      get()._addMessageToActiveConv(assistantMsg)
+      set({
         chatStreaming: false,
         chatStreamContent: '',
         _chatAbort: null,
-      }))
-      // 持久化 assistant 消息
-      persistChatState(get().chatMessages, get().executionStatuses)
+      })
 
       // === Observer 集成：记录行为，异步分析会自动触发 ===
       const fullState = get() as any
@@ -798,9 +783,7 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
                 timestamp: Date.now(),
               },
             }
-            set((state) => ({
-              chatMessages: [...state.chatMessages, suggestionMsg].slice(-MAX_CHAT_MESSAGES),
-            }))
+            get()._addMessageToActiveConv(suggestionMsg)
             continue
           }
           
@@ -816,8 +799,8 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
               timestamp: Date.now(),
             },
           }
+          get()._addMessageToActiveConv(execMsg)
           set((state) => ({
-            chatMessages: [...state.chatMessages, execMsg].slice(-MAX_CHAT_MESSAGES),
             executionStatuses: { 
               ...state.executionStatuses, 
               [execId]: execMsg.execution! 
@@ -838,11 +821,9 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
                   outputLines,
                   timestamp: Date.now(),
                 }
+                get()._updateMessageInActiveConv(execId, { execution: updatedStatus })
                 set((state) => ({
                   executionStatuses: { ...state.executionStatuses, [execId]: updatedStatus },
-                  chatMessages: state.chatMessages.map(m =>
-                    m.id === execId ? { ...m, execution: updatedStatus } : m
-                  ),
                 }))
               }
             )
@@ -855,13 +836,11 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
               outputLines: result.split('\n'),
               timestamp: Date.now(),
             }
+            get()._updateMessageInActiveConv(execId, { execution: finalStatus })
             set((state) => ({
               executionStatuses: { ...state.executionStatuses, [execId]: finalStatus },
-              chatMessages: state.chatMessages.map(m =>
-                m.id === execId ? { ...m, execution: finalStatus } : m
-              ),
             }))
-            persistChatState(get().chatMessages, get().executionStatuses)
+            persistExecutionStatuses(get().executionStatuses)
             
           } catch (err: any) {
             // 执行失败
@@ -871,11 +850,9 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
               error: err.message,
               timestamp: Date.now(),
             }
+            get()._updateMessageInActiveConv(execId, { execution: errorStatus })
             set((state) => ({
               executionStatuses: { ...state.executionStatuses, [execId]: errorStatus },
-              chatMessages: state.chatMessages.map(m =>
-                m.id === execId ? { ...m, execution: errorStatus } : m
-              ),
             }))
           }
         }
@@ -891,12 +868,12 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
             content: partial + ' [已中断]',
             timestamp: Date.now(),
           }
-          set((state) => ({
-            chatMessages: [...state.chatMessages, assistantMsg].slice(-MAX_CHAT_MESSAGES),
+          get()._addMessageToActiveConv(assistantMsg)
+          set({
             chatStreaming: false,
             chatStreamContent: '',
             _chatAbort: null,
-          }))
+          })
         } else {
           set({ chatStreaming: false, chatStreamContent: '', _chatAbort: null })
         }
@@ -914,9 +891,29 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
   clearChat: () => {
     const abort = get()._chatAbort
     if (abort) abort.abort()
-    localStorage.removeItem(STORAGE_KEYS.CHAT_HISTORY)
+    
+    // 清空当前会话的消息
+    const { conversations, activeConversationId } = get()
+    if (activeConversationId) {
+      const conv = conversations.get(activeConversationId)
+      if (conv) {
+        const updated = { ...conv, messages: [], updatedAt: Date.now() }
+        set((state) => {
+          const newConversations = new Map(state.conversations)
+          newConversations.set(activeConversationId, updated)
+          return { 
+            conversations: newConversations,
+            chatStreaming: false, 
+            chatStreamContent: '', 
+            chatError: null, 
+            _chatAbort: null, 
+            executionStatuses: {} 
+          }
+        })
+        persistConversations(get().conversations)
+      }
+    }
     localStorage.removeItem(STORAGE_KEYS.EXECUTION_STATUS)
-    set({ chatMessages: [], chatStreaming: false, chatStreamContent: '', chatError: null, _chatAbort: null, executionStatuses: {} })
   },
 
   abortChat: () => {
@@ -926,34 +923,21 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
 
   setChatContext: (view) => set({ chatContext: view }),
 
-  addNexusActivationMessage: (nexusName, nexusDescription) => {
-    const systemMsg: ChatMessage = {
-      id: `nexus-activate-${Date.now()}`,
-      role: 'assistant',
-      content: `🌟 **Nexus "${nexusName}" 已激活**\n\n${nexusDescription ? `> ${nexusDescription}\n\n` : ''}请输入你想要执行的任务，我会按照这个 Nexus 的 SOP 来协助你完成。`,
-      timestamp: Date.now(),
-    }
-    set((state) => ({
-      chatMessages: [...state.chatMessages, systemMsg].slice(-MAX_CHAT_MESSAGES),
-    }))
-  },
-
   updateExecutionStatus: (id, updates) => {
-    set((state) => {
-      const current = state.executionStatuses[id]
-      if (!current) return state
-      const updated = { ...current, ...updates }
-      const newStatuses = { ...state.executionStatuses, [id]: updated }
-      const newMessages = state.chatMessages.map(m =>
-        m.id === id ? { ...m, execution: updated } : m
-      )
-      // 持久化
-      persistChatState(newMessages, newStatuses)
-      return {
-        executionStatuses: newStatuses,
-        chatMessages: newMessages,
-      }
-    })
+    const current = get().executionStatuses[id]
+    if (!current) return
+    const updated = { ...current, ...updates }
+    
+    // 更新执行状态
+    set((state) => ({
+      executionStatuses: { ...state.executionStatuses, [id]: updated },
+    }))
+    
+    // 更新当前会话中的消息
+    get()._updateMessageInActiveConv(id, { execution: updated })
+    
+    // 持久化
+    persistExecutionStatuses(get().executionStatuses)
   },
 
   // P3: 危险操作审批
@@ -1099,12 +1083,12 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
     if (!isLLMConfigured()) return
     if (fullState.journalLoading) return
 
-    // 4. 收集今天的对话记录 (优先使用 chatMessages，回退到 memories)
-    const chatMessages: ChatMessage[] = fullState.chatMessages || []
+    // 4. 收集今天的对话记录 (从当前会话获取)
+    const currentMessages: ChatMessage[] = get().getCurrentMessages()
     const memories: MemoryEntry[] = fullState.memories || []
     
     // 过滤今天的聊天记录
-    const todayChats = chatMessages.filter((m: ChatMessage) => {
+    const todayChats = currentMessages.filter((m: ChatMessage) => {
       if (m.role === 'system') return false
       try {
         return new Date(m.timestamp).toLocaleDateString('sv-SE') === today

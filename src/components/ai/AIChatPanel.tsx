@@ -1,8 +1,9 @@
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { motion, AnimatePresence, useDragControls } from 'framer-motion'
 import { 
   MessageSquare, X, Send, Trash2, Square, Sparkles, Loader2, Zap,
-  Image, Paperclip, Puzzle, Server, Command, GripHorizontal, Wand2
+  Image, Paperclip, Puzzle, Server, Command, GripHorizontal, Wand2,
+  PanelLeftClose, PanelLeft
 } from 'lucide-react'
 import { useStore } from '@/store'
 import { isLLMConfigured } from '@/services/llmService'
@@ -12,6 +13,7 @@ import { ChatErrorBoundary } from './ChatErrorBoundary'
 import { AddMCPModal } from './AddMCPModal'
 import { AddSkillModal } from './AddSkillModal'
 import { CreateNexusModal, NexusInitialData } from '@/components/world/CreateNexusModal'
+import { ConversationSidebar } from './ConversationSidebar'
 import { useT } from '@/i18n'
 
 export function AIChatPanel() {
@@ -24,6 +26,7 @@ export function AIChatPanel() {
   const [showSkillModal, setShowSkillModal] = useState(false)
   const [showNexusModal, setShowNexusModal] = useState(false)
   const [nexusInitialData, setNexusInitialData] = useState<NexusInitialData | undefined>()
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -35,7 +38,11 @@ export function AIChatPanel() {
   const pendingAnalysisResult = useRef<NexusInitialData | null>(null)
 
   const currentView = useStore((s) => s.currentView)
-  const chatMessages = useStore((s) => s.chatMessages)
+  // 多会话系统：从当前活动会话获取消息
+  const conversations = useStore((s) => s.conversations)
+  const activeConversationId = useStore((s) => s.activeConversationId)
+  const getCurrentMessages = useStore((s) => s.getCurrentMessages)
+  const chatMessages = useMemo(() => getCurrentMessages(), [conversations, activeConversationId, getCurrentMessages])
   const chatStreaming = useStore((s) => s.chatStreaming)
   const chatStreamContent = useStore((s) => s.chatStreamContent)
   const chatError = useStore((s) => s.chatError)
@@ -330,7 +337,7 @@ export function AIChatPanel() {
               dragElastic={0.05}
               dragMomentum={false}
               className="fixed inset-0 m-auto z-[52]
-                         w-[960px] max-w-[90vw] h-[75vh] max-h-[800px]
+                         w-[1200px] max-w-[95vw] h-[80vh] max-h-[850px]
                          bg-skin-bg-primary/98 backdrop-blur-2xl 
                          border border-skin-border/20
                          rounded-2xl
@@ -345,6 +352,19 @@ export function AIChatPanel() {
               >
                 <div className="flex items-center gap-3">
                   <GripHorizontal className="w-4 h-4 text-skin-text-tertiary/50" />
+                  {/* 侧边栏折叠按钮 */}
+                  <button
+                    onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+                    className="p-1.5 text-skin-text-tertiary hover:text-skin-text-secondary 
+                               hover:bg-white/5 rounded-lg transition-colors"
+                    title={sidebarCollapsed ? "展开会话列表" : "收起会话列表"}
+                  >
+                    {sidebarCollapsed ? (
+                      <PanelLeft className="w-4 h-4" />
+                    ) : (
+                      <PanelLeftClose className="w-4 h-4" />
+                    )}
+                  </button>
                   <Sparkles className="w-5 h-5 text-skin-accent-amber" />
                   <span className="text-lg font-mono text-skin-accent-amber font-semibold">AI Assistant</span>
                   <span className="text-sm font-mono text-skin-text-tertiary px-2.5 py-1 bg-skin-bg-secondary/40 rounded-lg">
@@ -396,8 +416,27 @@ export function AIChatPanel() {
                 </div>
               </div>
 
-              {/* Messages */}
-              <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
+              {/* 主体内容区：侧边栏 + 聊天区 */}
+              <div className="flex-1 flex overflow-hidden">
+                {/* 会话侧边栏 */}
+                <AnimatePresence mode="wait">
+                  {!sidebarCollapsed && (
+                    <motion.div
+                      initial={{ width: 0, opacity: 0 }}
+                      animate={{ width: 240, opacity: 1 }}
+                      exit={{ width: 0, opacity: 0 }}
+                      transition={{ duration: 0.2 }}
+                      className="flex-shrink-0 overflow-hidden"
+                    >
+                      <ConversationSidebar className="h-full" />
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
+                {/* 聊天主区域 */}
+                <div className="flex-1 flex flex-col min-w-0">
+                  {/* Messages */}
+                  <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
                 <ChatErrorBoundary onReset={clearChat}>
                 {!configured ? (
                   <div className="flex flex-col items-center justify-center h-full text-center">
@@ -610,6 +649,10 @@ export function AIChatPanel() {
                   </p>
                 </div>
               )}
+                </div>
+                {/* 关闭：聊天主区域 */}
+              </div>
+              {/* 关闭：主体内容区 */}
             </motion.div>
           </>
         )}

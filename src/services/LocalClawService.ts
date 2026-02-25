@@ -1509,8 +1509,9 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
   /**
    * P0: 生成动态工具文档 (注入到系统提示词)
    */
-  private buildToolsDocumentation(): string {
-    if (this.availableTools.length === 0) {
+  private buildToolsDocumentation(toolList?: ToolInfo[]): string {
+    const toolSource = toolList || this.availableTools
+    if (toolSource.length === 0) {
       // fallback: 硬编码工具列表
       return `### 文件操作
 - readFile: 读取文件内容
@@ -1527,9 +1528,9 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
 - webFetch: 获取网页内容 (参数: url)`
     }
 
-    const builtins = this.availableTools.filter(t => t.type === 'builtin')
-    const plugins = this.availableTools.filter(t => t.type === 'plugin')
-    const instructions = this.availableTools.filter(t => t.type === 'instruction')
+    const builtins = toolSource.filter(t => t.type === 'builtin')
+    const plugins = toolSource.filter(t => t.type === 'plugin')
+    const instructions = toolSource.filter(t => t.type === 'instruction')
 
     let doc = '### 内置工具\n'
     for (const tool of builtins) {
@@ -1568,7 +1569,7 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
       }
     }
 
-    const mcpTools = this.availableTools.filter(t => t.type === 'mcp')
+    const mcpTools = toolSource.filter(t => t.type === 'mcp')
     if (mcpTools.length > 0) {
       doc += '\n### MCP 工具\n'
       for (const tool of mcpTools) {
@@ -1981,6 +1982,200 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
     }
 
     return results.slice(0, 5) // 最多返回 5 条
+  }
+
+  // ============================================================
+  // 🎯 Nexus 驱动的上下文装配系统 (三层匹配)
+  // ============================================================
+
+  /**
+   * Layer 1: Nexus 路由匹配
+   * 四个优先级: P0 显式激活 → P1 触发词命中 → P2 关键词评分 → P3 经验匹配
+   * 返回匹配到的 NexusEntity 或 null（降级到全量工具）
+   */
+  private matchNexusForTask(userInput: string): NexusEntity | null {
+    const nexuses: Map<string, NexusEntity> | undefined = (this.storeActions as any)?.nexuses
+    if (!nexuses || nexuses.size === 0) return null
+
+    const inputLower = userInput.toLowerCase()
+
+    // P0: 显式激活（用户已选中 Nexus）
+    const activeNexusId = this.getActiveNexusId()
+    if (activeNexusId) {
+      const active = nexuses.get(activeNexusId)
+      if (active) return active
+    }
+
+    const nexusList = Array.from(nexuses.values()).filter(n => n.constructionProgress >= 1)
+
+    // P1: 触发词命中（精确匹配，命中即返回）
+    for (const nexus of nexusList) {
+      const triggers = nexus.triggers || []
+      if (triggers.length > 0 && triggers.some(t => inputLower.includes(t.toLowerCase()))) {
+        console.log(`[NexusRouter] P1 trigger match: "${nexus.label}" via triggers`)
+        return nexus
+      }
+    }
+
+    // P2: 关键词综合评分
+    let bestMatch: NexusEntity | null = null
+    let bestScore = 0
+
+    for (const nexus of nexusList) {
+      let score = 0
+
+      // 标签命中（权重 3）
+      const triggers = nexus.triggers || []
+      score += triggers.filter(t => inputLower.includes(t.toLowerCase())).length * 3
+
+      // 技能名命中（权重 2）—— "web-search" 拆分为 ["web", "search"]
+      const skills = [...(nexus.boundSkillIds || []), ...(nexus.skillDependencies || [])]
+      score += skills.filter(s => {
+        const parts = s.toLowerCase().split('-')
+        return parts.some(p => p.length > 2 && inputLower.includes(p))
+      }).length * 2
+
+      // SOP/描述关键词命中（权重 1）
+      const desc = `${nexus.flavorText || ''} ${nexus.label || ''}`
+      const descWords = desc.toLowerCase().split(/\s+/).filter(w => w.length > 2)
+      score += descWords.filter(w => inputLower.includes(w)).length
+
+      if (score > bestScore) {
+        bestScore = score
+        bestMatch = nexus
+      }
+    }
+
+    if (bestScore >= 3 && bestMatch) {
+      console.log(`[NexusRouter] P2 keyword match: "${bestMatch.label}" (score: ${bestScore})`)
+      return bestMatch
+    }
+
+    // P3: 经验匹配（查看历史成功追踪中关联的 Nexus）
+    // 暂时通过现有 exec_traces 实现，后续可增强
+    // 当前阶段跳过，降级到全量工具
+
+    console.log('[NexusRouter] No Nexus matched, using full toolset')
+    return null
+  }
+
+  /**
+   * Layer 2: 工具过滤
+   * 根据匹配到的 Nexus，组装精准工具集
+   * 公式: 基础工具 ∪ 绑定工具 ∪ 经验工具
+   */
+  private assembleToolsForNexus(nexus: NexusEntity): ToolInfo[] {
+    const result: ToolInfo[] = []
+    const included = new Set<string>()
+
+    // 1. 基础工具（builtin 类型永远包含）
+    for (const tool of this.availableTools) {
+      if (tool.type === 'builtin') {
+        result.push(tool)
+        included.add(tool.name)
+      }
+    }
+
+    // 2. 绑定工具（boundSkillIds + skillDependencies）
+    const boundIds = new Set<string>([
+      ...(nexus.boundSkillIds || []),
+      ...(nexus.skillDependencies || []),
+    ])
+    for (const tool of this.availableTools) {
+      if (!included.has(tool.name) && boundIds.has(tool.name)) {
+        result.push(tool)
+        included.add(tool.name)
+      }
+    }
+
+    // 3. MCP 工具：如果绑定的技能名与 MCP server 名有交集，包含该 MCP 的所有工具
+    for (const tool of this.availableTools) {
+      if (tool.type === 'mcp' && !included.has(tool.name)) {
+        // MCP 工具名通常是 server__toolName 格式
+        const mcpServer = tool.name.split('__')[0] || ''
+        if (boundIds.has(mcpServer) || Array.from(boundIds).some(bid => tool.name.includes(bid))) {
+          result.push(tool)
+          included.add(tool.name)
+        }
+      }
+    }
+
+    // 4. 如果绑定工具太少（<3 个非 builtin），可能是新 Nexus，补充相关技能
+    const nonBuiltinCount = result.filter(t => t.type !== 'builtin').length
+    if (nonBuiltinCount < 3) {
+      // 通过技能名模糊匹配补充
+      const nexusKeywords = [
+        ...(nexus.triggers || []),
+        ...(nexus.label ? nexus.label.toLowerCase().split(/\s+/) : []),
+      ].map(k => k.toLowerCase()).filter(k => k.length > 2)
+
+      for (const tool of this.availableTools) {
+        if (included.has(tool.name)) continue
+        if (result.length >= 15) break // 上限 15 个工具
+
+        const toolLower = tool.name.toLowerCase()
+        const descLower = (tool.description || '').toLowerCase()
+        if (nexusKeywords.some(k => toolLower.includes(k) || descLower.includes(k))) {
+          result.push(tool)
+          included.add(tool.name)
+        }
+      }
+    }
+
+    console.log(`[NexusRouter] Assembled ${result.length} tools for "${nexus.label}" (${result.filter(t => t.type !== 'builtin').map(t => t.name).join(', ')})`)
+    return result
+  }
+
+  /**
+   * Layer 3: 运行时动态扩展
+   * 当 Reflexion 检测到工具不足时，扩展可用工具集
+   * 返回扩展后的工具列表，或 null 表示不需要扩展
+   */
+  private expandToolsForReflexion(
+    currentTools: ToolInfo[],
+    failedToolName: string,
+    errorMsg: string,
+  ): ToolInfo[] | null {
+    // 检测是否是"工具未找到"类型的错误
+    const isToolMissing = /unknown tool|tool not found|不支持|no such tool|未找到工具|not available/i.test(errorMsg)
+    if (!isToolMissing) return null
+
+    // 在全量工具中查找请求的工具
+    const currentNames = new Set(currentTools.map(t => t.name))
+    const missingTool = this.availableTools.find(t => t.name === failedToolName && !currentNames.has(t.name))
+
+    if (missingTool) {
+      console.log(`[NexusRouter] Runtime expansion: adding "${failedToolName}" to toolset`)
+      return [...currentTools, missingTool]
+    }
+
+    // 工具完全不存在，返回 null
+    return null
+  }
+
+  /**
+   * 核心入口：为当前任务准备工具集
+   * 返回 { tools, matchedNexus, isFiltered }
+   */
+  private prepareToolsForTask(userInput: string): {
+    tools: ToolInfo[]
+    matchedNexus: NexusEntity | null
+    isFiltered: boolean
+  } {
+    const matchedNexus = this.matchNexusForTask(userInput)
+
+    if (matchedNexus) {
+      const filteredTools = this.assembleToolsForNexus(matchedNexus)
+      // 安全阀：如果过滤后工具太少（仅有 builtin），降级到全量
+      const nonBuiltin = filteredTools.filter(t => t.type !== 'builtin').length
+      if (nonBuiltin === 0) {
+        console.log('[NexusRouter] Safety fallback: no non-builtin tools after filtering, using full toolset')
+        return { tools: this.availableTools, matchedNexus, isFiltered: false }
+      }
+      return { tools: filteredTools, matchedNexus, isFiltered: true }
+    }
+
+    return { tools: this.availableTools, matchedNexus: null, isFiltered: false }
   }
 
   /**
@@ -2575,14 +2770,21 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
     const maxTurns = isSimpleTask ? CONFIG.SIMPLE_TURNS : isHeavyTask ? CONFIG.MAX_REACT_TURNS : CONFIG.DEFAULT_TURNS
     console.log(`[LocalClaw] Task complexity: ${isSimpleTask ? 'simple' : isHeavyTask ? 'heavy' : 'normal'}, maxTurns: ${maxTurns}`)
 
+    // 🎯 Nexus 驱动：为当前任务准备精准工具集
+    const { tools: legacyTaskTools, matchedNexus: legacyMatchedNexus, isFiltered: legacyIsFiltered } = this.prepareToolsForTask(userPrompt)
+
     // 🎯 JIT: 动态构建上下文
     const { context: dynamicContext, dynamicExamples } = await this.buildDynamicContext(userPrompt)
     console.log('[LocalClaw] JIT Context built:', dynamicContext.slice(0, 200) + '...')
 
     const systemPrompt = SYSTEM_PROMPT_TEMPLATE
-      .replace('{available_tools}', this.buildToolsDocumentation())
+      .replace('{available_tools}', this.buildToolsDocumentation(legacyIsFiltered ? legacyTaskTools : undefined))
       .replace('{context}', dynamicContext)
       .replace('{dynamic_examples}', dynamicExamples)
+    
+    if (legacyIsFiltered) {
+      console.log(`[LocalClaw] Tool documentation filtered for Nexus: ${legacyMatchedNexus?.label} (${legacyTaskTools.length} tools)`)
+    }
 
     const messages: AgentMessage[] = [
       { role: 'system', content: systemPrompt },
@@ -3051,6 +3253,10 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
     const maxTurns = isSimpleTask ? CONFIG.SIMPLE_TURNS : isHeavyTask ? CONFIG.MAX_REACT_TURNS : CONFIG.DEFAULT_TURNS
     console.log(`[LocalClaw/FC] Task complexity: ${isSimpleTask ? 'simple' : isHeavyTask ? 'heavy' : 'normal'}, maxTurns: ${maxTurns}`)
 
+    // 🎯 Nexus 驱动：为当前任务准备精准工具集
+    const { tools: taskTools, matchedNexus, isFiltered } = this.prepareToolsForTask(userPrompt)
+    let currentTaskTools = taskTools
+
     // JIT: 动态构建上下文
     const { context: dynamicContext } = await this.buildDynamicContext(userPrompt)
 
@@ -3061,8 +3267,8 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
       .replace('{context}', dynamicContext)
 
     // 转换工具为 OpenAI Function Calling 格式
-    const tools = convertToolInfoToFunctions(this.availableTools)
-    console.log(`[LocalClaw/FC] Registered ${tools.length} functions`)
+    let tools = convertToolInfoToFunctions(currentTaskTools)
+    console.log(`[LocalClaw/FC] Registered ${tools.length} functions${isFiltered ? ` (filtered for Nexus: ${matchedNexus?.label})` : ''}`)
 
     // 消息历史 (使用标准 OpenAI 格式)
     const messages: SimpleChatMessage[] = [
@@ -3243,6 +3449,22 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
 
               // 🧬 能力缺失检测
               this.detectAndRecordCapabilityGap(toolName, toolResult.result, userPrompt)
+
+              // 🎯 Layer 3: 运行时动态扩展 - 工具不足时自动补充
+              if (isFiltered) {
+                const expanded = this.expandToolsForReflexion(currentTaskTools, toolName, toolResult.result)
+                if (expanded) {
+                  currentTaskTools = expanded
+                  tools = convertToolInfoToFunctions(currentTaskTools)
+                  console.log(`[NexusRouter/FC] Expanded toolset to ${tools.length} after "${toolName}" missing`)
+                }
+                // 连续失败 2+ 次且仍在过滤模式 → 解锁全量工具
+                if (consecutiveFailures >= 2 && currentTaskTools.length < this.availableTools.length) {
+                  currentTaskTools = this.availableTools
+                  tools = convertToolInfoToFunctions(currentTaskTools)
+                  console.log(`[NexusRouter/FC] Safety unlock: full toolset (${tools.length}) after ${consecutiveFailures} failures`)
+                }
+              }
               
               // 🛡️ 错误签名追踪: 检测重复错误防止死循环
               const errorSig = `${toolName}:${toolResult.result.slice(0, 100)}`
