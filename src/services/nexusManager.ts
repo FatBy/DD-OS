@@ -395,7 +395,8 @@ export class NexusManagerService {
 
   private async searchExperiences(nexusId: string, query: string): Promise<string[]> {
     if (!this.io) return []
-    const results: string[] = []
+    const matched: { text: string; score: number; index: number }[] = []
+    let globalIndex = 0
 
     for (const fileName of ['successes.md', 'failures.md']) {
       const content = await this.io.readFileWithCache(`nexuses/${nexusId}/experience/${fileName}`)
@@ -403,14 +404,36 @@ export class NexusManagerService {
 
       const entries = content.split('\n### ').filter(e => e.trim())
       const queryWords = query.split(/\s+/).filter(w => w.length > 2)
+      const prefix = fileName.includes('success') ? '[SUCCESS]' : '[FAILURE]'
 
       for (const entry of entries) {
         const entryLower = entry.toLowerCase()
         const matchCount = queryWords.filter(w => entryLower.includes(w.toLowerCase())).length
-        if (matchCount > 0) {
-          const prefix = fileName.includes('success') ? '[SUCCESS]' : '[FAILURE]'
-          results.push(`${prefix} ### ${entry.slice(0, 500)}`)
-        }
+        matched.push({
+          text: `${prefix} ### ${entry.slice(0, 500)}`,
+          score: matchCount,
+          index: globalIndex++,
+        })
+      }
+    }
+
+    if (matched.length === 0) return []
+
+    // 按相关性排序（相关性相同时，越新的条目越靠前）
+    matched.sort((a, b) => b.score - a.score || b.index - a.index)
+
+    // 取关键词匹配的 + 始终包含最近3条（确保 LLM 总能看到最新经验）
+    const keywordMatched = matched.filter(m => m.score > 0).slice(0, 3)
+    const recent = matched
+      .sort((a, b) => b.index - a.index)
+      .slice(0, 3)
+
+    const seen = new Set<string>()
+    const results: string[] = []
+    for (const item of [...keywordMatched, ...recent]) {
+      if (!seen.has(item.text)) {
+        seen.add(item.text)
+        results.push(item.text)
       }
     }
 

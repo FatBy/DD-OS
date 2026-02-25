@@ -12,6 +12,7 @@ import { cn } from '@/utils/cn'
 import { useT } from '@/i18n'
 import { searchOnlineSkills } from '@/services/onlineSearchService'
 import { installSkill } from '@/services/installService'
+import { nexusRuleEngine, RULE_LABELS, type NexusRule } from '@/services/nexusRuleEngine'
 import type { NexusEntity, NexusExperience } from '@/types'
 
 // 建造总时长（与 worldSlice tickConstructionAnimations 中的 3000ms 一致）
@@ -136,6 +137,7 @@ export function NexusDetailPanel() {
   const [customModel, setCustomModel] = useState('')
   const [customApiKey, setCustomApiKey] = useState('')
   const [experiences, setExperiences] = useState<NexusExperience[]>([])
+  const [activeRules, setActiveRules] = useState<NexusRule[]>([])
   
   // 名称编辑状态
   const [isEditingName, setIsEditingName] = useState(false)
@@ -215,6 +217,16 @@ export function NexusDetailPanel() {
         }
       })
       .catch(() => {})
+  }, [nexus?.id, nexusPanelOpen])
+
+  // Load active rules from rule engine when panel opens
+  useEffect(() => {
+    if (!nexus?.id || !nexusPanelOpen) {
+      setActiveRules([])
+      return
+    }
+    const rules = nexusRuleEngine.getActiveRulesForNexus(nexus.id)
+    setActiveRules(rules)
   }, [nexus?.id, nexusPanelOpen])
   
   // 面板打开/关闭时处理状态
@@ -622,12 +634,24 @@ export function NexusDetailPanel() {
                               )}
                             </button>
                             <button
-                              onClick={() => {
+                              onClick={async () => {
                                 if (!nexus) return
-                                const ids = nexus.boundSkillIds || []
-                                const updated = { ...nexus, boundSkillIds: ids.filter(sid => sid !== skill.id && sid !== skill.name) }
-                                removeNexus(nexus.id)
-                                addNexus(updated)
+                                const serverUrl = localStorage.getItem('ddos_server_url') || 'http://localhost:3001'
+                                try {
+                                  const res = await fetch(`${serverUrl}/nexuses/${nexus.id}/skills`, {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ action: 'remove', skillId: skill.name })
+                                  })
+                                  if (res.ok) {
+                                    const data = await res.json()
+                                    const updated = { ...nexus, boundSkillIds: data.skillDependencies || [] }
+                                    removeNexus(nexus.id)
+                                    addNexus(updated)
+                                  }
+                                } catch (e) {
+                                  console.error('Failed to remove skill from backend:', e)
+                                }
                               }}
                               className="text-[11px] font-mono px-2 py-1 rounded bg-red-500/10 text-red-400/70 border border-red-500/15 hover:bg-red-500/20 hover:text-red-400 transition-colors"
                             >
@@ -902,6 +926,44 @@ export function NexusDetailPanel() {
                         </p>
                       </div>
                     ))}
+                  </div>
+                </div>
+              )}
+
+              {/* ==================== Active Rules Section ==================== */}
+              {activeRules.length > 0 && (
+                <div className="p-5 rounded-xl bg-amber-500/5 border border-amber-500/15">
+                  <div className="flex items-center gap-2 mb-3">
+                    <Zap className="w-4 h-4 text-amber-400" />
+                    <span className="text-xs font-mono text-amber-400/70 uppercase tracking-wider">
+                      Active Rules
+                    </span>
+                    <span className="ml-auto text-xs font-mono text-amber-400/40">
+                      {activeRules.length}
+                    </span>
+                  </div>
+                  <div className="space-y-2">
+                    {activeRules.map(rule => {
+                      const daysLeft = Math.max(0, Math.ceil((rule.expiresAt - Date.now()) / (1000 * 60 * 60 * 24)))
+                      return (
+                        <div 
+                          key={rule.id}
+                          className="p-3 rounded-lg bg-white/[0.03] border border-amber-500/10"
+                        >
+                          <div className="flex items-center justify-between mb-1.5">
+                            <span className="text-xs font-mono text-amber-400/80 font-medium">
+                              {RULE_LABELS[rule.type] || rule.type}
+                            </span>
+                            <span className="text-[10px] font-mono text-white/25">
+                              {daysLeft}d left
+                            </span>
+                          </div>
+                          <p className="text-[11px] font-mono text-white/45 leading-relaxed">
+                            {rule.injectedPrompt}
+                          </p>
+                        </div>
+                      )
+                    })}
                   </div>
                 </div>
               )}
