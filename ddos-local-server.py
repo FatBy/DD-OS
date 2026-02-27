@@ -850,6 +850,8 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
             self.handle_trace_search(query)
         elif path == '/api/traces/recent':
             self.handle_trace_recent(query)
+        elif path == '/api/genes/load':
+            self.handle_gene_load()
         elif path == '/api/registry/skills':
             self.handle_registry_skills_search(query)
         elif path == '/api/registry/mcp':
@@ -895,6 +897,8 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
             self.handle_tools_reload(data)
         elif path == '/api/traces/save':
             self.handle_trace_save(data)
+        elif path == '/api/genes/save':
+            self.handle_gene_save(data)
         elif path == '/mcp/reload':
             self.handle_mcp_reload(data)
         elif path.startswith('/mcp/servers/') and path.endswith('/reconnect'):
@@ -929,6 +933,9 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
         elif path.startswith('/api/subagent/') and path.endswith('/status'):
             agent_id = path[14:-7]  # strip '/api/subagent/' and '/status'
             self.handle_subagent_status(agent_id)
+        # 🌐 EvoMap 代理 (解决 CORS 问题)
+        elif path.startswith('/api/evomap/'):
+            self.handle_evomap_proxy(path, data)
         else:
             self.send_error_json(f'Unknown endpoint: {path}', 404)
     
@@ -1253,7 +1260,11 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
             parsed_text = self._tool_parse_file({'filePath': str(file_path)})
         except Exception as e:
             print(f"[ERROR] 文件解析失败: {e}", file=sys.stderr)
-            parsed_text = f'[解析失败: 请检查文件格式是否正确]'
+            err_msg = str(e)
+            if '未安装' in err_msg or 'pip install' in err_msg:
+                parsed_text = f'[解析失败: {err_msg}]'
+            else:
+                parsed_text = f'[解析失败: 请检查文件格式是否正确]'
 
         file_size = len(file_bytes)
         self.send_json({
@@ -2594,6 +2605,39 @@ curl -X POST http://localhost:3001/api/tools/execute \\
         }
         self.send_json(response)
 
+    def _resolve_nexus_dir(self, nexus_name: str, auto_create: bool = False) -> Path | None:
+        """根据 nexus id/name 找到实际目录（优先精确匹配目录名，其次匹配 frontmatter name）
+        
+        auto_create: 如果为 True 且找不到已有目录，则自动创建最小 Nexus 目录结构
+                     （支持 Observer 自动创建的 Nexus，它们没有 NEXUS.md 文件）
+        """
+        nexuses_dir = self.clawd_path / 'nexuses'
+        if not nexuses_dir.exists():
+            if auto_create:
+                nexuses_dir.mkdir(parents=True, exist_ok=True)
+            else:
+                return None
+        # 1) 精确匹配目录名
+        direct = nexuses_dir / nexus_name
+        if (direct / 'NEXUS.md').exists():
+            return direct
+        # 2) 扫描所有 NEXUS.md，匹配 frontmatter 中的 name
+        for nexus_md in nexuses_dir.rglob('NEXUS.md'):
+            fm = parse_nexus_frontmatter(nexus_md)
+            if fm.get('name') == nexus_name:
+                return nexus_md.parent
+        # 3) 自动创建最小目录结构 (Observer 创建的 Nexus)
+        if auto_create:
+            # 将 nexus id 中不安全的路径字符替换
+            safe_name = re.sub(r'[<>:"/\\|?*]', '_', nexus_name)
+            target_dir = nexuses_dir / safe_name
+            target_dir.mkdir(parents=True, exist_ok=True)
+            minimal_md = f"---\nname: {nexus_name}\ndescription: Auto-created Nexus\nversion: 1.0.0\nskill_dependencies: []\n---\n"
+            (target_dir / 'NEXUS.md').write_text(minimal_md, encoding='utf-8')
+            print(f'[Nexus] Auto-created directory for Observer Nexus: {nexus_name}', file=sys.stderr)
+            return target_dir
+        return None
+
     def handle_nexus_update_skills(self, nexus_name: str, data: dict):
         """POST /nexuses/{name}/skills - 更新 Nexus 技能依赖"""
         action = data.get('action', '')  # 'add' or 'remove'
@@ -2603,11 +2647,12 @@ curl -X POST http://localhost:3001/api/tools/execute \\
             self.send_error_json('Invalid: need action (add/remove) and skillId', 400)
             return
 
-        nexus_dir = self.clawd_path / 'nexuses' / nexus_name
-        nexus_md = nexus_dir / 'NEXUS.md'
-        if not nexus_md.exists():
+        nexus_dir = self._resolve_nexus_dir(nexus_name, auto_create=True)
+        if not nexus_dir:
             self.send_error_json(f"Nexus '{nexus_name}' not found", 404)
             return
+
+        nexus_md = nexus_dir / 'NEXUS.md'
 
         frontmatter = parse_nexus_frontmatter(nexus_md)
         deps = list(frontmatter.get('skill_dependencies', []))
@@ -2632,12 +2677,11 @@ curl -X POST http://localhost:3001/api/tools/execute \\
 
     def handle_nexus_update_meta(self, nexus_name: str, data: dict):
         """POST /nexuses/{name}/meta - 更新 Nexus 元数据(名称等)"""
-        nexus_dir = self.clawd_path / 'nexuses' / nexus_name
-        nexus_md = nexus_dir / 'NEXUS.md'
-        
-        if not nexus_md.exists():
+        nexus_dir = self._resolve_nexus_dir(nexus_name, auto_create=True)
+        if not nexus_dir:
             self.send_error_json(f"Nexus '{nexus_name}' not found", 404)
             return
+        nexus_md = nexus_dir / 'NEXUS.md'
 
         new_name = data.get('name', '').strip()
         if not new_name:
@@ -2654,10 +2698,8 @@ curl -X POST http://localhost:3001/api/tools/execute \\
 
     def handle_add_experience(self, nexus_name: str, data: dict):
         """POST /nexuses/{name}/experience - 为 Nexus 添加经验记录"""
-        nexuses_dir = self.clawd_path / 'nexuses'
-        nexus_dir = nexuses_dir / nexus_name
-
-        if not nexus_dir.exists():
+        nexus_dir = self._resolve_nexus_dir(nexus_name, auto_create=True)
+        if not nexus_dir:
             self.send_error_json(f"Nexus '{nexus_name}' not found", 404)
             return
 
@@ -3148,6 +3190,80 @@ curl -X POST http://localhost:3001/api/tools/execute \\
         except Exception as e:
             self.send_error_json(f'Failed to save trace: {e}', 500)
 
+    # ============================================
+    # 🧬 Gene Pool API
+    # ============================================
+
+    def handle_gene_save(self, data):
+        """POST /api/genes/save - 保存/更新基因到基因库"""
+        if not data:
+            self.send_error_json('Missing gene data', 400)
+            return
+
+        gene_file = self.clawd_path / 'memory' / 'gene_pool.jsonl'
+        gene_file.parent.mkdir(parents=True, exist_ok=True)
+
+        gene_id = data.get('id', '')
+
+        try:
+            # 如果基因已存在 (同 ID)，先读取并替换
+            existing_lines = []
+            replaced = False
+            if gene_file.exists():
+                with open(gene_file, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            existing = json.loads(line)
+                            if existing.get('id') == gene_id:
+                                existing_lines.append(json.dumps(data, ensure_ascii=False))
+                                replaced = True
+                            else:
+                                existing_lines.append(line)
+                        except json.JSONDecodeError:
+                            existing_lines.append(line)
+
+            if replaced:
+                # 覆写整个文件 (替换已有基因)
+                with open(gene_file, 'w', encoding='utf-8') as f:
+                    for line in existing_lines:
+                        f.write(line + '\n')
+            else:
+                # 追写新基因
+                with open(gene_file, 'a', encoding='utf-8') as f:
+                    f.write(json.dumps(data, ensure_ascii=False) + '\n')
+
+            self.send_json({
+                'status': 'ok',
+                'message': f'Gene {"updated" if replaced else "saved"}: {gene_id}',
+            })
+        except Exception as e:
+            self.send_error_json(f'Failed to save gene: {e}', 500)
+
+    def handle_gene_load(self):
+        """GET /api/genes/load - 加载全部基因"""
+        gene_file = self.clawd_path / 'memory' / 'gene_pool.jsonl'
+
+        genes = []
+        if gene_file.exists():
+            try:
+                with open(gene_file, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            genes.append(json.loads(line))
+                        except json.JSONDecodeError:
+                            continue
+            except Exception as e:
+                self.send_error_json(f'Failed to load genes: {e}', 500)
+                return
+
+        self.send_json(genes)
+
     def handle_trace_search(self, query_params):
         """GET /api/traces/search?query=xxx&limit=5 - 检索执行追踪 (P2)"""
         query = query_params.get('query', [''])[0]
@@ -3419,6 +3535,66 @@ curl -X POST http://localhost:3001/api/tools/execute \\
             self.send_json({'status': 'success', 'results': results})
         except Exception as e:
             self.send_error_json(f'Failed to collect results: {e}', 500)
+    
+    def handle_evomap_proxy(self, path: str, data: dict):
+        """代理转发 EvoMap API 请求（解决 CORS 问题）
+        
+        前端请求: /api/evomap/a2a/hello
+        转发到:   https://evomap.ai/a2a/hello
+        """
+        try:
+            import requests
+            import urllib3
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        except ImportError as e:
+            print(f'[EvoMap Proxy] Missing dependency: {e}', file=sys.stderr)
+            self.send_error_json(f'EvoMap proxy requires "requests" package: pip install requests', 500)
+            return
+        
+        # 提取目标路径: /api/evomap/a2a/hello -> /a2a/hello
+        target_path = path[11:]  # strip '/api/evomap' (keep leading /)
+        target_url = f'https://evomap.ai{target_path}'
+        
+        print(f'[EvoMap Proxy] {path} -> {target_url}', file=sys.stderr)
+        
+        try:
+            # evomap.ai 响应较慢 (实测需要 30+ 秒)，使用较长超时
+            response = requests.post(
+                target_url,
+                json=data if data else {},
+                headers={
+                    'Content-Type': 'application/json',
+                    'User-Agent': 'DD-OS/1.0 EvoMap-Proxy',
+                },
+                timeout=(10, 90),  # connect 10s, read 90s (evomap.ai 响应慢)
+                verify=False,  # 跳过 SSL 验证 (企业安全工具可能替换证书)
+            )
+            
+            if response.ok:
+                result = response.json()
+                print(f'[EvoMap Proxy] Success: {response.status_code}', file=sys.stderr)
+                self.send_json(result)
+            else:
+                error_text = response.text[:500]
+                print(f'[EvoMap Proxy] HTTP error: {response.status_code} - {error_text}', file=sys.stderr)
+                # 尝试返回原始 JSON 错误（可能包含有用信息）
+                try:
+                    self.send_json(response.json(), response.status_code)
+                except Exception:
+                    self.send_error_json(f'EvoMap API error: {response.status_code}', response.status_code)
+                
+        except requests.exceptions.ConnectTimeout as e:
+            print(f'[EvoMap Proxy] Connect timeout: {e}', file=sys.stderr)
+            self.send_error_json('Failed to connect to EvoMap (connect timeout)', 504)
+        except requests.exceptions.ReadTimeout as e:
+            print(f'[EvoMap Proxy] Read timeout (evomap.ai unresponsive): {e}', file=sys.stderr)
+            self.send_error_json('EvoMap server unresponsive (read timeout)', 504)
+        except requests.exceptions.ConnectionError as e:
+            print(f'[EvoMap Proxy] Connection error: {e}', file=sys.stderr)
+            self.send_error_json(f'Failed to connect to EvoMap: {str(e)[:200]}', 502)
+        except Exception as e:
+            print(f'[EvoMap Proxy] Error: {type(e).__name__}: {e}', file=sys.stderr)
+            self.send_error_json(f'EvoMap proxy error: {type(e).__name__}: {str(e)[:200]}', 500)
     
     def handle_task_status(self, task_id, offset=0):
         with self.tasks_lock:

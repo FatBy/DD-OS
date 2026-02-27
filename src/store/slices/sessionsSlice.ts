@@ -1,7 +1,8 @@
 import type { StateCreator } from 'zustand'
-import type { Session, TaskItem, ExecutionStep, TaskStatus } from '@/types'
+import type { Session, TaskItem, ExecutionStep, TaskStatus, TaskCheckpoint } from '@/types'
 import { sessionsToTasks } from '@/utils/dataMapper'
 import { chat, isLLMConfigured } from '@/services/llmService'
+import { executionLogger } from '@/services/executionLogger'
 
 // LocalStorage 键名
 const STORAGE_KEYS = {
@@ -127,6 +128,15 @@ export interface SessionsSlice {
   dismissInterruptedTasksWarning: () => void
   retryInterruptedTask: (taskId: string) => TaskItem | null
   getInterruptedTasks: () => TaskItem[]
+  
+  // 任务监管控制
+  pauseTask: (taskId: string) => void
+  resumeTask: (taskId: string) => void
+  retryFailedTask: (taskId: string) => TaskItem | null
+  
+  // 检查点管理
+  saveCheckpoint: (taskId: string, checkpoint: TaskCheckpoint) => void
+  restoreFromCheckpoint: (taskId: string) => TaskCheckpoint | null
   
   // 静默分析
   generateSilentAnalysis: () => Promise<void>
@@ -286,6 +296,96 @@ export const createSessionsSlice: StateCreator<SessionsSlice> = (set, get) => ({
     return task
   },
 
+  // 任务监管控制
+  pauseTask: (taskId) => set((state) => {
+    const newExecutions = state.activeExecutions.map(t => {
+      if (t.id === taskId && t.status === 'executing') {
+        executionLogger.log(taskId, 'task_paused', { previousStatus: t.status })
+        return {
+          ...t,
+          status: 'paused' as TaskStatus,
+          pausedAt: Date.now(),
+        }
+      }
+      return t
+    })
+    persistTaskHistory(newExecutions)
+    return { activeExecutions: newExecutions }
+  }),
+
+  resumeTask: (taskId) => set((state) => {
+    const newExecutions = state.activeExecutions.map(t => {
+      if (t.id === taskId && t.status === 'paused') {
+        executionLogger.log(taskId, 'task_resumed', { pausedDuration: t.pausedAt ? Date.now() - t.pausedAt : 0 })
+        return {
+          ...t,
+          status: 'executing' as TaskStatus,
+          pausedAt: undefined,
+        }
+      }
+      return t
+    })
+    persistTaskHistory(newExecutions)
+    return { activeExecutions: newExecutions }
+  }),
+
+  retryFailedTask: (taskId) => {
+    const { activeExecutions } = get()
+    const task = activeExecutions.find(t => t.id === taskId)
+    if (!task || (task.status !== 'interrupted' && task.status !== 'terminated')) return null
+    
+    const maxRetries = task.maxRetries ?? 2
+    const currentRetry = task.retryCount ?? 0
+    
+    if (currentRetry >= maxRetries) {
+      console.warn(`[Sessions] Task ${taskId} has exceeded max retries (${maxRetries})`)
+      return null
+    }
+    
+    // 标记为重试中
+    const newExecutions = activeExecutions.map(t => {
+      if (t.id === taskId) {
+        executionLogger.log(taskId, 'task_retrying', { retryCount: currentRetry + 1 })
+        return {
+          ...t,
+          status: 'retrying' as TaskStatus,
+          retryCount: currentRetry + 1,
+          executionError: undefined,
+        }
+      }
+      return t
+    })
+    persistTaskHistory(newExecutions)
+    set({ activeExecutions: newExecutions })
+    
+    return task
+  },
+
+  // 检查点管理
+  saveCheckpoint: (taskId, checkpoint) => set((state) => {
+    const newExecutions = state.activeExecutions.map(t => {
+      if (t.id === taskId) {
+        executionLogger.log(taskId, 'checkpoint_saved', { stepIndex: checkpoint.stepIndex })
+        return {
+          ...t,
+          checkpoint: { ...checkpoint, savedAt: Date.now() },
+        }
+      }
+      return t
+    })
+    persistTaskHistory(newExecutions)
+    return { activeExecutions: newExecutions }
+  }),
+
+  restoreFromCheckpoint: (taskId) => {
+    const { activeExecutions } = get()
+    const task = activeExecutions.find(t => t.id === taskId)
+    if (!task?.checkpoint) return null
+    
+    executionLogger.log(taskId, 'checkpoint_restored', { stepIndex: task.checkpoint.stepIndex })
+    return task.checkpoint
+  },
+
   // 静默分析
   shouldRefreshAnalysis: () => {
     const { silentAnalysis, activeExecutions } = get()
@@ -332,14 +432,14 @@ export const createSessionsSlice: StateCreator<SessionsSlice> = (set, get) => ({
 {
   "summary": "2-3句话的能力画像总结",
   "optimizations": [
-    {"target": "skill-scout", "targetType": "nexus", "label": "优化建议标签", "prompt": "具体优化指令"}
+    {"target": "nexus-id", "targetType": "nexus", "label": "优化建议标签", "prompt": "具体优化指令"}
   ]
 }
 optimizations 规则：
-- target: 推荐优化的 Nexus ID (skill-scout/dev-assistant/qa-engineer) 或 skill 名称
+- target: 推荐优化的 Nexus ID (${(() => { const nx = (get() as any).nexuses; return nx instanceof Map ? Array.from(nx.keys()).join('/') : 'default' })()}) 或 skill 名称
 - targetType: "nexus" 或 "skill"
 - prompt: 给该 Nexus/Skill 的优化指令，包含具体改进建议
-- 最多 2 条建议，无需优化则 optimizations 为空数组
+- 必须至少给出 1 条优化建议，最多 2 条
 仅输出 JSON，无其他文字。`,
         },
         {
@@ -364,6 +464,18 @@ optimizations 规则：
         }
       } catch {
         // JSON 解析失败，使用原始文本
+      }
+
+      // 如果没有解析到优化建议，生成默认建议
+      if (optimizations.length === 0 && summary) {
+        const activeNexusId = (get() as any).activeNexusId as string | null
+        const targetId = activeNexusId || 'default'
+        optimizations.push({
+          target: targetId,
+          targetType: 'nexus',
+          label: '根据分析优化',
+          prompt: `根据以下 AI 分析改进执行策略:\n${summary.slice(0, 300)}`,
+        })
       }
 
       const newAnalysis: SilentAnalysis = {

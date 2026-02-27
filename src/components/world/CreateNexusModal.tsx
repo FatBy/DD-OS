@@ -219,7 +219,7 @@ export function CreateNexusModal({ isOpen, onClose, initialData, isAnalyzing }: 
                 </motion.div>
               )}
               
-              {/* 从对话生成提示 */}
+              {/* 从对话生成提示 + 技能安装状态 */}
               {initialData?.isFromChat && !isAnalyzing && (
                 <motion.div 
                   initial={{ opacity: 0 }}
@@ -227,9 +227,19 @@ export function CreateNexusModal({ isOpen, onClose, initialData, isAnalyzing }: 
                   className="flex items-start gap-3 p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg"
                 >
                   <Wand2 className="w-4 h-4 text-amber-400 mt-0.5 flex-shrink-0" />
-                  <span className="text-xs text-amber-400/80">
-                    已从对话中提取内容，你可以编辑后创建
-                  </span>
+                  <div className="text-xs text-amber-400/80 space-y-1">
+                    <span>已从对话中提取内容，你可以编辑后创建</span>
+                    {boundSkills.length > 0 && (() => {
+                      const installedCount = boundSkills.filter(s => 
+                        availableSkills.some(as => (as.name || as.id) === s)
+                      ).length
+                      const missingCount = boundSkills.length - installedCount
+                      if (missingCount === 0) {
+                        return <p className="text-emerald-400/80">所有 {installedCount} 个技能已就绪</p>
+                      }
+                      return <p className="text-amber-400/60">{installedCount} 个技能已就绪，{missingCount} 个未安装（可手动搜索）</p>
+                    })()}
+                  </div>
                 </motion.div>
               )}
               

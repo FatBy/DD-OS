@@ -32,7 +32,44 @@ export interface ExecutionStep {
 }
 
 // 任务状态类型
-export type TaskStatus = 'pending' | 'queued' | 'executing' | 'done' | 'terminated' | 'interrupted'
+export type TaskStatus = 
+  | 'pending'      // 等待执行
+  | 'queued'       // 已入队列
+  | 'executing'    // 执行中
+  | 'done'         // 完成
+  | 'terminated'   // 用户终止
+  | 'interrupted'  // 系统中断
+  | 'retrying'     // 重试中
+  | 'paused'       // 用户暂停
+
+// 任务检查点 (断点续作支持)
+export interface TaskCheckpoint {
+  stepIndex: number                           // 当前步骤索引 (traceTools.length)
+  subTaskId?: string                          // 当前子任务 ID (Quest 模式)
+  savedAt: number                             // 保存时间
+  // 恢复执行所需的完整上下文
+  userPrompt: string                          // 原始用户输入
+  nexusId?: string                            // 关联的 Nexus ID
+  turnCount: number                           // 当前执行轮次
+  messages: Array<{                           // LLM 对话历史 (精简版)
+    role: 'system' | 'user' | 'assistant' | 'tool'
+    content: string | null
+    tool_call_id?: string
+    tool_calls?: Array<{
+      id: string
+      type: 'function'
+      function: { name: string; arguments: string }
+    }>
+  }>
+  traceTools: Array<{                         // 已执行的工具追踪
+    name: string
+    args: Record<string, unknown>
+    status: 'success' | 'error'
+    result: string
+    latency: number
+    order: number
+  }>
+}
 
 // 任务项 (映射自 Session)
 export interface TaskItem {
@@ -53,6 +90,13 @@ export interface TaskItem {
   // Quest 风格复杂任务支持
   taskPlan?: TaskPlan           // 复杂任务的执行计划
   executionMode?: 'simple' | 'complex' | 'quest'
+  // 任务监管字段
+  retryCount?: number           // 已重试次数
+  maxRetries?: number           // 最大重试次数 (默认 2)
+  pausedAt?: number             // 暂停时间戳
+  checkpoint?: TaskCheckpoint   // 断点信息
+  startedAt?: number            // 开始执行时间
+  completedAt?: number          // 完成时间
 }
 
 // ============================================
@@ -470,6 +514,10 @@ export interface LLMConfig {
   apiKey: string
   baseUrl: string
   model: string
+  // 独立的 Embedding API 配置（可选）
+  embedApiKey?: string
+  embedBaseUrl?: string
+  embedModel?: string
 }
 
 export interface ChatMessage {
@@ -656,6 +704,8 @@ export interface NexusEntity {
   objective?: string              // 核心目标函数 (任务终点定义)
   metrics?: string[]              // 验收标准 (布尔型检查点)
   strategy?: string               // 动态调整策略 (失败时的重试方案)
+  // 元数据
+  updatedAt?: number              // 最后更新时间
 }
 
 // Nexus 经验记录
@@ -777,3 +827,86 @@ export interface AbilitySnapshot {
   updatedAt: number            // 更新时间
 }
 
+// ============================================
+// Gene Pool 自愈基因库类型
+// ============================================
+
+// 基因类别
+export type GeneCategory = 
+  | 'repair'      // 修复基因 (error→success 模式)
+  | 'optimize'    // 优化基因
+  | 'pattern'     // 通用模式
+  | 'capability'  // Nexus 能力基因 (描述 Nexus 能做什么)
+  | 'artifact'    // Nexus 产出物基因 (描述 Nexus 产出了什么)
+  | 'activity'    // Nexus 活动基因 (描述 Nexus 做过什么)
+
+// Nexus 能力信息 (capability 基因专用)
+export interface NexusCapabilityInfo {
+  nexusId: string           // nexus 唯一标识
+  nexusName: string         // 显示名称
+  description: string       // 能力描述
+  capabilities: string[]    // 能力标签 ['漫画', '剧情', '角色设计']
+  dirPath: string           // nexuses/xxx/
+}
+
+// Nexus 产出物信息 (artifact 基因专用)
+export interface NexusArtifactInfo {
+  nexusId: string           // 产出此文件的 Nexus
+  path: string              // 文件路径
+  name: string              // 文件名/产出物名称
+  type: string              // 类型 (story-outline, character-design, ppt, code...)
+  size: number              // 文件大小
+  description?: string      // 产出物描述
+  linkedArtifacts?: string[] // 关联的其他产出物 ID
+}
+
+// Nexus 活动信息 (activity 基因专用)
+export interface NexusActivityInfo {
+  nexusId: string           // 执行此活动的 Nexus
+  nexusName: string         // Nexus 显示名称
+  summary: string           // 活动摘要 "生成了8集科幻动漫剧情大纲"
+  toolsUsed: string[]       // 使用的工具
+  artifactsCreated: string[] // 创建的产出物 ID
+  duration: number          // 耗时 (ms)
+  status: 'success' | 'failed'
+}
+
+// 基因: 一条可复用的修复/优化模式 或 Nexus 通讯信息
+export interface Gene {
+  id: string                      // gene-{timestamp}
+  category: GeneCategory
+  signals_match: string[]         // 触发信号 (支持 /regex/flags 和子串匹配)
+  strategy: string[]              // 修复策略步骤 (自然语言)
+  source: {
+    traceId?: string              // 来源 trace ID
+    nexusId?: string              // 产生此基因的 Nexus
+    createdAt: number
+  }
+  metadata: {
+    confidence: number            // 0-1 置信度
+    useCount: number              // 被使用次数
+    successCount: number          // 使用后成功次数
+    lastUsedAt?: number
+  }
+  // Nexus 通讯扩展字段 (根据 category 使用)
+  nexusCapability?: NexusCapabilityInfo  // capability 基因
+  artifactInfo?: NexusArtifactInfo       // artifact 基因
+  activityInfo?: NexusActivityInfo       // activity 基因
+}
+
+// 基因匹配结果
+export interface GeneMatch {
+  gene: Gene
+  score: number                   // 匹配分数 (匹配的信号数量)
+  matchedSignals: string[]        // 命中的信号列表
+}
+
+// 胶囊: 基因被使用一次的完整上下文快照
+export interface Capsule {
+  id: string
+  geneId: string
+  trigger: string[]               // 触发时的错误信号
+  outcome: 'success' | 'failure'
+  nexusId?: string
+  timestamp: number
+}

@@ -366,6 +366,7 @@ export function NexusDetailPanel() {
             exit={{ opacity: 0, x: 480 }}
             transition={{ type: 'spring', damping: 25, stiffness: 300 }}
             drag
+            dragListener={false}
             dragControls={dragControls}
             dragConstraints={constraintsRef}
             dragElastic={0.05}
@@ -595,14 +596,52 @@ export function NexusDetailPanel() {
                       >
                         <div className="flex items-center justify-between mb-1">
                           <span className="text-sm font-mono text-white/80 font-medium">{skill.name}</span>
-                          <span className={cn(
-                            'text-[13px] font-mono px-2 py-0.5 rounded-full',
-                            skill.status === 'active' 
-                              ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/20'
-                              : 'bg-red-500/20 text-red-400 border border-red-500/20'
-                          )}>
-                            {skill.status === 'active' ? 'ONLINE' : 'UNAVAILABLE'}
-                          </span>
+                          <div className="flex items-center gap-2">
+                            <span className={cn(
+                              'text-[13px] font-mono px-2 py-0.5 rounded-full',
+                              skill.status === 'active' 
+                                ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/20'
+                                : 'bg-red-500/20 text-red-400 border border-red-500/20'
+                            )}>
+                              {skill.status === 'active' ? 'ONLINE' : 'UNAVAILABLE'}
+                            </span>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                e.preventDefault()
+                                if (!nexus) return
+                                const serverUrl = localStorage.getItem('ddos_server_url') || 'http://localhost:3001'
+                                fetch(`${serverUrl}/nexuses/${nexus.id}/skills`, {
+                                  method: 'POST',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({ action: 'remove', skillId: skill.name })
+                                })
+                                  .then(res => {
+                                    if (res.ok) return res.json()
+                                    // 后端无此 Nexus (Observer 创建) → 前端直接移除
+                                    const newSkills = (nexus.boundSkillIds || []).filter(s => s !== skill.name)
+                                    removeNexus(nexus.id)
+                                    addNexus({ ...nexus, boundSkillIds: newSkills })
+                                    addToast({ type: 'success', title: `已移除技能: ${skill.name}` })
+                                    return null
+                                  })
+                                  .then(data => {
+                                    if (!data) return // 已在上方前端处理
+                                    const updated = { ...nexus, boundSkillIds: data.skillDependencies || [] }
+                                    removeNexus(nexus.id)
+                                    addNexus(updated)
+                                    addToast({ type: 'success', title: `已移除技能: ${skill.name}` })
+                                  })
+                                  .catch(err => {
+                                    console.error('Failed to remove skill:', err)
+                                    addToast({ type: 'error', title: `移除失败: ${skill.name}` })
+                                  })
+                              }}
+                              className="text-[11px] font-mono px-2 py-0.5 rounded bg-red-500/10 text-red-400/60 border border-red-500/15 hover:bg-red-500/20 hover:text-red-400 transition-colors cursor-pointer"
+                            >
+                              移除
+                            </button>
+                          </div>
                         </div>
                         {skill.status === 'active' && skill.description && (
                           <p className="text-xs font-mono text-white/30 leading-relaxed line-clamp-2">
@@ -612,7 +651,10 @@ export function NexusDetailPanel() {
                         {skill.status !== 'active' && (
                           <div className="flex items-center gap-2 mt-1.5">
                             <button
-                              onClick={() => handleSearchAndInstallSkill(skill.name)}
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                handleSearchAndInstallSkill(skill.name)
+                              }}
                               disabled={installingSkillId === skill.name}
                               className={cn(
                                 "text-[11px] font-mono px-2 py-1 rounded border transition-colors flex items-center gap-1",
@@ -632,30 +674,6 @@ export function NexusDetailPanel() {
                                   搜索并安装
                                 </>
                               )}
-                            </button>
-                            <button
-                              onClick={async () => {
-                                if (!nexus) return
-                                const serverUrl = localStorage.getItem('ddos_server_url') || 'http://localhost:3001'
-                                try {
-                                  const res = await fetch(`${serverUrl}/nexuses/${nexus.id}/skills`, {
-                                    method: 'POST',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ action: 'remove', skillId: skill.name })
-                                  })
-                                  if (res.ok) {
-                                    const data = await res.json()
-                                    const updated = { ...nexus, boundSkillIds: data.skillDependencies || [] }
-                                    removeNexus(nexus.id)
-                                    addNexus(updated)
-                                  }
-                                } catch (e) {
-                                  console.error('Failed to remove skill from backend:', e)
-                                }
-                              }}
-                              className="text-[11px] font-mono px-2 py-1 rounded bg-red-500/10 text-red-400/70 border border-red-500/15 hover:bg-red-500/20 hover:text-red-400 transition-colors"
-                            >
-                              移除
                             </button>
                           </div>
                         )}

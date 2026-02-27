@@ -1,12 +1,13 @@
 import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import { 
-  Monitor, Info, Check, Sparkles, Eye, EyeOff, Type, Wifi, WifiOff, Palette, Globe, Languages
+  Monitor, Info, Check, Sparkles, Eye, EyeOff, Type, Wifi, WifiOff, Palette, Globe, Languages, Zap, ExternalLink, Copy
 } from 'lucide-react'
 import { GlassCard } from '@/components/GlassCard'
 import { staggerContainer, staggerItem } from '@/utils/animations'
 import { useStore } from '@/store'
 import { testConnection } from '@/services/llmService'
+import { evoMapService, type EvoMapState } from '@/services/evoMapService'
 import { cn } from '@/utils/cn'
 import { themes } from '@/themes'
 import { useT } from '@/i18n'
@@ -57,6 +58,13 @@ export function SettingsHouse() {
   const [llmTestStatus, setLlmTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle')
   const [showApiKey, setShowApiKey] = useState(false)
   
+  // Embedding API 配置（独立于主 LLM）
+  const [embedApiKey, setEmbedApiKey] = useState(llmConfig.embedApiKey || '')
+  const [embedBaseUrl, setEmbedBaseUrl] = useState(llmConfig.embedBaseUrl || '')
+  const [embedModel, setEmbedModel] = useState(llmConfig.embedModel || '')
+  const [showEmbedKey, setShowEmbedKey] = useState(false)
+  const [showEmbedConfig, setShowEmbedConfig] = useState(!!(llmConfig.embedApiKey || llmConfig.embedBaseUrl))
+  
   // UI 设置
   const [fontScale, setFontScale] = useState(() => {
     const saved = localStorage.getItem('ddos_font_scale')
@@ -75,6 +83,16 @@ export function SettingsHouse() {
   const locale = useStore((s) => s.locale)
   const setLocale = useStore((s) => s.setLocale)
   
+  // EvoMap 连接状态
+  const [evoMapState, setEvoMapState] = useState<EvoMapState>(evoMapService.getState())
+  const [evoMapConnecting, setEvoMapConnecting] = useState(false)
+  
+  // 订阅 EvoMap 状态变化
+  useEffect(() => {
+    const unsubscribe = evoMapService.subscribe(setEvoMapState)
+    return unsubscribe
+  }, [])
+  
   useEffect(() => {
     document.documentElement.style.setProperty('--font-scale', String(fontScale))
     localStorage.setItem('ddos_font_scale', String(fontScale))
@@ -87,8 +105,17 @@ export function SettingsHouse() {
     }
   }, [llmApiKey, llmBaseUrl, llmModel])
   
+  // 自动保存 Embedding 配置
+  useEffect(() => {
+    setLlmConfig({ embedApiKey: embedApiKey, embedBaseUrl: embedBaseUrl, embedModel: embedModel })
+  }, [embedApiKey, embedBaseUrl, embedModel])
+  
   const saveLlmSettings = () => {
     setLlmConfig({ apiKey: llmApiKey, baseUrl: llmBaseUrl, model: llmModel })
+  }
+  
+  const saveEmbedSettings = () => {
+    setLlmConfig({ embedApiKey, embedBaseUrl, embedModel })
   }
 
   const handleTestLlm = async () => {
@@ -258,6 +285,198 @@ export function SettingsHouse() {
           
           <p className="text-[13px] text-white/30 font-mono">
             {t('settings.api_compat_hint')}
+          </p>
+          
+          {/* Embedding API 配置（可折叠） */}
+          <div className="border-t border-white/10 pt-3 mt-3">
+            <button
+              onClick={() => setShowEmbedConfig(!showEmbedConfig)}
+              className="flex items-center gap-2 text-xs font-mono text-white/50 hover:text-white/70 transition-colors"
+            >
+              <span className={`transition-transform ${showEmbedConfig ? 'rotate-90' : ''}`}>▶</span>
+              Embedding API（可选，用于语义搜索）
+            </button>
+            
+            {showEmbedConfig && (
+              <div className="mt-3 space-y-3 pl-4 border-l border-white/10">
+                <p className="text-[11px] text-white/30 font-mono">
+                  如果主 API 不支持 /embeddings 接口，可在此配置独立的 Embedding API（如 OpenAI）
+                </p>
+                
+                <div>
+                  <label className="text-xs font-mono text-white/50 mb-1 block">Embed API Base URL</label>
+                  <input
+                    type="text"
+                    value={embedBaseUrl}
+                    onChange={(e) => setEmbedBaseUrl(e.target.value)}
+                    onBlur={saveEmbedSettings}
+                    placeholder="https://api.openai.com/v1"
+                    className="w-full px-3 py-2 bg-black/30 border border-white/10 rounded-lg 
+                               text-xs font-mono text-white/70 placeholder-white/30
+                               focus:border-cyan-500/50 focus:outline-none"
+                  />
+                </div>
+                
+                <div>
+                  <label className="text-xs font-mono text-white/50 mb-1 block">Embed API Key</label>
+                  <div className="relative">
+                    <input
+                      type={showEmbedKey ? 'text' : 'password'}
+                      value={embedApiKey}
+                      onChange={(e) => setEmbedApiKey(e.target.value)}
+                      onBlur={saveEmbedSettings}
+                      placeholder="sk-..."
+                      className="w-full px-3 py-2 pr-8 bg-black/30 border border-white/10 rounded-lg 
+                                 text-xs font-mono text-white/70 placeholder-white/30
+                                 focus:border-cyan-500/50 focus:outline-none"
+                    />
+                    <button
+                      onClick={() => setShowEmbedKey(!showEmbedKey)}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-white/30 hover:text-white/60"
+                    >
+                      {showEmbedKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    </button>
+                  </div>
+                </div>
+                
+                <div>
+                  <label className="text-xs font-mono text-white/50 mb-1 block">Embed Model</label>
+                  <input
+                    type="text"
+                    value={embedModel}
+                    onChange={(e) => setEmbedModel(e.target.value)}
+                    onBlur={saveEmbedSettings}
+                    placeholder="text-embedding-3-small"
+                    className="w-full px-3 py-2 bg-black/30 border border-white/10 rounded-lg 
+                               text-xs font-mono text-white/70 placeholder-white/30
+                               focus:border-cyan-500/50 focus:outline-none"
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+        </GlassCard>
+      </div>
+
+      {/* EvoMap 云端协作 */}
+      <div>
+        <div className="flex items-center gap-2 mb-4">
+          <Zap className="w-4 h-4 text-purple-400" />
+          <h3 className="font-mono text-sm text-purple-300 tracking-wider">
+            EvoMap 云端协作
+          </h3>
+        </div>
+        
+        <GlassCard className="p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className={cn(
+                'w-2 h-2 rounded-full',
+                evoMapState.connected ? 'bg-emerald-400 animate-pulse' : 'bg-white/30'
+              )} />
+              <span className="text-xs font-mono text-white/60">
+                {evoMapState.connected ? '已连接' : '未连接'}
+              </span>
+            </div>
+            
+            <button
+              onClick={async () => {
+                if (evoMapState.connected) {
+                  evoMapService.disconnect()
+                } else {
+                  setEvoMapConnecting(true)
+                  try {
+                    await evoMapService.hello()
+                  } catch (err) {
+                    console.error('[EvoMap] Connect failed:', err)
+                  } finally {
+                    setEvoMapConnecting(false)
+                  }
+                }
+              }}
+              disabled={evoMapConnecting}
+              className={cn(
+                'px-3 py-1.5 rounded-lg text-xs font-mono transition-colors',
+                evoMapConnecting
+                  ? 'bg-purple-500/20 border border-purple-500/30 text-purple-400 animate-pulse'
+                  : evoMapState.connected
+                  ? 'bg-red-500/20 border border-red-500/30 text-red-400 hover:bg-red-500/30'
+                  : 'bg-purple-500/20 border border-purple-500/30 text-purple-400 hover:bg-purple-500/30'
+              )}
+            >
+              {evoMapConnecting ? '连接中...' : evoMapState.connected ? '断开' : '连接 EvoMap'}
+            </button>
+          </div>
+          
+          {evoMapState.connected && (
+            <>
+              <div className="grid grid-cols-2 gap-3 text-xs font-mono">
+                <div className="bg-black/20 rounded-lg p-2">
+                  <span className="text-white/40">积分</span>
+                  <div className="text-lg text-purple-400">{evoMapState.credits}</div>
+                </div>
+                <div className="bg-black/20 rounded-lg p-2">
+                  <span className="text-white/40">声誉</span>
+                  <div className="text-lg text-cyan-400">{evoMapState.reputation}</div>
+                </div>
+              </div>
+              
+              {evoMapState.nodeId && (
+                <div className="text-xs font-mono">
+                  <span className="text-white/40">Node ID: </span>
+                  <span className="text-white/60">{evoMapState.nodeId}</span>
+                </div>
+              )}
+              
+              {evoMapState.claimUrl && (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-mono text-white/40">认领链接:</span>
+                  <a
+                    href={evoMapState.claimUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs font-mono text-purple-400 hover:text-purple-300 flex items-center gap-1"
+                  >
+                    {evoMapState.claimCode} <ExternalLink className="w-3 h-3" />
+                  </a>
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(evoMapState.claimUrl || '')
+                    }}
+                    className="text-white/30 hover:text-white/60"
+                    title="复制链接"
+                  >
+                    <Copy className="w-3 h-3" />
+                  </button>
+                </div>
+              )}
+              
+              {evoMapState.survivalStatus && (
+                <div className="text-xs font-mono">
+                  <span className="text-white/40">状态: </span>
+                  <span className={cn(
+                    evoMapState.survivalStatus === 'alive' ? 'text-emerald-400' :
+                    evoMapState.survivalStatus === 'dormant' ? 'text-amber-400' : 'text-red-400'
+                  )}>
+                    {evoMapState.survivalStatus === 'alive' ? '活跃' :
+                     evoMapState.survivalStatus === 'dormant' ? '休眠' : '失效'}
+                  </span>
+                </div>
+              )}
+              
+              {evoMapState.error && (
+                <div className="text-xs font-mono text-red-400 bg-red-500/10 rounded-lg p-2">
+                  {evoMapState.error}
+                </div>
+              )}
+            </>
+          )}
+          
+          <p className="text-[11px] text-white/30 font-mono">
+            连接 EvoMap 协作市场，共享 AI 经验并赚取积分。
+            <a href="https://evomap.ai" target="_blank" rel="noopener noreferrer" className="text-purple-400 hover:underline ml-1">
+              了解更多
+            </a>
           </p>
         </GlassCard>
       </div>

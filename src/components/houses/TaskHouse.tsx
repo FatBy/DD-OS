@@ -1,12 +1,13 @@
 import { useState } from 'react'
-import { Loader2, Zap, Clock, CheckCircle2, AlertTriangle } from 'lucide-react'
+import { Loader2, Zap, Clock, CheckCircle2, AlertTriangle, BarChart3 } from 'lucide-react'
 import { useStore } from '@/store'
 import { cn } from '@/utils/cn'
 import { SilentAnalysisView } from './task/SilentAnalysisView'
 import { ExecutionFocusView } from './task/ExecutionFocusView'
 import { HistoryDrawer } from './task/HistoryDrawer'
+import { MonitorPanel } from './task/MonitorPanel'
 
-type TabType = 'executing' | 'history' | 'interrupted'
+type TabType = 'executing' | 'history' | 'interrupted' | 'monitor'
 
 interface TabConfig {
   id: TabType
@@ -19,6 +20,7 @@ const TABS: TabConfig[] = [
   { id: 'executing', label: '执行中', icon: Zap, color: 'cyan' },
   { id: 'history', label: '历史', icon: CheckCircle2, color: 'emerald' },
   { id: 'interrupted', label: '已中断', icon: AlertTriangle, color: 'amber' },
+  { id: 'monitor', label: '监控', icon: BarChart3, color: 'violet' },
 ]
 
 export function TaskHouse() {
@@ -42,11 +44,12 @@ export function TaskHouse() {
     executing: executingTasks.length,
     history: historyTasks.length,
     interrupted: interruptedTasks.length,
+    monitor: 0, // 监控 Tab 不显示计数
   }
 
-  // 如果有执行中的任务，自动切换到执行中 Tab
-  const hasExecuting = executingTasks.length > 0
-  const currentTab = hasExecuting && activeTab !== 'executing' ? 'executing' : activeTab
+  // 允许用户自由切换 Tab（移除强制锁定逻辑）
+  // 仅在首次有任务执行时自动切换（通过 useEffect 实现更好）
+  const currentTab = activeTab
 
   // 终止任务
   const handleTerminate = (taskId: string) => {
@@ -170,6 +173,10 @@ export function TaskHouse() {
               </div>
             )}
           </>
+        )}
+
+        {currentTab === 'monitor' && (
+          <MonitorPanel />
         )}
       </div>
 

@@ -128,7 +128,7 @@ export interface WorldSlice {
   // Nexus Actions
   addNexus: (nexus: NexusEntity) => void
   removeNexus: (id: string) => void
-  updateNexusXP: (id: string, xp: number) => void
+  updateNexusXP: (id: string, xpDelta: number) => void
   updateNexusPosition: (id: string, position: GridPosition) => void
   selectNexus: (id: string | null) => void
   setActiveNexus: (id: string | null) => void
@@ -175,7 +175,7 @@ export const createWorldSlice: StateCreator<WorldSlice> = (set, get) => ({
 
   addNexus: (nexus) => set((state) => {
     const next = new Map(state.nexuses)
-    next.set(nexus.id, nexus)
+    next.set(nexus.id, { ...nexus, updatedAt: Date.now() })
     saveNexusesToStorage(next)
     return { nexuses: next }
   }),
@@ -191,12 +191,13 @@ export const createWorldSlice: StateCreator<WorldSlice> = (set, get) => ({
     }
   }),
 
-  updateNexusXP: (id, xp) => set((state) => {
+  updateNexusXP: (id, xpDelta) => set((state) => {
     const nexus = state.nexuses.get(id)
     if (!nexus) return state
     const next = new Map(state.nexuses)
-    const newLevel = xpToLevel(xp)
-    next.set(id, { ...nexus, xp, level: newLevel })
+    const newXP = (nexus.xp || 0) + xpDelta
+    const newLevel = xpToLevel(newXP)
+    next.set(id, { ...nexus, xp: newXP, level: newLevel, updatedAt: Date.now() })
     saveNexusesToStorage(next)
     return { nexuses: next }
   }),
@@ -211,7 +212,7 @@ export const createWorldSlice: StateCreator<WorldSlice> = (set, get) => ({
     const snappedPosition = { gridX: snappedPos.isoX, gridY: snappedPos.isoY }
     
     const next = new Map(state.nexuses)
-    next.set(id, { ...nexus, position: snappedPosition })
+    next.set(id, { ...nexus, position: snappedPosition, updatedAt: Date.now() })
     saveNexusesToStorage(next)
     return { nexuses: next }
   }),
@@ -229,7 +230,9 @@ export const createWorldSlice: StateCreator<WorldSlice> = (set, get) => ({
     
     for (const serverNexus of nexuses) {
       const existing = next.get(serverNexus.id)
-      const xp = serverNexus.xp || 0
+      const serverXP = serverNexus.xp || 0
+      const existingXP = existing?.xp || 0
+      const xp = Math.max(serverXP, existingXP)  // 取较大值，不丢失前端累积的 XP
 
       // 构建 VisualDNA：优先使用服务器提供的 visual_dna，否则从 ID 生成
       let visualDNA: VisualDNA
@@ -268,8 +271,8 @@ export const createWorldSlice: StateCreator<WorldSlice> = (set, get) => ({
         constructionProgress: existing?.constructionProgress ?? 1,
         createdAt: existing?.createdAt || Date.now(),
         // 统一使用 boundSkillIds (后端字段名为 skillDependencies)
-        boundSkillIds: serverNexus.skillDependencies || serverNexus.boundSkillIds || [],
-        flavorText: serverNexus.flavorText || serverNexus.description || '',
+        boundSkillIds: (serverNexus as any).skillDependencies || serverNexus.boundSkillIds || [],
+        flavorText: serverNexus.flavorText || (serverNexus as any).description || '',
         // Phase 4: File-based Nexus fields
         sopContent: serverNexus.sopContent,
         triggers: serverNexus.triggers,

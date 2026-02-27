@@ -2,12 +2,13 @@ import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   X, Trash2, Clock, CheckCircle2, ChevronRight,
-  Calendar, Activity, MessageSquare, Hash, StopCircle, AlertTriangle, Play,
+  Calendar, Activity, MessageSquare, Hash, StopCircle, AlertTriangle, Play, RotateCcw, Pause,
 } from 'lucide-react'
 import { GlassCard } from '@/components/GlassCard'
 import { useStore } from '@/store'
 import { cn } from '@/utils/cn'
 import type { TaskItem, TaskStatus } from '@/types'
+import { localClawService } from '@/services/LocalClawService'
 
 const statusConfig: Record<TaskStatus, { icon: typeof Clock; color: string; label: string }> = {
   pending: { icon: Clock, color: 'amber', label: '等待' },
@@ -16,6 +17,8 @@ const statusConfig: Record<TaskStatus, { icon: typeof Clock; color: string; labe
   done: { icon: CheckCircle2, color: 'emerald', label: '完成' },
   terminated: { icon: StopCircle, color: 'red', label: '已终止' },
   interrupted: { icon: AlertTriangle, color: 'amber', label: '已中断' },
+  retrying: { icon: RotateCcw, color: 'violet', label: '重试中' },
+  paused: { icon: Pause, color: 'slate', label: '已暂停' },
 }
 
 interface HistoryDrawerProps {
@@ -32,6 +35,9 @@ export function HistoryDrawer({ isOpen, onClose, inline = false, tasks: customTa
   const removeActiveExecution = useStore((s) => s.removeActiveExecution)
   const clearTaskHistory = useStore((s) => s.clearTaskHistory)
   const retryInterruptedTask = useStore((s) => s.retryInterruptedTask)
+  const updateActiveExecution = useStore((s) => s.updateActiveExecution)
+  const addActiveExecution = useStore((s) => s.addActiveExecution)
+  const saveCheckpoint = useStore((s) => s.saveCheckpoint)
   const sendChat = useStore((s) => s.sendChat)
 
   const [expandedId, setExpandedId] = useState<string | null>(null)
@@ -52,11 +58,64 @@ export function HistoryDrawer({ isOpen, onClose, inline = false, tasks: customTa
   const handleRetry = async (task: TaskItem) => {
     if (retrying) return
     setRetrying(task.id)
+    
     try {
-      const taskInfo = retryInterruptedTask(task.id)
-      if (taskInfo && taskInfo.description) {
-        await sendChat(taskInfo.description, 'task')
+      // 检查是否有断点可以恢复
+      if (task.checkpoint && task.checkpoint.traceTools.length > 0) {
+        console.log(`[HistoryDrawer] Resuming from checkpoint: ${task.checkpoint.stepIndex} steps completed`)
+        
+        // 创建新的执行任务
+        const newTaskId = `resume-${Date.now()}`
+        addActiveExecution({
+          id: newTaskId,
+          title: `恢复: ${task.title}`,
+          description: task.description,
+          status: 'executing',
+          priority: 'high',
+          timestamp: new Date().toISOString(),
+          executionSteps: [],
+          startedAt: Date.now(),
+        })
+        
+        // 标记原任务为已重试
+        updateActiveExecution(task.id, { 
+          status: 'interrupted',
+          executionError: '任务已从断点恢复执行',
+        })
+        
+        // 从断点恢复执行
+        await localClawService.resumeFromCheckpoint(
+          task.checkpoint,
+          undefined,
+          (step) => {
+            // 更新执行步骤
+            const current = activeExecutions.find(t => t.id === newTaskId)
+            if (current) {
+              updateActiveExecution(newTaskId, {
+                executionSteps: [...(current.executionSteps || []), step],
+              })
+            }
+          },
+          (checkpoint) => {
+            // 保存新的 checkpoint
+            saveCheckpoint(newTaskId, checkpoint)
+          }
+        )
+        
+        // 完成
+        updateActiveExecution(newTaskId, { 
+          status: 'done',
+          completedAt: Date.now(),
+        })
+      } else {
+        // 无断点，使用原有的重新执行逻辑
+        const taskInfo = retryInterruptedTask(task.id)
+        if (taskInfo && taskInfo.description) {
+          await sendChat(taskInfo.description, 'task')
+        }
       }
+    } catch (error: any) {
+      console.error('[HistoryDrawer] Retry failed:', error)
     } finally {
       setRetrying(null)
     }

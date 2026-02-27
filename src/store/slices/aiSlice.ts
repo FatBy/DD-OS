@@ -422,11 +422,36 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
     if (!session || !session.proposedPlan) return
     set({ activeQuestSession: { ...session, phase: 'executing' } })
     
+    // 创建任务条目以便在 TaskHouse 中显示
+    const execId = `quest-${session.id}`
+    const fullState = get() as any
+    fullState.addActiveExecution?.({
+      id: execId,
+      title: session.proposedPlan.title || session.userGoal.slice(0, 50),
+      description: session.userGoal,
+      status: 'executing',
+      priority: 'high',
+      timestamp: new Date().toISOString(),
+      executionSteps: [],
+    })
+    
+    const execStartTime = Date.now()
+    
     // 异步执行确认后的计划（不阻塞 UI）
     localClawService.executeConfirmedQuestPlan(session, (step) => {
-      // 可选：实时步骤追踪
+      // 将执行步骤追加到 TaskHouse
+      fullState.appendExecutionStep?.(execId, step)
     }).then(result => {
+      const execDuration = Date.now() - execStartTime
       get().completeQuestSession(result)
+      
+      // 更新任务状态为完成
+      fullState.updateActiveExecution?.(execId, {
+        status: 'done',
+        executionOutput: result,
+        executionDuration: execDuration,
+      })
+      
       // 添加最终结果消息到聊天
       get()._addMessageToActiveConv({
         id: `quest-result-${Date.now()}`,
@@ -435,7 +460,16 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
         timestamp: Date.now(),
       })
     }).catch((err: any) => {
+      const execDuration = Date.now() - execStartTime
       get().completeQuestSession(`执行失败: ${err.message}`)
+      
+      // 更新任务状态为失败
+      fullState.updateActiveExecution?.(execId, {
+        status: 'failed',
+        executionOutput: `执行失败: ${err.message}`,
+        executionDuration: execDuration,
+      })
+      
       get()._addMessageToActiveConv({
         id: `quest-error-${Date.now()}`,
         role: 'assistant',
@@ -853,16 +887,8 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
         const activeConv = fullState.conversations?.get(fullState.activeConversationId)
         const activeNexusId = activeConv?.nexusId || fullState.activeNexusId
         
-        // Quest 模式触发条件（严格）：
-        // 1. 显式 /quest 命令 - 总是触发
-        // 2. 消息长度 > 120 且包含复杂任务关键词 - 真正复杂的任务
-        // 3. 消息包含多步骤标志词 - 需要分解的任务
-        const hasQuestCommand = message.includes('/quest')
-        const isComplexTask = message.length > 120 && 
-          /(?:并且|然后|之后|同时|首先|接着|最后|分步|分析.*(?:修改|重构|优化)|(?:创建|实现).*(?:系统|模块|功能)|batch|step.by.step|refactor|implement.*system)/i.test(message)
-        const isMultiStepTask = /(?:第[一二三四五]|步骤\s*[1-9]|1\.|2\.|①|②|❶)/i.test(message)
-        
-        const useQuestMode = hasQuestCommand || isComplexTask || isMultiStepTask
+        // Quest 模式已禁用：所有任务走传统 ReAct 直接执行
+        const useQuestMode = false
         
         // 仅在传统模式下预先创建任务
         if (!useQuestMode) {
@@ -932,7 +958,11 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
               (step) => {
                 (get() as any).appendExecutionStep?.(execId, step)
               },
-              activeNexusId || undefined
+              activeNexusId || undefined,
+              // onCheckpoint: 保存断点用于恢复
+              (checkpoint) => {
+                (get() as any).saveCheckpoint?.(execId, checkpoint)
+              }
             )
           }
 

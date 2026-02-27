@@ -5,6 +5,7 @@
 
 import type { NexusEntity, ToolInfo, ExecTrace } from '@/types'
 import { nexusRuleEngine, type NexusStats } from './nexusRuleEngine'
+import { genePoolService } from './genePoolService'
 
 type NexusStatsMap = Record<string, NexusStats>
 
@@ -48,6 +49,63 @@ export class NexusManagerService {
     } catch {
       // 文件不存在，从空开始
     }
+  }
+
+  /**
+   * 🧬 Phase 4: 注册所有 Nexus 的能力基因
+   * 让其他 Nexus 能通过 Gene Pool 发现可协作的节点
+   */
+  async registerAllNexusCapabilities(): Promise<void> {
+    if (!this.io) return
+    
+    const nexuses = this.io.getNexuses()
+    if (!nexuses || nexuses.size === 0) return
+
+    let registeredCount = 0
+    for (const [nexusId, nexus] of nexuses) {
+      // 提取能力关键词
+      const capabilities: string[] = []
+      
+      // 从 label 和 flavorText 提取关键词
+      if (nexus.label) {
+        capabilities.push(...nexus.label.split(/[,，、\s]+/).filter(s => s.length > 1))
+      }
+      if (nexus.flavorText) {
+        capabilities.push(...nexus.flavorText.split(/[,，、\s]+/).filter(s => s.length > 1 && s.length < 10))
+      }
+      
+      // 从 triggers 提取
+      if (nexus.triggers && nexus.triggers.length > 0) {
+        capabilities.push(...nexus.triggers)
+      }
+      
+      // 从绑定的技能推断能力
+      if (nexus.boundSkillIds && nexus.boundSkillIds.length > 0) {
+        capabilities.push(...nexus.boundSkillIds.map(s => s.replace(/-/g, ' ')))
+      }
+
+      // 去重
+      const uniqueCapabilities = [...new Set(capabilities.map(c => c.toLowerCase()))]
+        .filter(c => c.length > 1)
+        .slice(0, 15)
+
+      if (uniqueCapabilities.length === 0) continue
+
+      // 构建目录路径
+      const dirPath = `nexuses/${nexusId}/`
+
+      genePoolService.registerNexusCapability({
+        nexusId,
+        nexusName: nexus.label || nexusId,
+        description: nexus.flavorText || nexus.objective || '',
+        capabilities: uniqueCapabilities,
+        dirPath,
+      })
+      
+      registeredCount++
+    }
+
+    console.log(`[NexusManager] Registered ${registeredCount} Nexus capability genes`)
   }
 
   private async saveStats(): Promise<void> {

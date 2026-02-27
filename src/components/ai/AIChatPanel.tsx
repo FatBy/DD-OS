@@ -13,9 +13,11 @@ import { ChatErrorBoundary } from './ChatErrorBoundary'
 import { AddMCPModal } from './AddMCPModal'
 import { AddSkillModal } from './AddSkillModal'
 import { CreateNexusModal, NexusInitialData } from '@/components/world/CreateNexusModal'
+import { autoInstallSkills } from '@/services/installService'
 import { ConversationSidebar } from './ConversationSidebar'
-import { SubagentMonitor } from './SubagentMonitor'
-import { QuestPlanConfirmation } from './QuestPlanConfirmation'
+// Quest 模式已禁用
+// import { SubagentMonitor } from './SubagentMonitor'
+// import { QuestPlanConfirmation } from './QuestPlanConfirmation'
 import { useT } from '@/i18n'
 
 export function AIChatPanel() {
@@ -281,8 +283,43 @@ export function AIChatPanel() {
     const messagesToAnalyze = chatMessages.map(m => ({ role: m.role, content: m.content }))
     
     // 异步分析，使用 Promise 但不 await
-    analyzeConversationForBuilder(messagesToAnalyze).then((analysisResult) => {
+    analyzeConversationForBuilder(messagesToAnalyze).then(async (analysisResult) => {
       if (analysisResult) {
+        // 自动安装建议技能（非阻塞）
+        let installSummary = ''
+        if (analysisResult.suggestedSkills && analysisResult.suggestedSkills.length > 0) {
+          try {
+            addToast({
+              type: 'info',
+              title: '正在安装技能',
+              message: `检测到 ${analysisResult.suggestedSkills.length} 个技能，尝试自动安装...`,
+              duration: 5000,
+            })
+            const installedNames = useStore.getState().skills.map((s: { name?: string; id: string }) => s.name || s.id)
+            const results = await autoInstallSkills(analysisResult.suggestedSkills, installedNames)
+            const installed = results.filter(r => r.status === 'installed')
+            const notFound = results.filter(r => r.status === 'not_found' || r.status === 'failed')
+            if (installed.length > 0) {
+              installSummary = `，已安装 ${installed.length} 个技能`
+              // 刷新前端技能列表
+              try {
+                const serverUrl = localStorage.getItem('ddos_server_url') || 'http://localhost:3001'
+                const res = await fetch(`${serverUrl}/skills`)
+                if (res.ok) {
+                  const skills = await res.json()
+                  useStore.getState().setOpenClawSkills(skills)
+                }
+              } catch { /* 刷新失败不影响 */ }
+            }
+            if (notFound.length > 0) {
+              installSummary += `，${notFound.length} 个未找到`
+            }
+          } catch {
+            // 安装流程整体失败，不阻塞
+            installSummary = '，技能自动安装失败'
+          }
+        }
+
         // 存储分析结果
         const resultData: NexusInitialData = {
           name: analysisResult.name,
@@ -302,7 +339,7 @@ export function AIChatPanel() {
         addToast({
           type: 'success',
           title: 'Nexus 分析完成',
-          message: `已提取「${analysisResult.name}」，包含 ${analysisResult.suggestedSkills?.length || 0} 个技能`,
+          message: `已提取「${analysisResult.name}」${installSummary}`,
           duration: 8000,
           onClick: () => {
             // 点击 Toast 时打开 Modal 并填入数据
@@ -579,8 +616,8 @@ export function AIChatPanel() {
                         {chatError}
                       </div>
                     )}
-                    {/* Quest 交互式流程 UI */}
-                    <QuestPhaseRenderer />
+                    {/* Quest 交互式流程 UI - 已禁用 */}
+                    {/* <QuestPhaseRenderer /> */}
                   </>
                 )}
                 <div ref={messagesEndRef} />
@@ -792,82 +829,7 @@ export function AIChatPanel() {
 }
 
 /**
- * Quest 阶段渲染器
- * 根据 activeQuestSession.phase 渲染对应的交互式 UI
+ * Quest 阶段渲染器 - 已禁用
+ * Quest 模式已禁用，所有任务走传统 ReAct 直接执行
  */
-function QuestPhaseRenderer() {
-  const session = useStore(s => s.activeQuestSession)
-  const subagents = useStore(s => s.questSubagents)
-  const confirmPlan = useStore(s => s.confirmQuestPlan)
-  const cancelSession = useStore(s => s.cancelQuestSession)
-
-  if (!session || session.phase === 'idle' || session.phase === 'completed') return null
-
-  const subagentsArray = Array.from(subagents.values())
-  const allSubagents = subagentsArray.length > 0 ? subagentsArray : session.subagents
-
-  return (
-    <AnimatePresence mode="wait">
-      {session.phase === 'exploring' && (
-        <motion.div
-          key="exploring"
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0 }}
-          className="mt-3"
-        >
-          <div className="p-4 bg-blue-500/10 border border-blue-500/20 rounded-xl">
-            <p className="text-sm text-blue-400 font-medium mb-2">探索代码库中...</p>
-            <SubagentMonitor subagents={allSubagents} />
-          </div>
-        </motion.div>
-      )}
-
-      {session.phase === 'planning' && (
-        <motion.div
-          key="planning"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          className="mt-3"
-        >
-          <div className="p-4 bg-purple-500/10 border border-purple-500/20 rounded-xl flex items-center gap-2">
-            <Loader2 className="w-4 h-4 animate-spin text-purple-400" />
-            <span className="text-sm text-purple-400">正在生成任务计划...</span>
-          </div>
-        </motion.div>
-      )}
-
-      {session.phase === 'confirming' && (
-        <motion.div
-          key="confirming"
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0 }}
-          className="mt-3"
-        >
-          <QuestPlanConfirmation
-            session={session}
-            onConfirm={confirmPlan}
-            onCancel={cancelSession}
-          />
-        </motion.div>
-      )}
-
-      {session.phase === 'executing' && (
-        <motion.div
-          key="executing"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          className="mt-3"
-        >
-          <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl flex items-center gap-2">
-            <Loader2 className="w-4 h-4 animate-spin text-amber-400" />
-            <span className="text-sm text-amber-400">执行中，查看任务屋了解详情</span>
-          </div>
-        </motion.div>
-      )}
-    </AnimatePresence>
-  )
-}
+// function QuestPhaseRenderer() { ... }

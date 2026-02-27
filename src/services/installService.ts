@@ -7,7 +7,7 @@
  * - 支持环境变量配置（MCP）
  */
 
-import type { RegistrySkillResult, RegistryMCPResult } from './onlineSearchService'
+import { searchOnlineSkills, type RegistrySkillResult, type RegistryMCPResult } from './onlineSearchService'
 
 // 安装结果类型
 export interface InstallResult {
@@ -149,4 +149,80 @@ export async function triggerHotReload(): Promise<InstallResult> {
       message: error instanceof Error ? error.message : '网络错误',
     }
   }
+}
+
+// ============================================
+// 批量自动安装（Nexus 创建时使用）
+// ============================================
+
+export interface AutoInstallResult {
+  skillName: string
+  status: 'installed' | 'already' | 'not_found' | 'failed'
+  message: string
+}
+
+/**
+ * 批量搜索并安装技能
+ * - 跳过已安装的技能
+ * - 并行安装，最多5个
+ * - 任何单个失败不影响整体
+ * - 有新安装时自动触发热重载
+ */
+export async function autoInstallSkills(
+  suggestedSkills: string[],
+  installedSkillNames: string[]
+): Promise<AutoInstallResult[]> {
+  const normalizedInstalled = installedSkillNames.map(n => n.toLowerCase())
+
+  // 过滤出未安装的
+  const toInstall = suggestedSkills.filter(
+    s => !normalizedInstalled.some(name =>
+      name === s.toLowerCase() || name.includes(s.toLowerCase()) || s.toLowerCase().includes(name)
+    )
+  )
+
+  const results: AutoInstallResult[] = []
+
+  // 标记已安装的
+  for (const s of suggestedSkills) {
+    if (!toInstall.includes(s)) {
+      results.push({ skillName: s, status: 'already', message: '已安装' })
+    }
+  }
+
+  if (toInstall.length === 0) return results
+
+  // 并行搜索+安装（最多5个）
+  const installResults = await Promise.allSettled(
+    toInstall.slice(0, 5).map(async (skillName): Promise<AutoInstallResult> => {
+      try {
+        const searchResults = await searchOnlineSkills(skillName)
+        if (searchResults.length === 0) {
+          return { skillName, status: 'not_found', message: '注册表中未找到' }
+        }
+        const result = await installSkill(searchResults[0])
+        if (result.success) {
+          return { skillName, status: 'installed', message: result.message }
+        }
+        // 409 = already exists，视为成功
+        if (result.message.includes('409') || result.message.includes('already') || result.message.includes('已存在')) {
+          return { skillName, status: 'already', message: '已安装' }
+        }
+        return { skillName, status: 'failed', message: result.message }
+      } catch (e) {
+        return { skillName, status: 'failed', message: String(e) }
+      }
+    })
+  )
+
+  for (const r of installResults) {
+    results.push(r.status === 'fulfilled' ? r.value : { skillName: '?', status: 'failed', message: 'unexpected' })
+  }
+
+  // 有新安装的，触发热重载
+  if (results.some(r => r.status === 'installed')) {
+    await triggerHotReload().catch(() => {})
+  }
+
+  return results
 }

@@ -35,7 +35,7 @@ export function QuestPlanConfirmation({
     exploration: true,
     plan: true,
   })
-  const [editingTaskId, setEditingTaskId] = useState<string | null>(null)
+  const [_editingTaskId, setEditingTaskId] = useState<string | null>(null)
 
   const toggleSection = (section: string) => {
     setExpandedSections(prev => ({ ...prev, [section]: !prev[section] }))

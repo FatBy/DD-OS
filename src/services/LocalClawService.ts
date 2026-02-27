@@ -10,12 +10,13 @@
 
 import { chat, streamChat, isLLMConfigured, embed, cosineSimilarity, convertToolInfoToFunctions } from './llmService'
 import type { SimpleChatMessage, LLMStreamResult } from './llmService'
-import type { ExecutionStatus, OpenClawSkill, MemoryEntry, ToolInfo, ExecTrace, ExecTraceToolCall, ApprovalRequest, ExecutionStep, NexusEntity, SubTask, TaskPlan, SubTaskStatus, TaskItem, QuestSession, QuestPhase, ExplorationResult, SymbolResult, ContextEntry } from '@/types'
+import type { ExecutionStatus, OpenClawSkill, MemoryEntry, ToolInfo, ExecTrace, ExecTraceToolCall, ApprovalRequest, ExecutionStep, NexusEntity, SubTask, TaskPlan, SubTaskStatus, TaskItem, QuestSession, QuestPhase, ExplorationResult, SymbolResult, TaskCheckpoint } from '@/types'
 import { parseSoulMd, type ParsedSoul } from '@/utils/soulParser'
 import { skillStatsService } from './skillStatsService'
 import { immuneService } from './capsuleService'
 import { nexusRuleEngine } from './nexusRuleEngine'
 import { nexusManager } from './nexusManager'
+import { genePoolService } from './genePoolService'
 
 // ============================================
 // 类型定义
@@ -99,6 +100,12 @@ interface StoreActions {
   activeNexusId?: string | null
   setActiveNexus?: (id: string | null) => void
   updateNexusXP?: (id: string, xp: number) => void
+  // Quest 模式
+  startQuestSession?: (goal: string) => void
+  updateQuestPhase?: (phase: QuestPhase) => void
+  setQuestProposedPlan?: (plan: TaskPlan) => void
+  addExplorationResult?: (result: ExplorationResult) => void
+  completeQuestSession?: (result?: any) => void
 }
 
 // ============================================
@@ -468,6 +475,12 @@ const TASK_COMPLETION_PROMPT = `你是任务完成度评估器。请分析以下
 3. "创建/编写文件" → 成功标准: 文件已创建并内容正确
 4. "执行命令" → 成功标准: 命令执行成功且返回预期结果
 5. "分析/解释 X" → 成功标准: 给出了有意义的分析结论
+
+**严格评分规则:**
+- 工具调用成功 ≠ 任务完成，必须有证据证明用户意图被满足
+- 如果写入文件后未确认文件存在或内容正确，completionRate 不应超过 85%
+- 如果存在 Nexus 验收标准但未逐条验证，completionRate 不应超过 80%
+- 如果所有工具都失败，completionRate 应为 0
 
 **输出格式 (仅输出 JSON):**
 {
@@ -1095,6 +1108,9 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
 
       // 加载 Nexus 性能统计
       await nexusManager.loadStats()
+      
+      // 🧬 Phase 4: 注册所有 Nexus 的能力基因 (让 Nexus 间可以互相发现)
+      await nexusManager.registerAllNexusCapabilities()
 
       // 加载自适应规则
       await nexusRuleEngine.load()
@@ -1524,6 +1540,12 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
       }
     }
 
+    // 🧬 Phase 4: Nexus 通讯提示 (让 AI 知道可以协作的其他 Nexus)
+    const nexusCommunicationHint = genePoolService.buildNexusCommunicationHint(userQuery, activeNexusId || undefined)
+    if (nexusCommunicationHint) {
+      contextParts.push(nexusCommunicationHint)
+    }
+
     // 组合上下文
     const timestamp = new Date().toLocaleString('zh-CN')
     const header = `当前时间: ${timestamp}\n用户意图: ${userQuery.slice(0, 100)}${userQuery.length > 100 ? '...' : ''}`
@@ -1750,7 +1772,8 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
     prompt: string,
     onUpdate?: (content: string) => void,
     onStep?: (step: ExecutionStep) => void,
-    nexusId?: string | null
+    nexusId?: string | null,
+    onCheckpoint?: (checkpoint: TaskCheckpoint) => void
   ): Promise<string> {
     if (!isLLMConfigured()) {
       throw new Error('LLM 未配置。请在设置中配置 API Key。')
@@ -1787,7 +1810,7 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
     const finalNexusId = nexusId ?? this.getActiveNexusId()
 
     try {
-      const result = await this.runReActLoop(prompt, onUpdate, onStep, finalNexusId)
+      const result = await this.runReActLoop(prompt, onUpdate, onStep, finalNexusId, onCheckpoint)
       
       this.storeActions?.updateExecutionStatus(execId, {
         status: 'success',
@@ -1803,6 +1826,85 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
       throw error
     } finally {
       // 清除当前任务上下文
+      this.storeActions?.setCurrentTask(null, null)
+    }
+  }
+
+  /**
+   * 从检查点恢复执行
+   * 将之前执行的历史作为上下文注入，让 LLM 从断点继续
+   */
+  async resumeFromCheckpoint(
+    checkpoint: TaskCheckpoint,
+    onUpdate?: (content: string) => void,
+    onStep?: (step: ExecutionStep) => void,
+    onCheckpoint?: (checkpoint: TaskCheckpoint) => void
+  ): Promise<string> {
+    if (!isLLMConfigured()) {
+      throw new Error('LLM 未配置。请在设置中配置 API Key。')
+    }
+
+    // 清空上次执行的文件创建记录
+    this._lastCreatedFiles = []
+
+    const execId = `resume-${Date.now()}`
+    
+    this.storeActions?.updateExecutionStatus(execId, {
+      id: execId,
+      status: 'running',
+      timestamp: Date.now(),
+    })
+
+    // 构建已完成步骤的摘要
+    const completedStepsSummary = checkpoint.traceTools
+      .filter(t => t.status === 'success')
+      .map((t, i) => `${i + 1}. ${t.name}(${JSON.stringify(t.args).slice(0, 100)}) → 成功`)
+      .join('\n')
+
+    const failedStepsSummary = checkpoint.traceTools
+      .filter(t => t.status === 'error')
+      .map(t => `- ${t.name}: ${t.result.slice(0, 100)}`)
+      .join('\n')
+
+    // 构建恢复提示
+    const resumePrompt = `[断点恢复] 请继续完成以下任务：
+
+原始任务: ${checkpoint.userPrompt}
+
+已完成的步骤 (${checkpoint.traceTools.filter(t => t.status === 'success').length}个):
+${completedStepsSummary || '无'}
+
+${failedStepsSummary ? `之前失败的步骤:\n${failedStepsSummary}\n请避免重复相同的错误。` : ''}
+
+请从断点继续执行，完成剩余的任务。不要重复已完成的步骤。`
+
+    console.log(`[LocalClaw] Resuming from checkpoint: ${checkpoint.stepIndex} steps completed`)
+
+    // 设置当前任务上下文
+    this.storeActions?.setCurrentTask(execId, `恢复: ${checkpoint.userPrompt.slice(0, 50)}`)
+
+    try {
+      const result = await this.runReActLoop(
+        resumePrompt,
+        onUpdate,
+        onStep,
+        checkpoint.nexusId,
+        onCheckpoint
+      )
+      
+      this.storeActions?.updateExecutionStatus(execId, {
+        status: 'success',
+        output: result,
+      })
+
+      return result
+    } catch (error: any) {
+      this.storeActions?.updateExecutionStatus(execId, {
+        status: 'error',
+        error: error.message,
+      })
+      throw error
+    } finally {
       this.storeActions?.setCurrentTask(null, null)
     }
   }
@@ -2135,7 +2237,7 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
    */
   private async runExplorationPhase(
     userGoal: string,
-    nexusId?: string,
+    _nexusId?: string,
     onResult?: (result: ExplorationResult) => void
   ): Promise<ExplorationResult[]> {
     const results: ExplorationResult[] = []
@@ -2231,12 +2333,6 @@ ${explorationContext}`
     
     session.phase = 'executing'
     this.storeActions?.updateQuestPhase?.('executing')
-    
-    // 构建累积上下文
-    const contextStr = session.accumulatedContext
-      .slice(-15)
-      .map(c => `[${c.type}] ${c.content}`)
-      .join('\n')
     
     // 执行计划
     const result = await this.executeQuestPlan(
@@ -2415,7 +2511,8 @@ ${explorationContext}`
     userPrompt: string,
     onUpdate?: (content: string) => void,
     onStep?: (step: ExecutionStep) => void,
-    nexusId?: string | null
+    nexusId?: string | null,
+    onCheckpoint?: (checkpoint: TaskCheckpoint) => void
   ): Promise<string> {
     // 检测是否应该使用 FC 模式
     // 条件: 有可用工具 && 模型支持 FC (暂时通过配置/特性检测)
@@ -2423,10 +2520,10 @@ ${explorationContext}`
     
     if (useFunctionCalling && this.availableTools.length > 0) {
       console.log('[LocalClaw] Using Function Calling mode')
-      return this.runReActLoopFC(userPrompt, onUpdate, onStep, nexusId)
+      return this.runReActLoopFC(userPrompt, onUpdate, onStep, nexusId, onCheckpoint)
     } else {
       console.log('[LocalClaw] Using Legacy text-based mode')
-      return this.runReActLoopLegacy(userPrompt, onUpdate, onStep, nexusId)
+      return this.runReActLoopLegacy(userPrompt, onUpdate, onStep, nexusId, onCheckpoint)
     }
   }
 
@@ -2452,7 +2549,8 @@ ${explorationContext}`
     userPrompt: string,
     onUpdate?: (content: string) => void,
     onStep?: (step: ExecutionStep) => void,
-    nexusId?: string | null
+    nexusId?: string | null,
+    onCheckpoint?: (checkpoint: TaskCheckpoint) => void
   ): Promise<string> {
     this.storeActions?.setAgentStatus('thinking')
 
@@ -2498,6 +2596,9 @@ ${explorationContext}`
     // P2: 执行追踪收集
     const traceTools: ExecTraceToolCall[] = []
     const traceStartTime = Date.now()
+
+    // 🧬 Gene Pool: 懒加载基因库
+    await genePoolService.ensureLoaded()
 
     // 外层升级循环
     do {
@@ -2636,9 +2737,34 @@ ${explorationContext}`
             name: toolCall.name,
             args: toolCall.args,
             status: toolResult.status === 'error' ? 'error' : 'success',
+            result: toolResult.result,
             latency: toolLatency,
             order: traceTools.length + 1,
           })
+
+          // 💾 保存 checkpoint（每次工具执行后，无论成功失败）
+          if (onCheckpoint) {
+            const checkpoint: TaskCheckpoint = {
+              stepIndex: traceTools.length,
+              savedAt: Date.now(),
+              userPrompt,
+              nexusId: nexusId || undefined,
+              turnCount,
+              messages: messages.map(m => ({
+                role: m.role as 'system' | 'user' | 'assistant' | 'tool',
+                content: m.content,
+              })),
+              traceTools: traceTools.map(t => ({
+                name: t.name,
+                args: t.args,
+                status: t.status,
+                result: (t.result || '').slice(0, 500),
+                latency: t.latency,
+                order: t.order,
+              })),
+            }
+            onCheckpoint(checkpoint)
+          }
 
           // 📝 记录工具调用到短暂层
           this.logToEphemeral(
@@ -2667,6 +2793,10 @@ ${explorationContext}`
             
             if (legacyRepeatCount >= 2) {
               // 🚨 危机干预: 相同错误已出现2+次, 强制策略变更
+              // 🧬 Gene Pool: 查找历史修复经验
+              const legacyCrisisGeneMatches = genePoolService.findCrossNexusGenes(toolCall.name, toolResult.result, this.getActiveNexusId() || undefined)
+              const legacyCrisisGeneHint = genePoolService.buildGeneHint(legacyCrisisGeneMatches)
+
               messages.push({
                 role: 'user',
                 content: `[CRITICAL - 重复错误检测] ${toolCall.name} 已连续 ${legacyRepeatCount} 次产生相同错误。
@@ -2676,7 +2806,7 @@ ${explorationContext}`
 1. 使用完全不同的工具或方法达成目标
 2. 彻底修改参数后重试（不能与之前相同）
 3. 跳过此步骤，继续执行后续任务
-不要重复之前的失败操作。`,
+不要重复之前的失败操作。` + legacyCrisisGeneHint,
               })
               
               this.storeActions?.addLog({
@@ -2686,6 +2816,10 @@ ${explorationContext}`
                 message: `[Reflexion] 检测到重复错误(${legacyRepeatCount}次)，强制策略变更: ${toolCall.name}`,
               })
             } else {
+              // 🧬 Gene Pool: 查找历史修复经验
+              const legacyGeneMatches = genePoolService.findCrossNexusGenes(toolCall.name, toolResult.result, this.getActiveNexusId() || undefined)
+              const legacyGeneHint = genePoolService.buildGeneHint(legacyGeneMatches)
+
               messages.push({
                 role: 'user',
                 content: `[Reflexion 反思] ${toolCall.name} 执行失败。
@@ -2697,7 +2831,7 @@ ${explorationContext}`
 3. **预防措施**: 下次如何避免此类错误？${(() => { const ctx = nexusManager.buildSkillContext(); return ctx ? `
 4. **技能充足性**: 当前 Nexus 的技能是否足以完成任务？如果缺少必要技能，可使用 nexusBindSkill 添加；如果某技能不适用，可使用 nexusUnbindSkill 移除。${ctx}` : '' })()}
 
-请在 thought 中完成反思，然后执行修正后的操作。`,
+请在 thought 中完成反思，然后执行修正后的操作。` + legacyGeneHint,
               })
             
               this.storeActions?.addLog({
@@ -2713,7 +2847,7 @@ ${explorationContext}`
             // P5: 更新最近操作的实体 (用于指代消解)
             this.updateRecentEntities(toolCall.name, toolCall.args as Record<string, unknown>, toolResult.result)
             
-            // 追踪文件创建事件
+            // 追踪文件创建事件 + 注册产出物基因
             if (toolCall.name === 'writeFile' && toolResult.status === 'success') {
               try {
                 const parsed = JSON.parse(toolResult.result)
@@ -2724,6 +2858,28 @@ ${explorationContext}`
                     message: parsed.message || '',
                     fileSize: parsed.fileSize,
                   })
+                  
+                  // 🧬 Phase 4: 注册产出物基因 (让其他 Nexus 能发现)
+                  const currentNexusId = this.getActiveNexusId()
+                  if (currentNexusId) {
+                    const pathStr = String(toolCall.args.path || '')
+                    // 从路径推断类型
+                    const ext = pathStr.split('.').pop()?.toLowerCase() || ''
+                    const typeMap: Record<string, string> = {
+                      md: 'document', txt: 'text', json: 'data',
+                      ts: 'code', js: 'code', py: 'code',
+                      pptx: 'presentation', docx: 'document', pdf: 'document',
+                      png: 'image', jpg: 'image', svg: 'image',
+                    }
+                    genePoolService.registerArtifact({
+                      nexusId: currentNexusId,
+                      path: parsed.filePath,
+                      name: parsed.fileName || pathStr.split('/').pop() || 'unnamed',
+                      type: typeMap[ext] || 'file',
+                      size: parsed.fileSize || 0,
+                      description: userPrompt.slice(0, 100),
+                    }, userPrompt.split(/[,，、\s]+/).filter(s => s.length > 1).slice(0, 10))
+                  }
                 }
               } catch { /* 非 JSON 结果，忽略 */ }
             }
@@ -2778,18 +2934,32 @@ ${explorationContext}`
               const nexusSkillCtxCritic = nexusManager.buildSkillContext()
               const recentToolNames = traceTools.slice(-5).map(t => t.name).join(', ')
 
+              // 构建 Nexus 验收标准上下文
+              let acceptanceCriteria = ''
+              const criticNexusId = nexusId || this.getActiveNexusId()
+              if (criticNexusId) {
+                const nexuses = (this.storeActions as any)?.nexuses as Map<string, NexusEntity> | undefined
+                const nexus = nexuses?.get(criticNexusId)
+                if (nexus?.objective) {
+                  acceptanceCriteria += `\n目标: ${nexus.objective}`
+                }
+                if (nexus?.metrics?.length) {
+                  acceptanceCriteria += `\n验收检查点:\n${nexus.metrics.map((m: string, i: number) => `${i + 1}. ${m}`).join('\n')}`
+                }
+              }
+
               messages.push({
                 role: 'user',
                 content: `[Critic 自检] ${toolCall.name} 执行成功。
 结果: ${toolResult.result.slice(0, 500)}
 
+用户原始需求: "${userPrompt.slice(0, 200)}"
+${acceptanceCriteria ? `\n验收标准:${acceptanceCriteria}\n` : ''}
 请验证:
-1. 结果是否完全满足用户的原始需求？
-2. 是否有潜在问题需要修正？
-3. 是否需要额外操作来完善？${nexusSkillCtxCritic ? `
-4. **技能优化**: 本次使用了 [${recentToolNames}]。当前 Nexus 是否有未使用的冗余技能？是否需要新技能？${nexusSkillCtxCritic}` : ''}
-
-如果满足需求，请给出最终回复。如果发现问题，请自行修正。`,
+1. 操作结果是否真正满足用户的原始需求？（工具执行成功 ≠ 任务完成）
+2. 是否有遗漏的步骤或潜在问题？
+${acceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${nexusSkillCtxCritic ? `${acceptanceCriteria ? '4' : '3'}. **技能优化**: 本次使用了 [${recentToolNames}]。当前 Nexus 是否有未使用的冗余技能？是否需要新技能？${nexusSkillCtxCritic}\n` : ''}
+如果满足需求，继续下一步或给出最终回复。如果发现问题，自行修正。`,
               })
               
               this.storeActions?.addLog({
@@ -2860,6 +3030,56 @@ ${explorationContext}`
 
       // 📊 记录 Nexus 性能统计
       nexusManager.recordPerformance(trace)
+
+      // 🧬 Gene Pool: 自动收割基因 (Phase 2 - 检测 error→success 修复模式)
+      genePoolService.harvestGene(traceTools, userPrompt, activeNexusId || undefined)
+
+      // P4: Nexus 经验记录 + XP 更新 (Legacy 模式)
+      if (activeNexusId) {
+        const success = traceTools.every(t => t.status === 'success')
+        nexusManager.recordExperience(
+          activeNexusId,
+          userPrompt,
+          traceTools.map(t => t.name),
+          success,
+          finalResponse || ''
+        ).catch(err => {
+          console.warn('[LocalClaw/Legacy] Failed to record Nexus experience:', err)
+        })
+
+        // 🧬 Phase 4: 记录活动基因 (让其他 Nexus 能发现这个 Nexus 做了什么)
+        const nexuses = (this.storeActions as any)?.nexuses as Map<string, NexusEntity> | undefined
+        const nexusName = nexuses?.get(activeNexusId)?.label || activeNexusId
+        const successCount = traceTools.filter(t => t.status === 'success').length
+        const artifactsCreated = this._lastCreatedFiles.map(f => f.fileName).filter(Boolean)
+        genePoolService.recordActivity({
+          nexusId: activeNexusId,
+          nexusName,
+          summary: userPrompt.slice(0, 100) + (userPrompt.length > 100 ? '...' : ''),
+          toolsUsed: [...new Set(traceTools.map(t => t.name))],
+          artifactsCreated,
+          duration: traceTools.reduce((sum, t) => sum + t.latency, 0),
+          status: successCount > 0 ? 'success' : 'failed',
+        })
+
+        // 🎮 更新 Nexus XP (渐进式奖励: 基于成功率)
+        const successRate = successCount / traceTools.length
+        if (successCount > 0 && this.storeActions?.updateNexusXP) {
+          let xpGained: number
+          if (successRate >= 1.0) {
+            // 全部成功: 满额奖励
+            xpGained = 5 + Math.min(traceTools.length, 10)
+          } else if (successRate >= 0.5) {
+            // 半数以上成功: 基础奖励
+            xpGained = 3
+          } else {
+            // 少量成功: 安慰奖
+            xpGained = 1
+          }
+          this.storeActions.updateNexusXP(activeNexusId, xpGained)
+          console.log(`[LocalClaw/Legacy] Granted ${xpGained} XP to Nexus: ${activeNexusId} (rate: ${Math.round(successRate * 100)}%)`)
+        }
+      }
     }
 
     // 🔍 任务完成度验证 - 当没有最终响应或达到最大轮次时触发 (Legacy 模式)
@@ -2937,7 +3157,8 @@ ${explorationContext}`
     userPrompt: string,
     onUpdate?: (content: string) => void,
     onStep?: (step: ExecutionStep) => void,
-    nexusId?: string | null
+    nexusId?: string | null,
+    onCheckpoint?: (checkpoint: TaskCheckpoint) => void
   ): Promise<string> {
     this.storeActions?.setAgentStatus('thinking')
 
@@ -2988,6 +3209,9 @@ ${explorationContext}`
     const traceTools: ExecTraceToolCall[] = []
     const traceStartTime = Date.now()
 
+    // 🧬 Gene Pool: 懒加载基因库
+    await genePoolService.ensureLoaded()
+
     // 外层升级循环
     do {
       needEscalation = false
@@ -3031,6 +3255,7 @@ ${explorationContext}`
           messages.push(assistantMsg)
 
           // 逐个执行工具并收集结果
+          let needReplanHint = false
           for (const tc of toolCalls) {
             const toolName = tc.function.name
             let toolArgs: Record<string, unknown> = {}
@@ -3040,6 +3265,10 @@ ${explorationContext}`
             } catch {
               console.warn(`[LocalClaw/FC] Failed to parse args for ${toolName}:`, tc.function.arguments)
             }
+
+            // 安全保护: 确保每个 tool_call 都有对应的 tool response
+            // 防止异常导致后续 tool_calls 缺少响应引发 API 400 错误
+            try {
 
             // 发送思考步骤 (如果有 content)
             if (content) {
@@ -3087,6 +3316,7 @@ ${explorationContext}`
                     role: 'tool',
                     tool_call_id: tc.id,
                     content: `操作被用户拒绝。原因: ${matchedDanger.reason} (风险等级: ${matchedDanger.level})。请使用更安全的替代方案。`,
+                    name: toolName,
                   })
                   continue
                 }
@@ -3129,11 +3359,38 @@ ${explorationContext}`
               name: toolName,
               args: toolArgs,
               status: toolResult.status === 'error' ? 'error' : 'success',
+              result: toolResult.result,
               latency: toolLatency,
               order: traceTools.length + 1,
             })
 
             lastToolResult = toolResult.result
+
+            // 💾 保存 checkpoint（每次工具执行后，无论成功失败）
+            if (onCheckpoint) {
+              const checkpoint: TaskCheckpoint = {
+                stepIndex: traceTools.length,
+                savedAt: Date.now(),
+                userPrompt,
+                nexusId: nexusId || undefined,
+                turnCount,
+                messages: messages.map(m => ({
+                  role: m.role as 'system' | 'user' | 'assistant' | 'tool',
+                  content: m.content,
+                  tool_call_id: m.tool_call_id,
+                  tool_calls: m.tool_calls,
+                })),
+                traceTools: traceTools.map(t => ({
+                  name: t.name,
+                  args: t.args,
+                  status: t.status,
+                  result: (t.result || '').slice(0, 500), // 限制结果大小
+                  latency: t.latency,
+                  order: t.order,
+                })),
+              }
+              onCheckpoint(checkpoint)
+            }
 
             // 🧠 FC 模式增强: Reflexion + Critic 机制
             if (toolResult.status === 'error') {
@@ -3169,6 +3426,10 @@ ${explorationContext}`
               
               if (repeatCount >= 2) {
                 // 🚨 危机干预: 相同错误已出现2+次, 强制策略变更
+                // 🧬 Gene Pool: 查找历史修复经验
+                const crisisGeneMatches = genePoolService.findCrossNexusGenes(toolName, toolResult.result, this.getActiveNexusId() || undefined)
+                const crisisGeneHint = genePoolService.buildGeneHint(crisisGeneMatches)
+
                 messages.push({
                   role: 'tool',
                   tool_call_id: tc.id,
@@ -3180,7 +3441,7 @@ ${explorationContext}`
 1. 使用完全不同的工具或方法达成目标
 2. 彻底修改参数后重试（不能与之前相同）
 3. 跳过此步骤，继续执行后续任务
-不要重复之前的失败操作。`,
+不要重复之前的失败操作。` + crisisGeneHint,
                   name: toolName,
                 })
                 
@@ -3193,6 +3454,10 @@ ${explorationContext}`
               } else {
                 // 🔄 Reflexion: 结构化反思提示 - 让 LLM 分析失败原因
                 const nexusSkillCtxFC = nexusManager.buildSkillContext()
+                // 🧬 Gene Pool: 查找历史修复经验
+                const reflexionGeneMatches = genePoolService.findCrossNexusGenes(toolName, toolResult.result, this.getActiveNexusId() || undefined)
+                const reflexionGeneHint = genePoolService.buildGeneHint(reflexionGeneMatches)
+
                 const reflexionHint = `
 
 [系统提示 - Reflexion 反思机制]
@@ -3202,7 +3467,7 @@ ${explorationContext}`
 3. **预防措施**: 如何避免再次出错？${nexusSkillCtxFC ? `
 4. **技能充足性**: 当前 Nexus 的技能是否足以完成任务？如果缺少必要技能，可使用 nexusBindSkill 添加；如果某技能不适用，可使用 nexusUnbindSkill 移除。${nexusSkillCtxFC}` : ''}
 
-请根据反思结果调整你的下一步操作。`
+请根据反思结果调整你的下一步操作。` + reflexionGeneHint
               
                 // 将反思提示追加到工具结果中
                 messages.push({
@@ -3220,26 +3485,10 @@ ${explorationContext}`
                 })
               }
               
-              // 🔄 连续失败过多 → 提示重新规划
+              // 🔄 连续失败过多 → 标记需要重规划提示 (延迟到所有 tool 响应之后)
+              // 注意: 不能在 tool 响应中间插入 user 消息，否则违反 API 协议导致 400 错误
               if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-                const replanHint = `
-[系统提示 - 连续失败警告]
-已连续失败 ${consecutiveFailures} 次。建议：
-- 重新评估任务可行性
-- 考虑完全不同的实现方案
-- 如果无法解决，向用户说明困难并请求指导`
-                
-                messages.push({
-                  role: 'user',
-                  content: replanHint,
-                })
-                
-                this.storeActions?.addLog({
-                  id: `replan-hint-${Date.now()}`,
-                  timestamp: Date.now(),
-                  level: 'warn',
-                  message: `[ReAct] 连续失败 ${consecutiveFailures} 次，提示重新规划`,
-                })
+                needReplanHint = true
               }
             } else {
               // 成功时重置连续失败计数
@@ -3251,16 +3500,32 @@ ${explorationContext}`
               if (needsCritic) {
                 const nexusSkillCtxFCCritic = nexusManager.buildSkillContext()
                 const recentToolNamesFC = traceTools.slice(-5).map(t => t.name).join(', ')
+
+                // 构建 Nexus 验收标准上下文
+                let fcAcceptanceCriteria = ''
+                const fcCriticNexusId = nexusId || this.getActiveNexusId()
+                if (fcCriticNexusId) {
+                  const nexuses = (this.storeActions as any)?.nexuses as Map<string, NexusEntity> | undefined
+                  const nexus = nexuses?.get(fcCriticNexusId)
+                  if (nexus?.objective) {
+                    fcAcceptanceCriteria += `\n目标: ${nexus.objective}`
+                  }
+                  if (nexus?.metrics?.length) {
+                    fcAcceptanceCriteria += `\n验收检查点:\n${nexus.metrics.map((m: string, i: number) => `${i + 1}. ${m}`).join('\n')}`
+                  }
+                }
+
                 const criticHint = `
 
 [系统提示 - Critic 自检机制]
-${toolName} 执行成功。请验证：
-1. 结果是否完全满足用户的原始需求？
-2. 是否有潜在问题需要修正？
-3. 是否需要额外操作来完善？${nexusSkillCtxFCCritic ? `
-4. **技能优化**: 本次使用了 [${recentToolNamesFC}]。当前 Nexus 是否有未使用的冗余技能？是否需要新技能？${nexusSkillCtxFCCritic}` : ''}
-
-如果满足需求，给出最终回复。如果发现问题，自行修正。`
+${toolName} 执行成功。
+用户原始需求: "${userPrompt.slice(0, 200)}"
+${fcAcceptanceCriteria ? `\n验收标准:${fcAcceptanceCriteria}\n` : ''}
+请验证：
+1. 操作结果是否真正满足用户的原始需求？（工具执行成功 ≠ 任务完成）
+2. 是否有遗漏的步骤或潜在问题？
+${fcAcceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${nexusSkillCtxFCCritic ? `${fcAcceptanceCriteria ? '4' : '3'}. **技能优化**: 本次使用了 [${recentToolNamesFC}]。当前 Nexus 是否有未使用的冗余技能？是否需要新技能？${nexusSkillCtxFCCritic}\n` : ''}
+如果满足需求，继续下一步或给出最终回复。如果发现问题，自行修正。`
                 
                 messages.push({
                   role: 'tool',
@@ -3290,7 +3555,7 @@ ${toolName} 执行成功。请验证：
             if (toolResult.status === 'success') {
               this.updateRecentEntities(toolName, toolArgs, toolResult.result)
 
-              // 追踪文件创建事件 - FC 模式
+              // 追踪文件创建事件 + 注册产出物基因 - FC 模式
               if (toolName === 'writeFile') {
                 try {
                   const parsed = JSON.parse(toolResult.result)
@@ -3301,6 +3566,27 @@ ${toolName} 执行成功。请验证：
                       message: parsed.message || '',
                       fileSize: parsed.fileSize,
                     })
+                    
+                    // 🧬 Phase 4: 注册产出物基因 (让其他 Nexus 能发现)
+                    const currentNexusId = this.getActiveNexusId()
+                    if (currentNexusId) {
+                      const pathStr = String(toolArgs.path || '')
+                      const ext = pathStr.split('.').pop()?.toLowerCase() || ''
+                      const typeMap: Record<string, string> = {
+                        md: 'document', txt: 'text', json: 'data',
+                        ts: 'code', js: 'code', py: 'code',
+                        pptx: 'presentation', docx: 'document', pdf: 'document',
+                        png: 'image', jpg: 'image', svg: 'image',
+                      }
+                      genePoolService.registerArtifact({
+                        nexusId: currentNexusId,
+                        path: parsed.filePath,
+                        name: parsed.fileName || pathStr.split('/').pop() || 'unnamed',
+                        type: typeMap[ext] || 'file',
+                        size: parsed.fileSize || 0,
+                        description: userPrompt.slice(0, 100),
+                      }, userPrompt.split(/[,，、\s]+/).filter(s => s.length > 1).slice(0, 10))
+                    }
                   }
                 } catch { /* 非 JSON 结果，忽略 */ }
               }
@@ -3334,6 +3620,54 @@ ${toolName} 执行成功。请验证：
                 console.warn('[LocalClaw/FC] Failed to refresh nexuses after skill adaptation')
               }
             }
+            } catch (toolLoopError: any) {
+              // 安全保护: 确保异常时也为此 tool_call 添加响应
+              // 避免 "tool_call_ids did not have response messages" 400 错误
+              console.error(`[LocalClaw/FC] Tool loop error for ${toolName}:`, toolLoopError)
+              
+              // 检查是否已经为这个 tool_call 添加了响应
+              const hasResponse = messages.some(m => m.role === 'tool' && m.tool_call_id === tc.id)
+              if (!hasResponse) {
+                messages.push({
+                  role: 'tool',
+                  tool_call_id: tc.id,
+                  content: `工具执行异常: ${toolLoopError?.message || '未知错误'}`,
+                  name: toolName,
+                })
+              }
+            }
+          }
+
+          // 🛡️ 最终安全校验: 确保所有 tool_call 都有对应的 tool 响应
+          // 防止任何遗漏路径导致 "tool_call_ids did not have response messages" 400 错误
+          for (const tc of toolCalls) {
+            const hasResp = messages.some(
+              m => m.role === 'tool' && m.tool_call_id === tc.id
+            )
+            if (!hasResp) {
+              console.error(`[LocalClaw/FC] SAFETY: Missing tool response for ${tc.function.name} (${tc.id}), injecting fallback`)
+              messages.push({
+                role: 'tool',
+                tool_call_id: tc.id,
+                content: `[系统] 工具 ${tc.function.name} 的执行结果丢失，请重试或换用其他方法。`,
+                name: tc.function.name,
+              })
+            }
+          }
+
+          // 🔄 延迟的重规划提示: 在所有 tool 响应之后再插入 user 消息
+          // 避免在 tool 响应中间插入 user 消息违反 API 协议
+          if (needReplanHint) {
+            messages.push({
+              role: 'user',
+              content: `[系统提示 - 连续失败警告]\n已连续失败 ${consecutiveFailures} 次。建议：\n- 重新评估任务可行性\n- 考虑完全不同的实现方案\n- 如果无法解决，向用户说明困难并请求指导`,
+            })
+            this.storeActions?.addLog({
+              id: `replan-hint-${Date.now()}`,
+              timestamp: Date.now(),
+              level: 'warn',
+              message: `[ReAct] 连续失败 ${consecutiveFailures} 次，提示重新规划`,
+            })
           }
 
           this.storeActions?.setAgentStatus('thinking')
@@ -3389,6 +3723,9 @@ ${toolName} 执行成功。请验证：
       // 📊 记录 Nexus 性能统计
       nexusManager.recordPerformance(trace)
 
+      // 🧬 Gene Pool: 自动收割基因 (Phase 2 - 检测 error→success 修复模式)
+      genePoolService.harvestGene(traceTools, userPrompt, activeNexusId || undefined)
+
       // P4: Nexus 经验记录
       if (activeNexusId) {
         const success = traceTools.every(t => t.status === 'success')
@@ -3401,6 +3738,39 @@ ${toolName} 执行成功。请验证：
         ).catch(err => {
           console.warn('[LocalClaw/FC] Failed to record Nexus experience:', err)
         })
+
+        // 🧬 Phase 4: 记录活动基因 (让其他 Nexus 能发现这个 Nexus 做了什么)
+        const nexuses = (this.storeActions as any)?.nexuses as Map<string, NexusEntity> | undefined
+        const nexusName = nexuses?.get(activeNexusId)?.label || activeNexusId
+        const successCount = traceTools.filter(t => t.status === 'success').length
+        const artifactsCreated = this._lastCreatedFiles.map(f => f.fileName).filter(Boolean)
+        genePoolService.recordActivity({
+          nexusId: activeNexusId,
+          nexusName,
+          summary: userPrompt.slice(0, 100) + (userPrompt.length > 100 ? '...' : ''),
+          toolsUsed: [...new Set(traceTools.map(t => t.name))],
+          artifactsCreated,
+          duration: traceTools.reduce((sum, t) => sum + t.latency, 0),
+          status: successCount > 0 ? 'success' : 'failed',
+        })
+
+        // 🎮 更新 Nexus XP (渐进式奖励: 基于成功率)
+        const successRate = successCount / traceTools.length
+        if (successCount > 0 && this.storeActions?.updateNexusXP) {
+          let xpGained: number
+          if (successRate >= 1.0) {
+            // 全部成功: 满额奖励
+            xpGained = 5 + Math.min(traceTools.length, 10)
+          } else if (successRate >= 0.5) {
+            // 半数以上成功: 基础奖励
+            xpGained = 3
+          } else {
+            // 少量成功: 安慰奖
+            xpGained = 1
+          }
+          this.storeActions.updateNexusXP(activeNexusId, xpGained)
+          console.log(`[LocalClaw/FC] Granted ${xpGained} XP to Nexus: ${activeNexusId} (rate: ${Math.round(successRate * 100)}%)`)
+        }
       }
     }
 
@@ -3965,7 +4335,7 @@ ${tasksSummary}
       const nexus = nexuses?.get(activeNexusId)
       if (nexus?.objective && nexus.metrics && nexus.metrics.length > 0) {
         nexusMetricsSection = `
-**🎯 Nexus 目标函数验收标准:**
+**Nexus 目标函数验收标准:**
 目标: ${nexus.objective}
 验收检查点:
 ${nexus.metrics.map((m, i) => `${i + 1}. ${m}`).join('\n')}
@@ -3973,6 +4343,14 @@ ${nexus.metrics.map((m, i) => `${i + 1}. ${m}`).join('\n')}
 请逐一评估每个检查点是否满足，并在输出的 metricsStatus 字段中说明。
 `
       }
+    }
+    // 无 Nexus 时补充通用验收提示
+    if (!nexusMetricsSection) {
+      nexusMetricsSection = `
+**通用验收标准:**
+- 工具调用成功 ≠ 任务完成，需要有证据证明操作的实际效果
+- 如文件操作后需确认文件存在/内容正确，命令执行后需确认输出符合预期
+`
     }
 
     const prompt = TASK_COMPLETION_PROMPT
