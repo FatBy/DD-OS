@@ -43,12 +43,8 @@ if exist "%SCRIPT_DIR%skills" (
     )
 )
 
-:: 激活虚拟环境（如果存在）
+:: 直接使用系统 Python
 set PYTHON_CMD=python
-if exist "%SCRIPT_DIR%.venv\Scripts\activate.bat" (
-    echo [INFO] Virtual environment detected, activating...
-    set PYTHON_CMD=%SCRIPT_DIR%.venv\Scripts\python.exe
-)
 
 :: 启动后端
 echo [1/2] Starting backend server...

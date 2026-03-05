@@ -32,6 +32,16 @@ interface ToolResult {
   status: 'success' | 'error'
   result: string
   timestamp?: string
+  /** Layer 3: 代码验证结果 */
+  verification?: {
+    verified: boolean
+    checks: { name: string; passed: boolean; details: string }[]
+    confidence: number
+  }
+  /** Layer 2: 错误类型分类 */
+  error_type?: string
+  /** Layer 2: 执行耗时 (ms) */
+  execution_time_ms?: number
 }
 
 interface PlanStep {
@@ -764,6 +774,8 @@ class LocalClawService {
 
   // 能力缺失记忆：记录因缺少工具导致的失败
   private capabilityGapHistory: Array<{ label: string; task: string; timestamp: number }> = []
+  /** Layer 4: 验证结果缓存 (key: "toolName:order") */
+  private _verificationCache: Map<string, { verified: boolean; confidence: number; checks: { name: string; passed: boolean; details: string }[] }> = new Map()
 
   /**
    * 检测工具错误是否属于能力缺失，并记录到记忆
@@ -2553,6 +2565,7 @@ ${explorationContext}`
     onCheckpoint?: (checkpoint: TaskCheckpoint) => void
   ): Promise<string> {
     this.storeActions?.setAgentStatus('thinking')
+    this._verificationCache.clear()
 
     // 🎯 复杂度感知：三级轮次分配
     const isSimpleTask = userPrompt.length < 20 && 
@@ -2741,6 +2754,11 @@ ${explorationContext}`
             latency: toolLatency,
             order: traceTools.length + 1,
           })
+
+          // Layer 4: 缓存验证结果
+          if (toolResult.verification) {
+            this._verificationCache.set(`${toolCall.name}:${traceTools.length}`, toolResult.verification)
+          }
 
           // 💾 保存 checkpoint（每次工具执行后，无论成功失败）
           if (onCheckpoint) {
@@ -2951,7 +2969,7 @@ ${explorationContext}`
               messages.push({
                 role: 'user',
                 content: `[Critic 自检] ${toolCall.name} 执行成功。
-结果: ${toolResult.result.slice(0, 500)}
+结果: ${toolResult.result.slice(0, 500)}${this._buildVerificationHint(toolResult)}
 
 用户原始需求: "${userPrompt.slice(0, 200)}"
 ${acceptanceCriteria ? `\n验收标准:${acceptanceCriteria}\n` : ''}
@@ -3161,6 +3179,7 @@ ${acceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${nex
     onCheckpoint?: (checkpoint: TaskCheckpoint) => void
   ): Promise<string> {
     this.storeActions?.setAgentStatus('thinking')
+    this._verificationCache.clear()
 
     // 复杂度感知轮次分配 (与 Legacy 保持一致)
     const isSimpleTask = userPrompt.length < 20 && 
@@ -3364,6 +3383,11 @@ ${acceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${nex
               order: traceTools.length + 1,
             })
 
+            // Layer 4: 缓存验证结果
+            if (toolResult.verification) {
+              this._verificationCache.set(`${toolName}:${traceTools.length}`, toolResult.verification)
+            }
+
             lastToolResult = toolResult.result
 
             // 💾 保存 checkpoint（每次工具执行后，无论成功失败）
@@ -3518,7 +3542,7 @@ ${acceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${nex
                 const criticHint = `
 
 [系统提示 - Critic 自检机制]
-${toolName} 执行成功。
+${toolName} 执行成功。${this._buildVerificationHint(toolResult)}
 用户原始需求: "${userPrompt.slice(0, 200)}"
 ${fcAcceptanceCriteria ? `\n验收标准:${fcAcceptanceCriteria}\n` : ''}
 请验证：
@@ -4300,6 +4324,58 @@ ${tasksSummary}
   }
 
   // ============================================
+  // 🔍 验收辅助方法 (Acceptance Helpers)
+  // ============================================
+
+  /**
+   * 从 ToolResult 的 verification 字段构建 Critic 提示片段
+   */
+  private _buildVerificationHint(toolResult: ToolResult): string {
+    if (!toolResult.verification || toolResult.verification.checks.length === 0) return ''
+    const v = toolResult.verification
+    const checksText = v.checks
+      .map(c => `  ${c.passed ? '✓' : '✗'} ${c.name}: ${c.details}`)
+      .join('\n')
+    return `\n[代码验证] (置信度: ${(v.confidence * 100).toFixed(0)}%):\n${checksText}${
+      v.confidence < 0.7 ? '\n  ⚠️ 验证置信度较低，请确认实际效果' : ''
+    }`
+  }
+
+  /**
+   * 汇总执行轨迹中所有工具的验证结果，供 validateTaskCompletion 使用
+   */
+  private _buildVerificationSummary(traceTools: ExecTraceToolCall[]): string {
+    // traceTools 中的 verification 数据保存在 result 字段中无法直接访问
+    // 这里使用 _lastVerifications 缓存 (在 executeTool 后更新)
+    const cache = this._verificationCache
+    if (!cache || cache.size === 0) return ''
+
+    const entries: { name: string; verified: boolean; confidence: number; failedChecks: string[] }[] = []
+    for (const t of traceTools) {
+      const key = `${t.name}:${t.order}`
+      const v = cache.get(key)
+      if (v) {
+        entries.push({
+          name: t.name,
+          verified: v.verified,
+          confidence: v.confidence,
+          failedChecks: v.checks.filter((c: { passed: boolean; name: string }) => !c.passed).map((c: { name: string }) => c.name),
+        })
+      }
+    }
+
+    if (entries.length === 0) return ''
+
+    const lowConfidence = entries.filter(e => e.confidence < 0.7)
+    const allFailed = entries.flatMap(e => e.failedChecks)
+
+    return `\n\n[代码验证汇总] (基于代码验证，非 LLM 推测):
+- 已验证: ${entries.length}/${traceTools.length} 个工具
+- 低置信度: ${lowConfidence.length > 0 ? lowConfidence.map(e => e.name).join(', ') : '无'}
+- 失败检查: ${allFailed.length > 0 ? allFailed.join(', ') : '无'}`
+  }
+
+  // ============================================
   // 🔍 任务完成度验证 (Task Completion Validation)
   // ============================================
 
@@ -4326,6 +4402,9 @@ ${tasksSummary}
     const lastResultSummary = lastToolResult 
       ? `\n\n**最后工具返回 (摘要):**\n${lastToolResult.slice(0, 500)}`
       : ''
+
+    // 🔍 Layer 4: 构建代码验证汇总
+    const verificationSummary = this._buildVerificationSummary(traceTools)
 
     // 🎯 获取 Nexus 目标函数验收标准 (如果有)
     let nexusMetricsSection = ''
@@ -4355,7 +4434,7 @@ ${nexus.metrics.map((m, i) => `${i + 1}. ${m}`).join('\n')}
 
     const prompt = TASK_COMPLETION_PROMPT
       .replace('{user_prompt}', userPrompt)
-      .replace('{execution_log}', (executionLog || '无工具调用') + lastResultSummary)
+      .replace('{execution_log}', (executionLog || '无工具调用') + lastResultSummary + verificationSummary)
       .replace('{tool_count}', String(traceTools.length))
       .replace('{success_count}', String(successCount))
       .replace('{fail_count}', String(failCount))

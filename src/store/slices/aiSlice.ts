@@ -255,6 +255,8 @@ export interface AiSlice {
   deleteConversation: (id: string) => void
   renameConversation: (id: string, title: string) => void
   getOrCreateNexusConversation: (nexusId: string) => string
+  /** 强制创建新的 Nexus 会话（每次执行按钮点击时使用） */
+  createNewNexusConversation: (nexusId: string) => string
   getCurrentMessages: () => ChatMessage[]
 
   // Actions
@@ -678,6 +680,45 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
     } catch {}
     
     return get().createConversation('nexus', { nexusId, title: nexusTitle })
+  },
+  
+  createNewNexusConversation: (nexusId) => {
+    // 强制创建新的 Nexus 会话（使用唯一 ID，不覆盖旧会话）
+    let nexusTitle = `Nexus-${nexusId.slice(-6)}`
+    try {
+      const fullState = get() as any
+      const nexus = fullState.nexuses?.get?.(nexusId)
+      if (nexus?.label) {
+        nexusTitle = `${nexus.label} #${Date.now().toString(36).slice(-4)}`
+      }
+    } catch {}
+    
+    // 生成唯一 ID（不使用固定的 nexus-{nexusId} 格式）
+    const uniqueId = `nexus-${nexusId}-${Date.now()}`
+    
+    const conversation: Conversation = {
+      id: uniqueId,
+      type: 'nexus',
+      title: nexusTitle,
+      nexusId,
+      messages: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }
+    
+    set((state) => {
+      const newConversations = new Map(state.conversations)
+      newConversations.set(uniqueId, conversation)
+      return { 
+        conversations: newConversations, 
+        activeConversationId: uniqueId 
+      }
+    })
+    
+    persistConversations(get().conversations)
+    persistActiveConversationId(uniqueId)
+    
+    return uniqueId
   },
   
   getCurrentMessages: () => {

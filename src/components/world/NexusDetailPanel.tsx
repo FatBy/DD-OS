@@ -126,7 +126,8 @@ export function NexusDetailPanel() {
   const pendingNexusChatInput = useStore((s) => s.pendingNexusChatInput)
   const clearPendingInput = useStore((s) => s.clearPendingInput)
   
-  // 多会话系统 - 用于点击 Execute 时创建/切换 Nexus 会话
+  // 多会话系统 - 用于点击 Execute 时创建新的 Nexus 会话
+  const createNewNexusConversation = useStore((s) => s.createNewNexusConversation)
   const getOrCreateNexusConversation = useStore((s) => s.getOrCreateNexusConversation)
   const setChatOpen = useStore((s) => s.setChatOpen)
   
@@ -285,9 +286,9 @@ export function NexusDetailPanel() {
     : { label: llmConfig.model || 'Not configured', isCustom: false }
   
   const handleExecute = () => {
-    // 点击 Execute 按钮：创建/切换到该 Nexus 的会话，然后打开主聊天面板
+    // 点击 Execute 按钮：始终创建新的 Nexus 会话，然后打开主聊天面板
     if (!nexus) return
-    getOrCreateNexusConversation(nexus.id)
+    createNewNexusConversation(nexus.id)
     setChatOpen(true)
   }
 

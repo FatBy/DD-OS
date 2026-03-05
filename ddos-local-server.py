@@ -94,6 +94,17 @@ MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB 最大文件大小
 MAX_OUTPUT_SIZE = 512 * 1024      # 512KB 最大输出
 PLUGIN_TIMEOUT = 60               # 插件执行超时(秒)
 
+
+def safe_utf8_truncate(text: str, max_bytes: int) -> str:
+    """UTF-8 安全截断，不破坏多字节字符"""
+    encoded = text.encode('utf-8')
+    if len(encoded) <= max_bytes:
+        return text
+    safe_idx = max_bytes
+    while safe_idx > 0 and (encoded[safe_idx] & 0xC0) == 0x80:
+        safe_idx -= 1
+    return encoded[:safe_idx].decode('utf-8') + f"\n[已截断至约 {max_bytes // 1024}KB]"
+
 # 🌐 静态文件 MIME 类型映射
 MIME_TYPES = {
     '.html': 'text/html',
@@ -1081,6 +1092,201 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
     # 🛠️ 工具执行 (核心新功能)
     # ============================================
     
+    # ---- Layer 1: 前置检查 ----
+    
+    def _precheck_tool_args(self, tool_name: str, args: dict) -> tuple:
+        """Layer 1: 执行前参数校验，返回 (is_valid, error_message)"""
+        
+        if tool_name in ('writeFile', 'appendFile'):
+            path = args.get('path', '')
+            content = args.get('content', '')
+            if not path:
+                return False, f"{tool_name} 缺少 path 参数"
+            if not content and content != '':
+                return False, f"{tool_name} 缺少 content 参数"
+        
+        elif tool_name == 'readFile':
+            path = args.get('path', '')
+            if not path:
+                return False, "readFile 缺少 path 参数"
+            try:
+                file_path = self._resolve_path(path, allow_outside=args.get('allowOutside', False))
+                if not file_path.exists():
+                    return False, f"文件不存在: {path}。建议: 先用 listDir 确认路径"
+                if not file_path.is_file():
+                    return False, f"路径不是文件: {path}。建议: 使用 listDir 查看目录内容"
+                if file_path.stat().st_size > MAX_FILE_SIZE:
+                    return False, f"文件过大 (>{MAX_FILE_SIZE // 1024 // 1024}MB): {path}"
+            except PermissionError:
+                return False, f"路径越权: {path}。只允许访问工作目录内的文件"
+            except ValueError as e:
+                return False, str(e)
+        
+        elif tool_name == 'runCmd':
+            command = args.get('command', '')
+            if not command:
+                return False, "runCmd 缺少 command 参数"
+        
+        elif tool_name == 'listDir':
+            # listDir 允许空 path (默认 .)，无需校验
+            pass
+        
+        elif tool_name == 'generateSkill':
+            name = args.get('name', '')
+            python_code = args.get('pythonCode', '')
+            if not name:
+                return False, "generateSkill 缺少 name 参数"
+            if not python_code:
+                return False, "generateSkill 缺少 pythonCode 参数"
+            if 'def main(' not in python_code and 'async def main(' not in python_code:
+                return False, "pythonCode 必须包含 main() 函数入口"
+        
+        elif tool_name == 'parseFile':
+            fp = args.get('filePath') or args.get('path', '')
+            if not fp:
+                return False, "parseFile 缺少 filePath 参数"
+        
+        return True, ''
+    
+    # ---- Layer 2: 错误分类 ----
+    
+    def _classify_error(self, exception: Exception) -> str:
+        """Layer 2: 错误类型分类"""
+        if isinstance(exception, (UnicodeDecodeError, UnicodeEncodeError)):
+            return 'encoding'
+        if isinstance(exception, subprocess.TimeoutExpired):
+            return 'timeout'
+        if isinstance(exception, PermissionError):
+            return 'permission'
+        if isinstance(exception, (FileNotFoundError, NotADirectoryError)):
+            return 'path'
+        error_msg = str(exception).lower()
+        if 'codec' in error_msg or 'encode' in error_msg or 'decode' in error_msg:
+            return 'encoding'
+        if 'timeout' in error_msg or 'timed out' in error_msg:
+            return 'timeout'
+        if 'permission' in error_msg or 'denied' in error_msg:
+            return 'permission'
+        if 'not found' in error_msg or 'no such file' in error_msg:
+            return 'path'
+        return 'unknown'
+    
+    _ERROR_SUGGESTIONS = {
+        'encoding': '建议: 检查文件编码是否为 UTF-8，或命令输出是否包含特殊字符',
+        'timeout': '建议: 增加 timeout 参数值，或简化命令/操作',
+        'permission': '建议: 检查路径权限，避免访问系统目录',
+        'path': '建议: 先用 listDir 确认路径存在，检查拼写是否正确',
+    }
+    
+    # ---- Layer 3: 结果验证 ----
+    
+    def _verify_tool_result(self, tool_name: str, args: dict, result: str, status: str) -> dict:
+        """Layer 3: 工具结果的代码验证"""
+        if status == 'error':
+            return {'verified': False, 'checks': [], 'confidence': 0.0}
+        
+        checks = []
+        
+        if tool_name == 'writeFile':
+            path = args.get('path', '')
+            content = args.get('content', '')
+            try:
+                file_path = self._resolve_path(path)
+                # Check 1: 文件存在性
+                exists = file_path.exists()
+                checks.append({
+                    'name': '文件存在性',
+                    'passed': exists,
+                    'details': f'{file_path.name} {"存在" if exists else "不存在"}'
+                })
+                if exists:
+                    # Check 2: 大小匹配
+                    actual_size = file_path.stat().st_size
+                    expected_size = len(content.encode('utf-8'))
+                    size_match = abs(actual_size - expected_size) <= 10  # 允许微小差异
+                    checks.append({
+                        'name': '大小匹配',
+                        'passed': size_match,
+                        'details': f'实际 {actual_size}B vs 预期 {expected_size}B'
+                    })
+            except Exception:
+                checks.append({'name': '验证异常', 'passed': False, 'details': '验证过程出错'})
+        
+        elif tool_name == 'generateSkill':
+            name = args.get('name', '')
+            nexus_id = args.get('nexusId', '')
+            safe_name = re.sub(r'[^\w-]', '-', name.lower()).strip('-')
+            safe_name = re.sub(r'-+', '-', safe_name)
+            
+            if nexus_id:
+                skill_dir = self.clawd_path / 'nexuses' / nexus_id / 'skills' / safe_name
+            else:
+                skill_dir = self.clawd_path / 'skills' / safe_name
+            
+            # Check 1: SKILL.md 存在
+            skill_md = skill_dir / 'SKILL.md'
+            checks.append({
+                'name': 'SKILL.md 存在',
+                'passed': skill_md.exists(),
+                'details': f'{skill_md.name} {"已创建" if skill_md.exists() else "未找到"}'
+            })
+            # Check 2: Python 文件存在
+            py_file = skill_dir / f'{safe_name}.py'
+            checks.append({
+                'name': 'Python 文件存在',
+                'passed': py_file.exists(),
+                'details': f'{py_file.name} {"已创建" if py_file.exists() else "未找到"}'
+            })
+        
+        elif tool_name == 'runCmd':
+            # Check: 输出中是否有替代字符 (编码问题指标)
+            replace_count = result.count('\ufffd')
+            total_chars = max(len(result), 1)
+            replace_ratio = replace_count / total_chars
+            encoding_ok = replace_ratio < 0.05
+            checks.append({
+                'name': '输出编码质量',
+                'passed': encoding_ok,
+                'details': f'替代字符占比 {replace_ratio:.1%}' if not encoding_ok else '编码正常'
+            })
+        
+        elif tool_name == 'readFile':
+            # Check: 返回内容非空
+            has_content = bool(result and result.strip())
+            checks.append({
+                'name': '内容非空',
+                'passed': has_content,
+                'details': f'{len(result)} 字符' if has_content else '文件内容为空'
+            })
+        
+        elif tool_name == 'appendFile':
+            path = args.get('path', '')
+            try:
+                file_path = self._resolve_path(path)
+                exists = file_path.exists()
+                checks.append({
+                    'name': '文件存在性',
+                    'passed': exists,
+                    'details': f'{file_path.name} {"存在" if exists else "不存在"}'
+                })
+            except Exception:
+                checks.append({'name': '验证异常', 'passed': False, 'details': '验证过程出错'})
+        
+        # 计算 confidence
+        if not checks:
+            return {'verified': True, 'checks': [], 'confidence': 0.95}
+        
+        passed_count = sum(1 for c in checks if c['passed'])
+        confidence = passed_count / len(checks)
+        
+        return {
+            'verified': all(c['passed'] for c in checks),
+            'checks': checks,
+            'confidence': round(confidence, 2)
+        }
+    
+    # ---- 工具执行主入口 ----
+    
     def handle_tool_execution(self, data):
         """处理工具调用请求 - 支持内置工具、插件工具、指令型工具和MCP工具"""
         tool_name = data.get('name', '')
@@ -1095,8 +1301,22 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
             }, 403)
             return
 
+        # Layer 1: 前置检查
+        is_valid, precheck_error = self._precheck_tool_args(tool_name, args)
+        if not is_valid:
+            self.send_json({
+                'tool': tool_name,
+                'status': 'error',
+                'result': f'[前置检查失败] {precheck_error}',
+                'error_type': 'precheck_failure',
+                'timestamp': datetime.now().isoformat()
+            })
+            return
+
         result = ""
         status = "success"
+        error_type = None
+        start_time = time.time()
 
         try:
             # 1. 指令型工具 -> 路由到 skill-executor
@@ -1137,14 +1357,30 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
 
         except Exception as e:
             status = "error"
+            # Layer 2: 错误分类 + 增强信息
+            error_type = self._classify_error(e)
             result = f"Tool execution failed: {str(e)}"
+            suggestion = self._ERROR_SUGGESTIONS.get(error_type)
+            if suggestion:
+                result += f'\n{suggestion}'
 
-        self.send_json({
+        execution_time_ms = int((time.time() - start_time) * 1000)
+
+        # Layer 3: 结果验证
+        verification = self._verify_tool_result(tool_name, args, result, status)
+
+        response = {
             'tool': tool_name,
             'status': status,
             'result': result,
-            'timestamp': datetime.now().isoformat()
-        })
+            'timestamp': datetime.now().isoformat(),
+            'verification': verification,
+            'execution_time_ms': execution_time_ms,
+        }
+        if error_type:
+            response['error_type'] = error_type
+
+        self.send_json(response)
 
     # ============================================
     # 📎 文件上传 + 自动解析
@@ -1465,7 +1701,11 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
         if file_path.stat().st_size > MAX_FILE_SIZE:
             raise ValueError(f"File too large (>{MAX_FILE_SIZE} bytes)")
         
-        return file_path.read_text(encoding='utf-8')
+        try:
+            return file_path.read_text(encoding='utf-8')
+        except UnicodeDecodeError:
+            content = file_path.read_text(encoding='utf-8', errors='replace')
+            return f"[注意: 文件包含非UTF-8字符，已用替代字符显示]\n{content}"
     
     def _tool_parse_file(self, args: dict) -> str:
         """解析文档或图像文件，返回提取的文本内容"""
@@ -1764,11 +2004,13 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
                 cwd=cwd,
                 capture_output=True,
                 text=True,
+                encoding='utf-8',
+                errors='replace',
                 timeout=timeout
             )
             
-            stdout = process.stdout[:MAX_OUTPUT_SIZE] if process.stdout else ''
-            stderr = process.stderr[:MAX_OUTPUT_SIZE] if process.stderr else ''
+            stdout = safe_utf8_truncate(process.stdout, MAX_OUTPUT_SIZE) if process.stdout else ''
+            stderr = safe_utf8_truncate(process.stderr, MAX_OUTPUT_SIZE) if process.stderr else ''
             
             result_parts = []
             if stdout:
