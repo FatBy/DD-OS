@@ -10,14 +10,16 @@ export function SkillHouse() {
   const openClawSkills = useStore((s) => s.openClawSkills)
   const loading = useStore((s) => s.channelsLoading)
   const connectionStatus = useStore((s) => s.connectionStatus)
+  const storeSnapshot = useStore((s) => s.skillStatsSnapshot)
+  const statsVersion = useStore((s) => s.skillStatsVersion)
 
   const isConnected = connectionStatus === 'connected'
   const [isDetailExpanded, setIsDetailExpanded] = useState(false)
 
-  // 计算能力快照
+  // 计算能力快照: 优先使用 store 中的响应式快照，否则回退到直接计算
   const snapshot = useMemo(() => {
-    return skillStatsService.computeSnapshot(openClawSkills)
-  }, [openClawSkills])
+    return storeSnapshot ?? skillStatsService.computeSnapshot(openClawSkills)
+  }, [storeSnapshot, openClawSkills])
 
   if (loading && isConnected) {
     return (
@@ -44,6 +46,7 @@ export function SkillHouse() {
             openClawSkills={openClawSkills}
             isExpanded={isDetailExpanded}
             onToggle={() => setIsDetailExpanded(!isDetailExpanded)}
+            statsVersion={statsVersion}
           />
         </div>
 

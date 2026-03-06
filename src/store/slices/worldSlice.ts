@@ -232,7 +232,7 @@ export const createWorldSlice: StateCreator<WorldSlice> = (set, get) => ({
       const existing = next.get(serverNexus.id)
       const serverXP = serverNexus.xp || 0
       const existingXP = existing?.xp || 0
-      const xp = Math.max(serverXP, existingXP)  // 取较大值，不丢失前端累积的 XP
+      const xp = Math.max(serverXP, existingXP)  // 后端为权威源，取较大值作为安全合并
 
       // 构建 VisualDNA：优先使用服务器提供的 visual_dna，否则从 ID 生成
       let visualDNA: VisualDNA
@@ -350,9 +350,23 @@ export const createWorldSlice: StateCreator<WorldSlice> = (set, get) => ({
 
   // ---- Execution Actions ----
 
-  startNexusExecution: (nexusId) => set({
-    executingNexusId: nexusId,
-    executionStartTime: Date.now(),
+  startNexusExecution: (nexusId) => set((state) => {
+    // 更新 lastUsedAt 时间戳
+    const nexus = state.nexuses.get(nexusId)
+    if (nexus) {
+      const next = new Map(state.nexuses)
+      next.set(nexusId, { ...nexus, lastUsedAt: Date.now(), updatedAt: Date.now() })
+      saveNexusesToStorage(next)
+      return {
+        nexuses: next,
+        executingNexusId: nexusId,
+        executionStartTime: Date.now(),
+      }
+    }
+    return {
+      executingNexusId: nexusId,
+      executionStartTime: Date.now(),
+    }
   }),
 
   completeNexusExecution: (nexusId, result) => set((state) => {

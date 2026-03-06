@@ -16,6 +16,7 @@ import type {
   AbilitySnapshot,
   OpenClawSkill 
 } from '@/types'
+import { localServerService } from '@/services/localServerService'
 
 // ============================================
 // 能力域配置
@@ -90,6 +91,7 @@ const MILESTONES: Milestone[] = [
 // ============================================
 
 const STORAGE_KEY = 'ddos-skill-stats'
+const BACKEND_DATA_KEY = 'skill_stats'
 const FLUSH_INTERVAL = 30000 // 30秒自动持久化
 
 class SkillStatsService {
@@ -97,10 +99,36 @@ class SkillStatsService {
   private dirty = false
   private flushTimer: ReturnType<typeof setInterval> | null = null
   private lastWeekSnapshot: AbilitySnapshot | null = null
+  private storeRefresh: (() => void) | null = null
+  private notifyTimer: ReturnType<typeof setTimeout> | null = null
+  private static NOTIFY_DEBOUNCE = 500 // 500ms 防抖
 
   constructor() {
     this.loadFromStorage()
     this.startFlushTimer()
+  }
+
+  // ============================================
+  // Store 注入 (避免循环依赖)
+  // ============================================
+
+  /**
+   * 注入 store 刷新回调，由 App.tsx 在初始化时调用
+   */
+  injectStoreRefresh(fn: () => void): void {
+    this.storeRefresh = fn
+  }
+
+  /**
+   * 防抖通知 store 重新计算 snapshot
+   */
+  private notifyStore(): void {
+    if (!this.storeRefresh) return
+    if (this.notifyTimer) clearTimeout(this.notifyTimer)
+    this.notifyTimer = setTimeout(() => {
+      this.notifyTimer = null
+      this.storeRefresh?.()
+    }, SkillStatsService.NOTIFY_DEBOUNCE)
   }
 
   // ============================================
@@ -116,6 +144,7 @@ class SkillStatsService {
       stat.callCount++
       stat.lastUsedAt = Date.now()
       this.dirty = true
+      this.notifyStore()
     } catch (e) {
       console.warn('[SkillStats] recordCall failed:', e)
     }
@@ -148,6 +177,7 @@ class SkillStatsService {
       }
       stat.lastUsedAt = Date.now()
       this.dirty = true
+      this.notifyStore()
     } catch (e) {
       console.warn('[SkillStats] recordResult failed:', e)
     }
@@ -345,10 +375,34 @@ class SkillStatsService {
         const parsed = JSON.parse(data)
         this.stats = new Map(Object.entries(parsed.stats || {}))
         this.lastWeekSnapshot = parsed.lastWeekSnapshot || null
-        console.log(`[SkillStats] Loaded ${this.stats.size} skill stats from storage`)
+        console.log(`[SkillStats] Loaded ${this.stats.size} skill stats from localStorage`)
       }
     } catch (e) {
-      console.warn('[SkillStats] Failed to load from storage:', e)
+      console.warn('[SkillStats] Failed to load from localStorage:', e)
+    }
+    // 异步从后端恢复 (后端优先: 如果后端数据更丰富则覆盖)
+    this.loadFromBackend()
+  }
+
+  private async loadFromBackend(): Promise<void> {
+    try {
+      const data = await localServerService.getData<{ stats: Record<string, SkillStats>; lastWeekSnapshot: AbilitySnapshot | null }>(BACKEND_DATA_KEY)
+      if (data && data.stats) {
+        const backendStats = new Map(Object.entries(data.stats))
+        // 合并: 取 callCount 较大的一方 (代表更完整的数据)
+        for (const [key, bStat] of backendStats) {
+          const lStat = this.stats.get(key)
+          if (!lStat || bStat.callCount > lStat.callCount) {
+            this.stats.set(key, bStat)
+          }
+        }
+        if (data.lastWeekSnapshot && !this.lastWeekSnapshot) {
+          this.lastWeekSnapshot = data.lastWeekSnapshot
+        }
+        console.log(`[SkillStats] Merged ${backendStats.size} skill stats from backend`)
+      }
+    } catch {
+      // 后端不可用，仅用 localStorage
     }
   }
 
@@ -360,9 +414,14 @@ class SkillStatsService {
         stats: Object.fromEntries(this.stats),
         lastWeekSnapshot: this.lastWeekSnapshot,
       }
+      // 同步写入 localStorage (快速缓存)
       localStorage.setItem(STORAGE_KEY, JSON.stringify(data))
+      // 异步写入后端 (持久化)
+      localServerService.setData(BACKEND_DATA_KEY, data).catch(() => {
+        console.warn('[SkillStats] Failed to persist to backend')
+      })
       this.dirty = false
-      console.log(`[SkillStats] Saved ${this.stats.size} skill stats to storage`)
+      console.log(`[SkillStats] Saved ${this.stats.size} skill stats`)
     } catch (e) {
       console.warn('[SkillStats] Failed to save to storage:', e)
     }

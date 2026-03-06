@@ -6,6 +6,7 @@ import { cn } from '@/utils/cn'
 import type { ChatMessage as ChatMessageType, ExecutionStatus } from '@/types'
 import { MarkdownRenderer } from './markdown/MarkdownRenderer'
 import { DocumentView, isLongFormContent } from './markdown/DocumentView'
+import { parseSuggestions, SuggestionChips } from './SuggestionChips'
 
 // 检测输出类型
 function detectOutputType(output: string): 'weather' | 'search' | 'file' | 'file_created' | 'command' | 'plain' {
@@ -545,6 +546,17 @@ export function ChatMessage({ message, containerWidth = 'main' }: ChatMessagePro
   const hasExecution = !!message.execution
   const isAssistantLongForm = !isUser && !hasExecution && message.content && isLongFormContent(message.content)
 
+  // 解析建议选项（仅 assistant 消息）
+  const suggestions = useMemo(() => {
+    if (isUser || !message.content) return null
+    return parseSuggestions(message.content)
+  }, [isUser, message.content])
+
+  // 如果有 suggestions，渲染时用去掉 suggestions 块的内容
+  const displayContent = suggestions
+    ? [suggestions.contentBefore, suggestions.contentAfter].filter(Boolean).join('\n\n')
+    : message.content
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 8 }}
@@ -553,7 +565,15 @@ export function ChatMessage({ message, containerWidth = 'main' }: ChatMessagePro
     >
       {/* 长文档视图 (助手消息，非 execution，内容较长) */}
       {isAssistantLongForm && !(message.execution?.status === 'suggestion') && (
-        <DocumentView content={message.content} containerWidth={containerWidth} />
+        <>
+          <DocumentView content={displayContent} containerWidth={containerWidth} />
+          {suggestions && (
+            <SuggestionChips
+              items={suggestions.items}
+              aiContent={message.content}
+            />
+          )}
+        </>
       )}
 
       {/* 普通文本消息气泡 */}
@@ -585,7 +605,15 @@ export function ChatMessage({ message, containerWidth = 'main' }: ChatMessagePro
             {isUser ? (
               <div className="whitespace-pre-wrap break-words">{message.content}</div>
             ) : (
-              <MarkdownRenderer content={message.content} />
+              <>
+                <MarkdownRenderer content={displayContent} />
+                {suggestions && (
+                  <SuggestionChips
+                    items={suggestions.items}
+                    aiContent={message.content}
+                  />
+                )}
+              </>
             )}
           </div>
         </div>

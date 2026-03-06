@@ -863,6 +863,8 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
             self.handle_trace_recent(query)
         elif path == '/api/genes/load':
             self.handle_gene_load()
+        elif path == '/api/capsules/load':
+            self.handle_capsule_load()
         elif path == '/api/registry/skills':
             self.handle_registry_skills_search(query)
         elif path == '/api/registry/mcp':
@@ -910,6 +912,8 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
             self.handle_trace_save(data)
         elif path == '/api/genes/save':
             self.handle_gene_save(data)
+        elif path == '/api/capsules/save':
+            self.handle_capsule_save(data)
         elif path == '/mcp/reload':
             self.handle_mcp_reload(data)
         elif path.startswith('/mcp/servers/') and path.endswith('/reconnect'):
@@ -2939,7 +2943,7 @@ curl -X POST http://localhost:3001/api/tools/execute \\
         })
 
     def handle_add_experience(self, nexus_name: str, data: dict):
-        """POST /nexuses/{name}/experience - 为 Nexus 添加经验记录"""
+        """POST /nexuses/{name}/experience - 为 Nexus 添加经验记录 (优化4: 结构化索引)"""
         nexus_dir = self._resolve_nexus_dir(nexus_name, auto_create=True)
         if not nexus_dir:
             self.send_error_json(f"Nexus '{nexus_name}' not found", 404)
@@ -2974,9 +2978,69 @@ curl -X POST http://localhost:3001/api/tools/execute \\
         try:
             with target_file.open('a', encoding='utf-8') as f:
                 f.write(entry)
-            self.send_json({'status': 'ok', 'outcome': outcome})
         except Exception as e:
             self.send_error_json(f'Failed to write experience: {str(e)}', 500)
+            return
+
+        # 优化4: 同步更新结构化索引 (index.json)
+        try:
+            self._update_experience_index(exp_dir, {
+                'type': 'success' if outcome == 'success' else 'failure',
+                'task': task[:200],
+                'tools': tools_used,
+                'insight': key_insight,
+                'timestamp': timestamp,
+                'category': self._classify_experience(task, key_insight, tools_used),
+            })
+        except Exception as e:
+            # 索引更新失败不影响主流程
+            print(f"[WARN] Failed to update experience index: {e}")
+
+        self.send_json({'status': 'ok', 'outcome': outcome})
+
+    def _classify_experience(self, task: str, insight: str, tools: list) -> str:
+        """优化4: 经验分类器 — 将经验归类为可检索的类别"""
+        text = f"{task} {insight}".lower()
+        if any(kw in text for kw in ['timeout', 'network', '超时', '网络', 'connection']):
+            return 'network_error'
+        if any(kw in text for kw in ['not found', 'enoent', '找不到', '不存在', 'path', '路径']):
+            return 'path_error'
+        if any(kw in text for kw in ['permission', '权限', 'access denied', 'forbidden']):
+            return 'permission_error'
+        if any(kw in text for kw in ['parameter', '参数', 'invalid', 'type error', '格式']):
+            return 'param_error'
+        if any(kw in text for kw in ['file', '文件', 'write', 'read', '写入', '读取']):
+            return 'file_operation'
+        if any(kw in text for kw in ['search', '搜索', 'web', '查询']):
+            return 'search_operation'
+        return 'general'
+
+    def _update_experience_index(self, exp_dir: Path, entry: dict):
+        """优化4: 维护结构化经验索引"""
+        import json
+        index_file = exp_dir / 'index.json'
+        index = []
+
+        # 读取现有索引
+        if index_file.exists():
+            try:
+                with index_file.open('r', encoding='utf-8') as f:
+                    index = json.load(f)
+                    if not isinstance(index, list):
+                        index = []
+            except (json.JSONDecodeError, Exception):
+                index = []
+
+        # 追加新条目
+        index.append(entry)
+
+        # 限制索引大小: 保留最近 200 条
+        if len(index) > 200:
+            index = index[-200:]
+
+        # 写入
+        with index_file.open('w', encoding='utf-8') as f:
+            json.dump(index, f, ensure_ascii=False, indent=2)
 
     def handle_tools_list(self):
         """GET /tools - 列出所有已注册的工具"""
@@ -3505,6 +3569,41 @@ curl -X POST http://localhost:3001/api/tools/execute \\
                 return
 
         self.send_json(genes)
+
+    def handle_capsule_load(self):
+        """GET /api/capsules/load - 加载全部胶囊"""
+        capsule_file = self.clawd_path / 'memory' / 'capsules.json'
+
+        if not capsule_file.exists():
+            self.send_json([])
+            return
+
+        try:
+            content = capsule_file.read_text(encoding='utf-8')
+            capsules = json.loads(content) if content.strip() else []
+            self.send_json(capsules)
+        except Exception as e:
+            self.send_error_json(f'Failed to load capsules: {e}', 500)
+
+    def handle_capsule_save(self, data):
+        """POST /api/capsules/save - 批量保存胶囊 (全量覆写)"""
+        if not isinstance(data, list):
+            self.send_error_json('Expected array of capsules', 400)
+            return
+
+        capsule_file = self.clawd_path / 'memory' / 'capsules.json'
+        capsule_file.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            # 只保留最近 100 条
+            trimmed = data[-100:] if len(data) > 100 else data
+            capsule_file.write_text(json.dumps(trimmed, ensure_ascii=False, indent=2), encoding='utf-8')
+            self.send_json({
+                'status': 'ok',
+                'message': f'Saved {len(trimmed)} capsules',
+            })
+        except Exception as e:
+            self.send_error_json(f'Failed to save capsules: {e}', 500)
 
     def handle_trace_search(self, query_params):
         """GET /api/traces/search?query=xxx&limit=5 - 检索执行追踪 (P2)"""

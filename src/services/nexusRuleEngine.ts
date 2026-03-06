@@ -272,6 +272,68 @@ export class NexusRuleEngine {
     )
   }
 
+  // ============================================
+  // 实时评估: 每次工具执行后调用 (优化1: 打通信息孤岛)
+  // ============================================
+
+  /**
+   * 实时评估: 在每次工具执行后立即检查高优规则
+   * 只做增量检查 (工具连续失败、轮次接近上限)，不做全量重评
+   */
+  evaluateRealtimeAfterTool(
+    nexusId: string | null,
+    toolName: string,
+    toolStatus: 'success' | 'error',
+    recentToolErrors: { tool: string; count: number }[],
+  ): NexusRule | null {
+    if (!nexusId) return null
+
+    // 检查: 某工具连续失败 ≥3 次 → 立即注入"换工具/换策略"提示
+    const toolErrorEntry = recentToolErrors.find(e => e.tool === toolName)
+    if (toolStatus === 'error' && toolErrorEntry && toolErrorEntry.count >= 3) {
+      if (!this.hasActiveRule(nexusId, 'TOOL_ERROR_RATE', toolName)) {
+        const rule = this.createRule(nexusId, 'TOOL_ERROR_RATE',
+          `⚠️ 实时警告: 工具 ${toolName} 已连续失败 ${toolErrorEntry.count} 次。立即停止使用此工具，改用其他方案。`,
+          { toolName, triggerValue: toolErrorEntry.count, threshold: 3, samples: toolErrorEntry.count }
+        )
+        if (!this.cache.rules[nexusId]) {
+          this.cache.rules[nexusId] = []
+        }
+        this.cache.rules[nexusId].push(rule)
+        this.save().catch(() => {})
+
+        this.io?.addToast?.({
+          type: 'warning',
+          title: '规则引擎实时警告',
+          message: `${toolName} 连续失败 ${toolErrorEntry.count} 次`,
+        })
+        return rule
+      }
+    }
+
+    return null
+  }
+
+  /**
+   * 当 Gene Pool 中的基因被成功使用后，降低相关规则的优先级
+   * (优化1: Gene → Rule 反馈信号)
+   */
+  deactivateRelatedRules(nexusId: string, toolName: string): void {
+    const rules = this.cache.rules[nexusId] || []
+    let deactivated = false
+    for (const rule of rules) {
+      if (rule.active && rule.metadata.toolName === toolName &&
+          (rule.type === 'TOOL_ERROR_RATE' || rule.type === 'ERROR_PATTERN_MEMORY')) {
+        rule.active = false
+        deactivated = true
+        console.log(`[RuleEngine] Deactivated rule ${rule.id} (${rule.type}) for ${toolName} — gene-resolved`)
+      }
+    }
+    if (deactivated) {
+      this.save().catch(() => {})
+    }
+  }
+
   private isInCooldown(nexusId: string, type: RuleType, toolName?: string): boolean {
     const all = this.cache.rules[nexusId] || []
     const now = Date.now()

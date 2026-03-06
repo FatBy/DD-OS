@@ -7,6 +7,7 @@ import type {
   ExecTrace
 } from '@/types'
 import { chat, getLLMConfig } from '@/services/llmService'
+import { localServerService } from '@/services/localServerService'
 
 // ============================================
 // 常量配置 - 双引擎阈值
@@ -16,6 +17,8 @@ const BEHAVIOR_WINDOW_SIZE = 50        // 保留最近 N 条行为记录
 const ANALYSIS_COOLDOWN_MS = 60000     // 分析冷却 (60秒，原 20秒)
 const CONFIDENCE_THRESHOLD = 0.5       // 触发置信度阈值 (原 0.6)
 const REJECTION_COOLDOWN_MS = 300000   // 拒绝后冷却 5 分钟
+const OBSERVER_DATA_KEY = 'observer_behavior_records'  // 后端持久化 key
+const OBSERVER_FLUSH_DEBOUNCE = 10000  // 持久化防抖 10 秒
 
 // 规则引擎阈值
 const RULE_ENGINE = {
@@ -61,6 +64,7 @@ export interface ObserverSlice {
 
   // Actions
   addBehaviorRecord: (record: Omit<BehaviorRecord, 'id' | 'timestamp' | 'keywords'>) => void
+  loadBehaviorRecords: () => Promise<void>
   analyze: () => Promise<TriggerPattern | null>
   analyzeWithRuleEngine: () => Promise<TriggerPattern | null>
   analyzeWithLLM: (traces: ExecTrace[], stats: TraceStats) => Promise<TriggerPattern | null>
@@ -104,6 +108,20 @@ export interface NexusAnalysisResult {
 
 function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+// Observer 持久化: 防抖 flush
+let _observerFlushTimer: ReturnType<typeof setTimeout> | null = null
+function scheduleObserverFlush(records: BehaviorRecord[]): void {
+  if (_observerFlushTimer) clearTimeout(_observerFlushTimer)
+  _observerFlushTimer = setTimeout(() => {
+    _observerFlushTimer = null
+    // 只持久化最近 BEHAVIOR_WINDOW_SIZE 条
+    const toSave = records.slice(-BEHAVIOR_WINDOW_SIZE)
+    localServerService.setData(OBSERVER_DATA_KEY, toSave).catch(() => {
+      console.warn('[Observer] Failed to persist behavior records to backend')
+    })
+  }, OBSERVER_FLUSH_DEBOUNCE)
 }
 
 /**
@@ -368,6 +386,24 @@ export const createObserverSlice: StateCreator<
 
       return { behaviorRecords: updatedRecords }
     })
+
+    // 持久化到后端 (防抖)
+    scheduleObserverFlush(get().behaviorRecords)
+  },
+
+  /**
+   * 从后端加载行为记录 (应用启动时调用)
+   */
+  loadBehaviorRecords: async () => {
+    try {
+      const saved = await localServerService.getData<BehaviorRecord[]>(OBSERVER_DATA_KEY)
+      if (saved && saved.length > 0) {
+        set({ behaviorRecords: saved.slice(-BEHAVIOR_WINDOW_SIZE) })
+        console.log(`[Observer] Restored ${saved.length} behavior records from backend`)
+      }
+    } catch {
+      // 后端不可用，保持空数组
+    }
   },
 
   /**

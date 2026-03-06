@@ -102,10 +102,18 @@ function persistConversations(conversations: Map<string, Conversation>) {
     // 同步写入 localStorage (快速缓存)
     localStorage.setItem(STORAGE_KEYS.CONVERSATIONS, JSON.stringify(trimmed))
     
-    // 异步写入后端 (持久化)
-    localServerService.setData(DATA_KEYS.CONVERSATIONS, trimmed).catch(() => {
-      console.warn('[AI] Failed to persist conversations to server')
-    })
+    // 异步写入后端 (持久化) — 带 1 次重试
+    const persistToBackend = async (retries = 1) => {
+      const ok = await localServerService.setData(DATA_KEYS.CONVERSATIONS, trimmed)
+      if (!ok && retries > 0) {
+        await new Promise(r => setTimeout(r, 2000))
+        return persistToBackend(retries - 1)
+      }
+      if (!ok) {
+        console.warn('[AI] Failed to persist conversations to server after retry')
+      }
+    }
+    persistToBackend().catch(() => {})
   } catch (e) {
     console.warn('[AI] Failed to persist conversations:', e)
   }
@@ -989,6 +997,21 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
             }
           } else {
             // 传统 ReAct 模式 (传入 nexusId 以注入 SOP)
+
+            // 构建对话历史：从当前会话中提取最近的 user/assistant 消息对
+            // 排除当前消息(已在 userMsg 中)和占位消息(execution 消息)
+            const convForHistory = get().conversations.get(get().activeConversationId || '')
+            const chatHistory: Array<{ role: 'user' | 'assistant'; content: string }> = []
+            if (convForHistory) {
+              // 取倒数第二条之前的消息 (最后两条是当前 userMsg + placeholderMsg)
+              const pastMessages = convForHistory.messages.slice(0, -2)
+              for (const m of pastMessages) {
+                if ((m.role === 'user' || m.role === 'assistant') && m.content && m.content.length > 0 && !m.execution) {
+                  chatHistory.push({ role: m.role as 'user' | 'assistant', content: m.content })
+                }
+              }
+            }
+
             result = await localClawService.sendMessage(
               message,
               // onUpdate: 仅更新流式内容指示
@@ -1003,7 +1026,9 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
               // onCheckpoint: 保存断点用于恢复
               (checkpoint) => {
                 (get() as any).saveCheckpoint?.(execId, checkpoint)
-              }
+              },
+              abortController.signal,  // 传入 AbortSignal，支持终止
+              chatHistory.length > 0 ? chatHistory : undefined  // 传入对话历史
             )
           }
 
@@ -1054,6 +1079,26 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
 
         } catch (err: any) {
           const execDuration = Date.now() - execStartTime
+          const isAborted = abortController.signal.aborted || err.name === 'AbortError'
+
+          if (isAborted) {
+            // 用户主动终止 — 不显示为错误
+            get()._updateMessageInActiveConv(execId, { content: '任务已被终止。', execution: undefined })
+            set((s) => ({
+              chatStreaming: false,
+              chatStreamContent: '',
+              _chatAbort: null,
+              executionStatuses: {
+                ...s.executionStatuses,
+                [execId]: { id: execId, status: 'error', error: '已终止', timestamp: Date.now() },
+              },
+            }))
+            fullState.updateActiveExecution?.(execId, {
+              status: 'terminated',
+              executionDuration: execDuration,
+            })
+          } else {
+            // 真正的错误
           // 显示错误消息（普通文本，无执行卡片）
           get()._updateMessageInActiveConv(execId, { content: `执行失败: ${err.message}`, error: true, execution: undefined })
           set((s) => ({
@@ -1070,6 +1115,7 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
             executionError: err.message,
             executionDuration: execDuration,
           })
+          }
           persistExecutionStatuses(get().executionStatuses)
 
           // 完成 Nexus 执行状态 + 发送错误 Toast 通知

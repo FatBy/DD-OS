@@ -12,6 +12,7 @@
 
 import type { Gene, GeneMatch, Capsule, ExecTraceToolCall, NexusCapabilityInfo, NexusArtifactInfo, NexusActivityInfo } from '@/types'
 import { extractSignals, rankGenes, signalOverlap } from '@/utils/signalMatcher'
+import { nexusRuleEngine } from './nexusRuleEngine'
 
 const SERVER_URL = 'http://localhost:3001'
 
@@ -20,16 +21,28 @@ const MAX_GENE_HINTS = 3              // Reflexion 中最多注入的基因数
 const MAX_CAPSULE_HISTORY = 100       // 内存中保留的胶囊数
 const HARVEST_MIN_CONFIDENCE = 0.3    // 自动收割的初始置信度
 const DUPLICATE_OVERLAP_THRESHOLD = 0.7  // 信号重叠超过此阈值视为重复
-const CONFIDENCE_DECAY = 0.8          // 失败时置信度衰减系数
+const CONFIDENCE_DECAY = 0.8          // 失败时置信度衰减系数 (默认)
 const CONFIDENCE_BOOST = 0.1          // 成功时置信度增量
 const CONFIDENCE_CAP = 1.0            // 置信度上限
 const RETIRED_THRESHOLD = 0.1         // 低于此置信度且使用次数 > 5 视为废弃
+const TIME_DECAY_HALFLIFE_DAYS = 60   // 时间衰减半衰期 (天)
+
+// 优化2: 按错误类型分级的置信度衰减系数
+const ERROR_TYPE_DECAY: Record<string, number> = {
+  transient: 0.95,       // 网络超时等临时错误 — 基因本身没错，轻微衰减
+  missing_resource: 0.7, // 资源缺失 — 基因可能需要调整
+  bad_input: 0.6,        // 参数错误 — 基因质量有问题，快速淘汰
+  permission: 0.75,      // 权限问题 — 环境相关
+  unknown: 0.8,          // 未知错误 — 默认衰减
+}
 
 class GenePoolService {
   private genes: Gene[] = []
   private capsules: Capsule[] = []
   private loaded = false
   private loading: Promise<void> | null = null
+  private capsuleDirty = false
+  private capsuleFlushTimer: ReturnType<typeof setTimeout> | null = null
 
   /**
    * 确保基因库已加载 (幂等，懒加载)
@@ -38,7 +51,7 @@ class GenePoolService {
     if (this.loaded) return
     if (this.loading) return this.loading
 
-    this.loading = this.loadGenes()
+    this.loading = this.loadAll()
     try {
       await this.loading
       this.loaded = true
@@ -49,6 +62,13 @@ class GenePoolService {
     } finally {
       this.loading = null
     }
+  }
+
+  /**
+   * 从后端加载全部基因 + 胶囊
+   */
+  private async loadAll(): Promise<void> {
+    await Promise.all([this.loadGenes(), this.loadCapsules()])
   }
 
   /**
@@ -64,6 +84,57 @@ class GenePoolService {
       }
     } catch {
       this.genes = []
+    }
+  }
+
+  /**
+   * 从后端加载胶囊历史
+   */
+  private async loadCapsules(): Promise<void> {
+    try {
+      const res = await fetch(`${SERVER_URL}/api/capsules/load`)
+      if (res.ok) {
+        const data = await res.json()
+        this.capsules = Array.isArray(data) ? data : []
+        // 保留上限
+        if (this.capsules.length > MAX_CAPSULE_HISTORY) {
+          this.capsules = this.capsules.slice(-MAX_CAPSULE_HISTORY)
+        }
+        console.log(`[GenePool] Loaded ${this.capsules.length} capsules`)
+      }
+    } catch {
+      this.capsules = []
+    }
+  }
+
+  /**
+   * 批量保存胶囊到后端 (防抖: 5秒内多次写入只执行一次)
+   */
+  private scheduleCapsuleFlush(): void {
+    this.capsuleDirty = true
+    if (this.capsuleFlushTimer) return
+    this.capsuleFlushTimer = setTimeout(() => {
+      this.capsuleFlushTimer = null
+      if (this.capsuleDirty) {
+        this.flushCapsules()
+      }
+    }, 5000)
+  }
+
+  private async flushCapsules(): Promise<void> {
+    this.capsuleDirty = false
+    try {
+      const res = await fetch(`${SERVER_URL}/api/capsules/save`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(this.capsules),
+      })
+      if (res.ok) {
+        console.log(`[GenePool] Flushed ${this.capsules.length} capsules to backend`)
+      }
+    } catch (err) {
+      console.warn('[GenePool] Failed to flush capsules:', err)
+      this.capsuleDirty = true // 标记重试
     }
   }
 
@@ -102,7 +173,7 @@ class GenePoolService {
   }
 
   /**
-   * Phase 3: 跨 Nexus 基因共享 — 带加权的匹配
+   * Phase 3: 跨 Nexus 基因共享 — 带加权的匹配 (含时间衰减)
    */
   findCrossNexusGenes(toolName: string, errorMsg: string, currentNexusId?: string): GeneMatch[] {
     if (this.genes.length === 0) return []
@@ -110,7 +181,7 @@ class GenePoolService {
     const signals = extractSignals(toolName, errorMsg)
     const matches = rankGenes(signals, this.genes)
 
-    // Phase 3 加权
+    // Phase 3 加权 + 优化2 时间衰减
     for (const match of matches) {
       let weight = 1.0
 
@@ -131,6 +202,9 @@ class GenePoolService {
       if (match.gene.metadata.useCount > 3) {
         weight *= 1.1
       }
+
+      // 优化2: 时间衰减 — 老基因权重降低
+      weight *= this.timeDecayFactor(match.gene.source.createdAt)
 
       match.score *= weight
     }
@@ -177,6 +251,9 @@ ${hints.join('\n')}
       this.capsules.shift()
     }
 
+    // 持久化胶囊 (防抖批量写入)
+    this.scheduleCapsuleFlush()
+
     // 更新基因元数据
     const gene = this.genes.find(g => g.id === geneId)
     if (gene) {
@@ -186,13 +263,53 @@ ${hints.join('\n')}
       if (outcome === 'success') {
         gene.metadata.successCount++
         gene.metadata.confidence = Math.min(CONFIDENCE_CAP, gene.metadata.confidence + CONFIDENCE_BOOST)
+
+        // 优化1: Gene → Rule 反馈信号
+        // 基因成功使用 → 通知规则引擎降级相关错误规则
+        const toolSignal = gene.signals_match.find(s => !s.includes(' ') && s.length < 30)
+        if (toolSignal && nexusId) {
+          nexusRuleEngine.deactivateRelatedRules(nexusId, toolSignal)
+        }
       } else {
-        gene.metadata.confidence *= CONFIDENCE_DECAY
+        // 优化2: 按错误类型分级衰减
+        const errorContext = trigger.join(' ')
+        const errorType = this.classifyErrorType(errorContext)
+        const decay = ERROR_TYPE_DECAY[errorType] ?? CONFIDENCE_DECAY
+        gene.metadata.confidence *= decay
       }
 
       // 持久化更新后的基因
       this.saveGene(gene).catch(() => {})
     }
+  }
+
+  /**
+   * 优化2: 按错误类型分级衰减 — 错误分类器
+   */
+  private classifyErrorType(errorMsg: string): string {
+    const lower = errorMsg.toLowerCase()
+    if (/timeout|etimedout|econnreset|econnrefused|fetch failed|aborted|network/i.test(lower)) {
+      return 'transient'
+    }
+    if (/enoent|not found|not exist|no such file|does not exist|找不到|不存在/i.test(lower)) {
+      return 'missing_resource'
+    }
+    if (/permission|eacces|access denied|forbidden|权限/i.test(lower)) {
+      return 'permission'
+    }
+    if (/invalid.*param|bad.*argument|type.*error|invalid.*type|参数错误|格式错误/i.test(lower)) {
+      return 'bad_input'
+    }
+    return 'unknown'
+  }
+
+  /**
+   * 优化2: 时间衰减因子
+   * 越老的基因权重越低，半衰期 = TIME_DECAY_HALFLIFE_DAYS
+   */
+  private timeDecayFactor(createdAt: number): number {
+    const daysOld = (Date.now() - createdAt) / (1000 * 60 * 60 * 24)
+    return Math.exp(-daysOld * Math.LN2 / TIME_DECAY_HALFLIFE_DAYS)
   }
 
   // ============================================
@@ -319,6 +436,28 @@ ${hints.join('\n')}
     return strategy
   }
 
+  /**
+   * 优化1: Manager → Gene Pool 反馈信号
+   * 当 Nexus Manager 检测到某工具错误率飙升时，提升相关修复基因的权重
+   * 让 Gene Pool 在后续匹配时更容易推荐这些基因
+   */
+  boostGenesForTool(toolName: string, errorRate: number): void {
+    const toolLower = toolName.toLowerCase()
+    let boosted = 0
+    for (const gene of this.genes) {
+      if (gene.category !== 'repair') continue
+      // 只提升包含该工具信号的修复基因
+      if (gene.signals_match.some(s => s.toLowerCase().includes(toolLower))) {
+        const boostAmount = Math.min(0.1, errorRate * 0.1)
+        gene.metadata.confidence = Math.min(CONFIDENCE_CAP, gene.metadata.confidence + boostAmount)
+        boosted++
+      }
+    }
+    if (boosted > 0) {
+      console.log(`[GenePool] Boosted ${boosted} repair genes for high-error tool: ${toolName} (errorRate: ${Math.round(errorRate * 100)}%)`)
+    }
+  }
+
   // ============================================
   // 诊断接口
   // ============================================
@@ -328,11 +467,15 @@ ${hints.join('\n')}
     return this.genes.length
   }
 
-  /** 获取所有活跃基因 (排除废弃的) */
+  /** 获取所有活跃基因 (排除废弃的，含时间衰减) */
   getActiveGenes(): Gene[] {
-    return this.genes.filter(g =>
-      !(g.metadata.confidence < RETIRED_THRESHOLD && g.metadata.useCount > 5)
-    )
+    return this.genes.filter(g => {
+      // 排除已废弃的
+      if (g.metadata.confidence < RETIRED_THRESHOLD && g.metadata.useCount > 5) return false
+      // 优化2: 考虑时间衰减后的有效置信度
+      const effectiveConfidence = g.metadata.confidence * this.timeDecayFactor(g.source.createdAt)
+      return effectiveConfidence >= RETIRED_THRESHOLD
+    })
   }
 
   // ============================================

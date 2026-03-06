@@ -378,9 +378,10 @@ interface SkillDetailPanelProps {
   openClawSkills: OpenClawSkill[]
   isExpanded: boolean
   onToggle: () => void
+  statsVersion?: number  // 触发内部重渲染（getSkillStats 读到最新值）
 }
 
-export function SkillDetailPanel({ snapshot, skills, isExpanded, onToggle }: SkillDetailPanelProps) {
+export function SkillDetailPanel({ snapshot, skills, isExpanded, onToggle, statsVersion: _statsVersion }: SkillDetailPanelProps) {
   const [viewMode, setViewMode] = useState<'dashboard' | 'list'>('dashboard')
   const [searchQuery, setSearchQuery] = useState('')
   const [expandedDomains, setExpandedDomains] = useState<Set<string>>(new Set())

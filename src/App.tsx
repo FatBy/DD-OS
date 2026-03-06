@@ -16,6 +16,7 @@ import { useStore } from '@/store'
 import { getHouseById } from '@/houses/registry'
 import { openClawService } from '@/services/OpenClawService'
 import { localClawService } from '@/services/LocalClawService'
+import { skillStatsService } from '@/services/skillStatsService'
 import { getLocalSoulData, getLocalSkills, getLocalMemories } from '@/utils/localDataProvider'
 import { simpleVisualDNA } from '@/store/slices/worldSlice'
 import { restoreLLMConfigFromServer } from '@/services/llmService'
@@ -131,6 +132,7 @@ function App() {
       setNexusesFromServer: useStore.getState().setNexusesFromServer,
       setActiveNexus: useStore.getState().setActiveNexus,
       updateNexusXP: useStore.getState().updateNexusXP,
+      getNexuses: () => useStore.getState().nexuses,
       get activeNexusId() { return useStore.getState().activeNexusId },
       get nexuses() { return useStore.getState().nexuses },
     }
@@ -140,6 +142,11 @@ function App() {
     
     // 注入到 LocalClaw 服务 (Native 模式)
     localClawService.injectStore(storeActions as any)
+
+    // 注入 SkillStats → Store 响应式桥接
+    skillStatsService.injectStoreRefresh(() => {
+      useStore.getState().refreshSkillSnapshot()
+    })
 
     // 自动重连: 恢复上次的连接状态
     const savedMode = localStorage.getItem('ddos_connection_mode')
@@ -205,6 +212,7 @@ function App() {
             try {
               await useStore.getState().loadConversationsFromServer()
               await useStore.getState().loadNexusesFromServer()
+              await useStore.getState().loadBehaviorRecords()
               console.log('[App] Loaded persisted data from server')
             } catch (e) {
               console.warn('[App] Failed to load persisted data:', e)

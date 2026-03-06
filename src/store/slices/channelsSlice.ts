@@ -1,7 +1,8 @@
 import type { StateCreator } from 'zustand'
-import type { Channel, ChannelType, ChannelsSnapshot, SkillNode, OpenClawSkill, SkillsSnapshot, TaskItem } from '@/types'
+import type { Channel, ChannelType, ChannelsSnapshot, SkillNode, OpenClawSkill, SkillsSnapshot, TaskItem, AbilitySnapshot } from '@/types'
 import { channelsToSkills, openClawSkillsToNodes } from '@/utils/dataMapper'
 import { chat, isLLMConfigured } from '@/services/llmService'
+import { skillStatsService } from '@/services/skillStatsService'
 
 // LocalStorage 键名
 const SKILL_ANALYSIS_KEY = 'ddos_skill_analysis'
@@ -58,6 +59,10 @@ export interface ChannelsSlice {
   // 技能分析
   skillAnalysis: SkillAnalysis
   
+  // 技能统计快照 (响应式: 工具执行后自动更新)
+  skillStatsSnapshot: AbilitySnapshot | null
+  skillStatsVersion: number
+  
   // Actions - Channels (兼容)
   setChannelsSnapshot: (snapshot: ChannelsSnapshot) => void
   updateChannel: (id: ChannelType, updates: Partial<Channel>) => void
@@ -72,6 +77,9 @@ export interface ChannelsSlice {
   // Actions - 技能分析
   generateSkillAnalysis: () => Promise<void>
   shouldRefreshSkillAnalysis: () => boolean
+  
+  // Actions - 技能统计刷新
+  refreshSkillSnapshot: () => void
 }
 
 export const createChannelsSlice: StateCreator<ChannelsSlice> = (set, get) => ({
@@ -82,6 +90,8 @@ export const createChannelsSlice: StateCreator<ChannelsSlice> = (set, get) => ({
   selectedChannelId: null,
   skills: [],
   skillAnalysis: initialSkillAnalysis,
+  skillStatsSnapshot: null,
+  skillStatsVersion: 0,
 
   // 设置 Channels 数据 (兼容旧 API)
   setChannelsSnapshot: (snapshot) => {
@@ -262,5 +272,14 @@ export const createChannelsSlice: StateCreator<ChannelsSlice> = (set, get) => ({
         },
       })
     }
+  },
+
+  refreshSkillSnapshot: () => {
+    const { openClawSkills } = get()
+    const snapshot = skillStatsService.computeSnapshot(openClawSkills)
+    set(state => ({
+      skillStatsSnapshot: snapshot,
+      skillStatsVersion: state.skillStatsVersion + 1,
+    }))
   },
 })
