@@ -1,22 +1,12 @@
 ---
 name: frontend-design
-description: Apply visual design improvements to frontend applications
-version: 1.0.0
-author: DD-OS Team
-tags: [frontend, design, UI, UX, styling]
-inputs:
-  target:
-    type: string
-    required: false
-    description: Target component or page to design (default: entire app)
-  style:
-    type: string
-    required: false
-    description: Design style preference (modern, minimal, playful, corporate)
-  color_scheme:
-    type: string
-    required: false
-    description: Preferred color scheme or brand colors
+description: "Apply visual design improvements to frontend applications. This skill helps enhance the UI/UX of web applications through styling, layout, and component improvements."
+version: "1.0.0"
+author: "DD-OS"
+metadata:
+  openclaw:
+    emoji: "🎨"
+    primaryEnv: "shell"
 ---
 
 # Frontend Design

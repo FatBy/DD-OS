@@ -37,9 +37,8 @@ export async function installSkill(skill: RegistrySkillResult): Promise<InstallR
         'Accept': 'application/json',
       },
       body: JSON.stringify({
-        id: skill.id,
         name: skill.name,
-        downloadUrl: skill.downloadUrl,
+        source: skill.downloadUrl,
       }),
     })
     
@@ -157,6 +156,8 @@ export async function triggerHotReload(): Promise<InstallResult> {
 
 export interface AutoInstallResult {
   skillName: string
+  /** 实际安装后的技能名称（可能与 skillName 不同） */
+  installedName?: string
   status: 'installed' | 'already' | 'not_found' | 'failed'
   message: string
 }
@@ -200,13 +201,14 @@ export async function autoInstallSkills(
         if (searchResults.length === 0) {
           return { skillName, status: 'not_found', message: '注册表中未找到' }
         }
-        const result = await installSkill(searchResults[0])
+        const matched = searchResults[0]
+        const result = await installSkill(matched)
         if (result.success) {
-          return { skillName, status: 'installed', message: result.message }
+          return { skillName, installedName: matched.name, status: 'installed', message: result.message }
         }
         // 409 = already exists，视为成功
         if (result.message.includes('409') || result.message.includes('already') || result.message.includes('已存在')) {
-          return { skillName, status: 'already', message: '已安装' }
+          return { skillName, installedName: matched.name, status: 'already', message: '已安装' }
         }
         return { skillName, status: 'failed', message: result.message }
       } catch (e) {

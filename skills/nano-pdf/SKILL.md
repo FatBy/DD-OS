@@ -1,25 +1,21 @@
 ---
 name: nano-pdf
-description: Edit PDFs with natural-language instructions using the nano-pdf CLI.
+description: "Edit PDFs with natural-language instructions using the nano-pdf CLI."
+version: "1.0.0"
+author: "DD-OS"
 homepage: https://pypi.org/project/nano-pdf/
 metadata:
-  {
-    "openclaw":
-      {
-        "emoji": "📄",
-        "requires": { "bins": ["nano-pdf"] },
-        "install":
-          [
-            {
-              "id": "uv",
-              "kind": "uv",
-              "package": "nano-pdf",
-              "bins": ["nano-pdf"],
-              "label": "Install nano-pdf (uv)",
-            },
-          ],
-      },
-  }
+  openclaw:
+    emoji: "📄"
+    primaryEnv: "shell"
+    requires:
+      bins: ["nano-pdf"]
+    install:
+      - id: "uv"
+        kind: "uv"
+        package: "nano-pdf"
+        bins: ["nano-pdf"]
+        label: "Install nano-pdf (uv)"
 ---
 
 # nano-pdf

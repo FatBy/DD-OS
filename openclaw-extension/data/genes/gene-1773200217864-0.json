@@ -1,0 +1,26 @@
+{
+  "id": "gene-1773200217864-0",
+  "category": "repair",
+  "signals_match": [
+    "read",
+    "enoent",
+    "no such file",
+    "enoent: no such file or directory, access 'd:\\编程\\s级项目\\openclaw.json'"
+  ],
+  "strategy": [
+    "Error encountered: ENOENT: no such file or directory, access 'D:\\编程\\S级项目\\openclaw.json'",
+    "Parameter changes: file_path: \"D:\\\\编程\\\\S级项目\\\\openclaw.json\" -> \"D:\\\\编程\\\\S级项目\\\\AGENTS.md\"",
+    "Intermediate tools used: exec",
+    "Recovery result: {\"content\":[{\"type\":\"text\",\"text\":\"# DD-OS Repository Guidelines\\r\\n\\r\\n> 本文件为 AI Agent (Qoder, Claude, Cursor 等) 提供项目级开发指南。\\r\\n\\r\\n## Project Overview\\r\\n\\r\\nDD-OS 是一个运行在用户本地电脑上的 AI 操作系统前端，具备：\\r\\n- R"
+  ],
+  "source": {
+    "traceId": "trace-0",
+    "createdAt": 1773200217864
+  },
+  "metadata": {
+    "confidence": 0.95,
+    "useCount": 4,
+    "successCount": 0,
+    "lastUsedAt": 1773215866817
+  }
+}

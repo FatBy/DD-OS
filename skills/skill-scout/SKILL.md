@@ -1,29 +1,20 @@
 ---
 name: skill-scout
-version: 1.0.0
-description: 监测全球 SKILL 社区（OpenClaw 等），根据用户现有技能和目标推荐并安装新技能
-category: utility
-keywords:
-  - 技能发现
-  - 技能推荐
-  - 技能安装
-  - skill discovery
-  - skill recommend
-  - new skill
-  - install skill
-  - 加载技能
-  - 热门技能
-  - 技能市场
-  - 升级能力
-  - OpenClaw
-  - skill store
+description: "监测全球 SKILL 社区（OpenClaw 等），根据用户现有技能和目标推荐并安装新技能"
+version: "1.0.0"
+author: "DD-OS"
+metadata:
+  openclaw:
+    emoji: "🔭"
+    primaryEnv: "shell"
+tags: ["技能发现", "技能推荐", "技能安装", "skill discovery", "skill recommend", "new skill", "install skill", "加载技能", "热门技能", "技能市场", "升级能力", "OpenClaw", "skill store"]
 inputs:
   goal:
-    type: string
-    description: 用户想增强的能力方向或具体目标（可选）
+    type: "string"
+    description: "\u7528\u6237\u60f3\u589e\u5f3a\u7684\u80fd\u529b\u65b9\u5411\u6216\u5177\u4f53\u76ee\u6807\uff08\u53ef\u9009\uff09"
   category:
-    type: string
-    description: 搜索的技能类别（如 productivity, dev, creative 等）（可选）
+    type: "string"
+    description: "\u641c\u7d22\u7684\u6280\u80fd\u7c7b\u522b\uff08\u5982 productivity, dev, creative \u7b49\uff09\uff08\u53ef\u9009\uff09"
 ---
 
 # Skill Scout

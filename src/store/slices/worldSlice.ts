@@ -149,8 +149,14 @@ export interface WorldSlice {
   startNexusExecution: (nexusId: string) => void
   completeNexusExecution: (nexusId: string, result: Omit<NexusExecutionResult, 'nexusId' | 'nexusName' | 'timestamp'>) => void
 
+  // Skill Binding (Agent 通过 Extension 绑定技能)
+  bindSkillToNexus: (nexusId: string, skillName: string) => void
+
   // 从后端加载数据 (应用启动后调用)
   loadNexusesFromServer: () => Promise<void>
+  
+  // OpenClaw agents → DD-OS Nexuses 同步
+  syncAgentsAsNexuses: (agents: Array<{ id: string; name?: string; identity?: { name?: string; emoji?: string } }>, skills: Array<{ name: string; description?: string; status?: string }>) => void
 }
 
 export const createWorldSlice: StateCreator<WorldSlice> = (set, get) => ({
@@ -198,6 +204,17 @@ export const createWorldSlice: StateCreator<WorldSlice> = (set, get) => ({
     const newXP = (nexus.xp || 0) + xpDelta
     const newLevel = xpToLevel(newXP)
     next.set(id, { ...nexus, xp: newXP, level: newLevel, updatedAt: Date.now() })
+    saveNexusesToStorage(next)
+    return { nexuses: next }
+  }),
+
+  bindSkillToNexus: (nexusId, skillName) => set((state) => {
+    const nexus = state.nexuses.get(nexusId)
+    if (!nexus) return state
+    const existing = nexus.boundSkillIds || []
+    if (existing.includes(skillName)) return state
+    const next = new Map(state.nexuses)
+    next.set(nexusId, { ...nexus, boundSkillIds: [...existing, skillName], updatedAt: Date.now() })
     saveNexusesToStorage(next)
     return { nexuses: next }
   }),
@@ -454,4 +471,61 @@ export const createWorldSlice: StateCreator<WorldSlice> = (set, get) => ({
       }
     }
   },
+  
+  syncAgentsAsNexuses: (agents, _skills) => set((state) => {
+    const next = new Map(state.nexuses)
+    const blockSystem = getCityBlockSystem()
+    let changed = false
+    
+    // Seed block system with all existing nexus positions so new allocations don't overlap
+    for (const [id, nexus] of next) {
+      if (nexus.position && (nexus.position.gridX !== 0 || nexus.position.gridY !== 0)) {
+        blockSystem.allocateBlock(id, nexus.position.gridX, nexus.position.gridY)
+      }
+    }
+    
+    for (const agent of agents) {
+      const agentId = `oc-agent-${agent.id}`
+      const existing = next.get(agentId)
+      
+      // 如果已存在且不是 OpenClaw 源的 Nexus，跳过（不覆盖用户创建的）
+      if (existing && !existing.source?.startsWith('openclaw')) continue
+      
+      const displayName = agent.name || agent.identity?.name || agent.id
+      const visualDNA = existing?.visualDNA || simpleVisualDNA(agentId)
+      
+      // 使用地块系统分配不重叠的位置
+      const preferX = existing?.position?.gridX ?? 0
+      const preferY = existing?.position?.gridY ?? 0
+      const block = blockSystem.allocateBlock(agentId, preferX, preferY)
+      const position = { gridX: block.centerIsoX, gridY: block.centerIsoY }
+      
+      next.set(agentId, {
+        ...existing,
+        id: agentId,
+        label: displayName,
+        flavorText: `OpenClaw Agent: ${agent.id}`,
+        position,
+        level: existing?.level || 1,
+        xp: existing?.xp || 0,
+        visualDNA,
+        constructionProgress: 1,
+        createdAt: existing?.createdAt || Date.now(),
+        boundSkillIds: existing?.boundSkillIds || [],
+        source: `openclaw:${agent.id}`,
+        // 保留 identity 信息
+        agentIdentity: agent.identity ? {
+          name: agent.identity.name,
+          emoji: agent.identity.emoji,
+        } : undefined,
+      } as NexusEntity)
+      changed = true
+    }
+    
+    if (changed) {
+      console.log('[World] Synced OpenClaw agents as Nexuses:', agents.map(a => a.id))
+      saveNexusesToStorage(next)
+    }
+    return changed ? { nexuses: next } : {}
+  }),
 })

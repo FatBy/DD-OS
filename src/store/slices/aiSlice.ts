@@ -1,16 +1,16 @@
 import type { StateCreator } from 'zustand'
-import type { ChatMessage, AISummary, LLMConfig, ViewType, ExecutionStatus, ApprovalRequest, MemoryEntry, JournalEntry, Conversation, ConversationType, QuestSession, QuestPhase, ExplorationResult, Subagent, SubagentTask, ContextEntry, TaskPlan } from '@/types'
+import type { ChatMessage, AISummary, LLMConfig, ViewType, ExecutionStatus, ApprovalRequest, MemoryEntry, JournalEntry, Conversation, ConversationMeta, ConversationType, QuestSession, QuestPhase, ExplorationResult, Subagent, SubagentTask, ContextEntry, TaskPlan, Session } from '@/types'
 import { getLLMConfig, saveLLMConfig, isLLMConfigured, streamChat, chat } from '@/services/llmService'
 import { buildSummaryMessages, buildChatMessages, parseExecutionCommands, stripExecutionBlocks, buildJournalPrompt, parseJournalResult } from '@/services/contextBuilder'
 import { localClawService } from '@/services/LocalClawService'
+import { openClawService } from '@/services/OpenClawService'
 import { localServerService } from '@/services/localServerService'
 
 // 摘要缓存时间 (5分钟)
 const SUMMARY_CACHE_MS = 5 * 60 * 1000
 
-// 内存限制常量 - 防止 OOM
-const MAX_CONVERSATIONS = 20          // 最多保留 20 个会话
-const MAX_MESSAGES_PER_CONV = 50      // 每个会话最多保留 50 条消息
+// localStorage 缓存最近 N 个完整对话（快速恢复用）
+const LOCAL_CACHE_COUNT = 5
 
 // 自动标题生成 (异步，不阻塞消息发送)
 async function generateConversationTitle(
@@ -46,7 +46,8 @@ async function generateConversationTitle(
       updated.set(convId, { ...conv, title: cleanTitle })
       return { conversations: updated }
     })
-    persistConversations(get().conversations)
+    const conv = get().conversations.get(convId)
+    if (conv) persistSingleConversation(conv, get().conversations)
   } catch {
     // 静默失败，保留默认标题
   }
@@ -88,35 +89,56 @@ function loadConversationsFromLocalStorage(): Map<string, Conversation> {
 
 function persistConversations(conversations: Map<string, Conversation>) {
   try {
-    // 按更新时间排序，只保留最近 MAX_CONVERSATIONS 个
+    // localStorage 缓存最近 LOCAL_CACHE_COUNT 个完整对话（快速恢复用）
     const sorted = [...conversations.values()]
       .sort((a, b) => b.updatedAt - a.updatedAt)
-      .slice(0, MAX_CONVERSATIONS)
+    const cached = sorted.slice(0, LOCAL_CACHE_COUNT)
+    localStorage.setItem(STORAGE_KEYS.CONVERSATIONS, JSON.stringify(cached))
     
-    // 每个会话只保留最近 MAX_MESSAGES_PER_CONV 条消息
-    const trimmed = sorted.map(conv => ({
-      ...conv,
-      messages: conv.messages.slice(-MAX_MESSAGES_PER_CONV),
+    // 异步写入后端：每个对话独立文件 + 更新元数据列表
+    const metaList: ConversationMeta[] = sorted.map(conv => ({
+      id: conv.id,
+      type: conv.type,
+      title: conv.title,
+      nexusId: conv.nexusId,
+      messageCount: conv.messages.length,
+      createdAt: conv.createdAt,
+      updatedAt: conv.updatedAt,
+      pinned: conv.pinned,
+      autoTitled: conv.autoTitled,
     }))
+    localServerService.setData('conversations_meta', metaList).catch(() => {})
     
-    // 同步写入 localStorage (快速缓存)
-    localStorage.setItem(STORAGE_KEYS.CONVERSATIONS, JSON.stringify(trimmed))
-    
-    // 异步写入后端 (持久化) — 带 1 次重试
-    const persistToBackend = async (retries = 1) => {
-      const ok = await localServerService.setData(DATA_KEYS.CONVERSATIONS, trimmed)
-      if (!ok && retries > 0) {
-        await new Promise(r => setTimeout(r, 2000))
-        return persistToBackend(retries - 1)
-      }
-      if (!ok) {
-        console.warn('[AI] Failed to persist conversations to server after retry')
-      }
+    // 写入每个对话的完整数据
+    for (const conv of sorted) {
+      localServerService.setData(`conv_${conv.id}`, conv).catch(() => {})
     }
-    persistToBackend().catch(() => {})
   } catch (e) {
     console.warn('[AI] Failed to persist conversations:', e)
   }
+}
+
+// 保存单个对话（增量写入，用于消息添加时的高效持久化）
+let _persistSingleTimer: ReturnType<typeof setTimeout> | null = null
+function persistSingleConversation(conv: Conversation, allConversations: Map<string, Conversation>) {
+  // 写入单个对话文件
+  localServerService.setData(`conv_${conv.id}`, conv).catch(() => {})
+  
+  // 防抖更新元数据列表 (1s)
+  if (_persistSingleTimer) clearTimeout(_persistSingleTimer)
+  _persistSingleTimer = setTimeout(() => {
+    const sorted = [...allConversations.values()].sort((a, b) => b.updatedAt - a.updatedAt)
+    const metaList: ConversationMeta[] = sorted.map(c => ({
+      id: c.id, type: c.type, title: c.title, nexusId: c.nexusId,
+      messageCount: c.messages.length, createdAt: c.createdAt, updatedAt: c.updatedAt,
+      pinned: c.pinned, autoTitled: c.autoTitled,
+    }))
+    localServerService.setData('conversations_meta', metaList).catch(() => {})
+    
+    // 更新 localStorage 缓存
+    const cached = sorted.slice(0, LOCAL_CACHE_COUNT)
+    try { localStorage.setItem(STORAGE_KEYS.CONVERSATIONS, JSON.stringify(cached)) } catch {}
+  }, 1000)
 }
 
 function loadActiveConversationId(): string | null {
@@ -301,6 +323,10 @@ export interface AiSlice {
 
   // 从后端加载数据 (应用启动后调用)
   loadConversationsFromServer: () => Promise<void>
+  // 懒加载单个对话的消息
+  loadConversationMessages: (id: string) => Promise<void>
+  // 将 Gateway sessions 的完成结果回填到 DD-OS 对话
+  syncGatewaySessionsToConversations: (sessions: Session[]) => void
 
   // ============================================
   // 交互式 Quest 系统 (Qoder 风格)
@@ -508,48 +534,104 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
   },
 
   // 从后端加载数据 (应用启动后调用)
-  // 合并三个数据源: 当前 store(初始化时从 localStorage 加载) + 后端 + localStorage
+  // 新架构: 先加载元数据列表，消息按需懒加载
   loadConversationsFromServer: async () => {
     try {
       // 1. 当前 store 数据 (初始化时已从 localStorage/旧格式迁移加载)
       const storeConversations = get().conversations
       const storeActiveId = get().activeConversationId
       
-      // 2. 读取后端数据
-      const serverConversations = await localServerService.getData<Conversation[]>(DATA_KEYS.CONVERSATIONS)
+      // 2. 尝试从后端加载新格式元数据
+      const serverMeta = await localServerService.getConversationMetaList()
       const serverActiveId = await localServerService.getData<string>(DATA_KEYS.ACTIVE_CONVERSATION)
       
-      // 3. 读取 localStorage 数据 (可能有其他 tab 写入的新数据)
+      // 3. 读取 localStorage 缓存数据
       const localConversations = loadConversationsFromLocalStorage()
       const localActiveId = loadActiveConversationId()
       
-      // 4. 合并三方数据 (以 updatedAt 最新者为准)
-      const mergedMap = new Map<string, Conversation>()
-      
-      // 先添加当前 store 数据 (包含从旧格式迁移的数据)
-      for (const [id, conv] of storeConversations) {
-        mergedMap.set(id, conv)
+      // 4. 检查是否需要从旧 blob 格式迁移
+      if (serverMeta.length === 0) {
+        // 尝试读取旧格式 blob
+        const oldBlob = await localServerService.getData<Conversation[]>(DATA_KEYS.CONVERSATIONS)
+        if (oldBlob && oldBlob.length > 0) {
+          console.log('[AI] Migrating', oldBlob.length, 'conversations from blob to per-file storage...')
+          // 迁移：拆分写入每个对话文件 + 元数据列表
+          for (const conv of oldBlob) {
+            await localServerService.saveConversation({ ...conv, messagesLoaded: true })
+          }
+          // 删除旧 blob
+          await localServerService.deleteData(DATA_KEYS.CONVERSATIONS)
+          console.log('[AI] Migration complete')
+          
+          // 合并旧 blob 数据到 store
+          const mergedMap = new Map<string, Conversation>(storeConversations)
+          for (const conv of oldBlob) {
+            const existing = mergedMap.get(conv.id)
+            if (!existing || conv.updatedAt >= existing.updatedAt) {
+              mergedMap.set(conv.id, { ...conv, messagesLoaded: true })
+            }
+          }
+          // 合并 localStorage 缓存
+          for (const [id, localConv] of localConversations) {
+            const existing = mergedMap.get(id)
+            if (!existing || localConv.updatedAt > existing.updatedAt) {
+              mergedMap.set(id, { ...localConv, messagesLoaded: true })
+            }
+          }
+          const activeId = serverActiveId || localActiveId || storeActiveId ||
+            (mergedMap.size > 0 ? [...mergedMap.keys()][0] : null)
+          set({ conversations: mergedMap, activeConversationId: activeId })
+          if (activeId) persistActiveConversationId(activeId)
+          return
+        }
       }
       
-      // 再合并 localStorage 数据 (如果更新)
+      // 5. 正常加载：用元数据构建对话 Map（消息懒加载）
+      const mergedMap = new Map<string, Conversation>()
+      
+      // 先加载 store 中已有的数据（含完整消息）
+      for (const [id, conv] of storeConversations) {
+        mergedMap.set(id, { ...conv, messagesLoaded: true })
+      }
+      
+      // 合并 localStorage 缓存（含完整消息）
       for (const [id, localConv] of localConversations) {
         const existing = mergedMap.get(id)
         if (!existing || localConv.updatedAt > existing.updatedAt) {
-          mergedMap.set(id, localConv)
+          mergedMap.set(id, { ...localConv, messagesLoaded: true })
         }
       }
       
-      // 最后合并后端数据 (如果更新)
-      if (serverConversations && serverConversations.length > 0) {
-        for (const serverConv of serverConversations) {
-          const existing = mergedMap.get(serverConv.id)
-          if (!existing || serverConv.updatedAt >= existing.updatedAt) {
-            mergedMap.set(serverConv.id, serverConv)
-          }
+      // 合并后端元数据（仅元数据，消息标记为未加载）
+      for (const meta of serverMeta) {
+        const existing = mergedMap.get(meta.id)
+        if (!existing) {
+          // 后端有但本地没有：创建空壳，消息待加载
+          mergedMap.set(meta.id, {
+            id: meta.id,
+            type: meta.type,
+            title: meta.title,
+            nexusId: meta.nexusId,
+            messages: [],
+            createdAt: meta.createdAt,
+            updatedAt: meta.updatedAt,
+            pinned: meta.pinned,
+            autoTitled: meta.autoTitled,
+            messagesLoaded: false,
+          })
+        } else if (meta.updatedAt > existing.updatedAt) {
+          // 后端更新：保留元数据但标记消息需重新加载
+          mergedMap.set(meta.id, {
+            ...existing,
+            title: meta.title,
+            updatedAt: meta.updatedAt,
+            pinned: meta.pinned,
+            autoTitled: meta.autoTitled,
+            messagesLoaded: false,
+          })
         }
       }
       
-      // 确定活跃会话 ID (优先: 后端 > localStorage > store > 第一个)
       const activeId = serverActiveId || localActiveId || storeActiveId || 
         (mergedMap.size > 0 ? [...mergedMap.keys()][0] : null)
       
@@ -559,30 +641,127 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
           activeConversationId: activeId 
         })
         
-        // 5. 双写同步 (确保浏览器数据也推送到后端)
-        const mergedArray = [...mergedMap.values()]
-        localStorage.setItem(STORAGE_KEYS.CONVERSATIONS, JSON.stringify(mergedArray))
-        localServerService.setData(DATA_KEYS.CONVERSATIONS, mergedArray).catch(() => {})
-        
         if (activeId) {
           localStorage.setItem(STORAGE_KEYS.ACTIVE_CONVERSATION, activeId)
           localServerService.setData(DATA_KEYS.ACTIVE_CONVERSATION, activeId).catch(() => {})
+          // 懒加载当前活跃对话的消息
+          get().loadConversationMessages(activeId)
         }
         
-        console.log('[AI] Merged conversations from 3 sources:',
+        console.log('[AI] Loaded conversations:',
           'store=' + storeConversations.size,
           'localStorage=' + localConversations.size,
-          'server=' + (serverConversations?.length || 0),
+          'serverMeta=' + serverMeta.length,
           '→ total=' + mergedMap.size)
       }
     } catch (error) {
       console.warn('[AI] Failed to load from server, keeping current store data:', error)
-      // 失败时确保当前 store 数据推送到后端
-      const current = get().conversations
-      if (current.size > 0) {
-        const arr = [...current.values()]
-        localServerService.setData(DATA_KEYS.CONVERSATIONS, arr).catch(() => {})
+    }
+  },
+  
+  // 懒加载单个对话的消息
+  loadConversationMessages: async (id: string) => {
+    const conv = get().conversations.get(id)
+    if (!conv || conv.messagesLoaded) return
+    
+    const fullConv = await localServerService.getConversation(id)
+    if (fullConv) {
+      set((state) => {
+        const current = state.conversations.get(id)
+        if (!current || current.messagesLoaded) return state
+        const newConversations = new Map(state.conversations)
+        newConversations.set(id, { 
+          ...current, 
+          messages: fullConv.messages || [],
+          messagesLoaded: true,
+        })
+        return { conversations: newConversations }
+      })
+    } else {
+      // 后端无数据，标记为已加载（空消息）
+      set((state) => {
+        const current = state.conversations.get(id)
+        if (!current) return state
+        const newConversations = new Map(state.conversations)
+        newConversations.set(id, { ...current, messagesLoaded: true })
+        return { conversations: newConversations }
+      })
+    }
+  },
+
+  // 将 Gateway sessions 的完成结果回填到 DD-OS 对话
+  syncGatewaySessionsToConversations: (sessions: Session[]) => {
+    if (sessions.length === 0) return
+    
+    const conversations = get().conversations
+    if (conversations.size === 0) return
+    
+    // 建立 sessionKey → Session 的快速查找表
+    const sessionMap = new Map<string, Session>()
+    for (const s of sessions) {
+      sessionMap.set(s.key, s)
+    }
+    
+    let changed = false
+    const newConversations = new Map(conversations)
+    
+    for (const [convId, conv] of conversations) {
+      const sessionKey = conv.openClawSessionKey
+      if (!sessionKey) continue
+      
+      const gatewaySession = sessionMap.get(sessionKey)
+      if (!gatewaySession?.lastMessage) continue
+      if (gatewaySession.lastMessage.role !== 'assistant') continue
+      
+      const lastMsg = gatewaySession.lastMessage
+      if (!lastMsg.content || lastMsg.content.trim() === '') continue
+      
+      // 检查对话中是否有空的 assistant 占位消息（流式中断场景）
+      const messages = [...conv.messages]
+      let lastAssistantIdx = -1
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].role === 'assistant') {
+          lastAssistantIdx = i
+          break
+        }
       }
+      
+      if (lastAssistantIdx >= 0 && messages[lastAssistantIdx].content === '') {
+        // 场景 1: 流式中断 — 占位消息内容为空，用 Gateway 结果填充
+        messages[lastAssistantIdx] = {
+          ...messages[lastAssistantIdx],
+          content: lastMsg.content,
+        }
+        newConversations.set(convId, {
+          ...conv,
+          messages,
+          updatedAt: lastMsg.timestamp || Date.now(),
+        })
+        changed = true
+        console.log('[AI] Synced interrupted session result to conversation:', convId)
+      } else if (lastAssistantIdx < 0 || 
+                 (conv.messages.length > 0 && 
+                  conv.messages[conv.messages.length - 1].role === 'user')) {
+        // 场景 2: 对话最后一条是 user 消息，说明 assistant 回复完全丢失
+        messages.push({
+          id: `sync-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          role: 'assistant',
+          content: lastMsg.content,
+          timestamp: lastMsg.timestamp || Date.now(),
+        })
+        newConversations.set(convId, {
+          ...conv,
+          messages,
+          updatedAt: lastMsg.timestamp || Date.now(),
+        })
+        changed = true
+        console.log('[AI] Synced missing session result to conversation:', convId)
+      }
+    }
+    
+    if (changed) {
+      set({ conversations: newConversations })
+      persistConversations(newConversations)
     }
   },
 
@@ -605,6 +784,7 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
       messages: [],
       createdAt: Date.now(),
       updatedAt: Date.now(),
+      messagesLoaded: true,
     }
     
     set((state) => {
@@ -616,7 +796,7 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
       }
     })
     
-    persistConversations(get().conversations)
+    persistSingleConversation(conversation, get().conversations)
     persistActiveConversationId(id)
     
     return id
@@ -627,6 +807,8 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
     if (conversations.has(id)) {
       set({ activeConversationId: id })
       persistActiveConversationId(id)
+      // 触发懒加载（如果消息尚未加载）
+      get().loadConversationMessages(id)
     }
   },
   
@@ -647,7 +829,8 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
       }
     })
     
-    persistConversations(get().conversations)
+    // 从后端删除对话文件
+    localServerService.deleteConversation(id).catch(() => {})
     persistActiveConversationId(get().activeConversationId)
   },
   
@@ -661,7 +844,8 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
       return { conversations: newConversations }
     })
     
-    persistConversations(get().conversations)
+    const conv = get().conversations.get(id)
+    if (conv) persistSingleConversation(conv, get().conversations)
   },
   
   getOrCreateNexusConversation: (nexusId) => {
@@ -672,6 +856,7 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
       if (conv.type === 'nexus' && conv.nexusId === nexusId) {
         set({ activeConversationId: id })
         persistActiveConversationId(id)
+        get().loadConversationMessages(id)
         return id
       }
     }
@@ -712,6 +897,7 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
       messages: [],
       createdAt: Date.now(),
       updatedAt: Date.now(),
+      messagesLoaded: true,
     }
     
     set((state) => {
@@ -723,7 +909,7 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
       }
     })
     
-    persistConversations(get().conversations)
+    persistSingleConversation(conversation, get().conversations)
     persistActiveConversationId(uniqueId)
     
     return uniqueId
@@ -744,7 +930,7 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
       const conv = get().conversations.get(newId)!
       const updated = { 
         ...conv, 
-        messages: [...conv.messages, msg].slice(-MAX_MESSAGES_PER_CONV),
+        messages: [...conv.messages, msg],
         updatedAt: Date.now()
       }
       set((state) => {
@@ -752,12 +938,13 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
         newConversations.set(newId, updated)
         return { conversations: newConversations }
       })
+      persistSingleConversation(updated, get().conversations)
     } else {
       const conv = conversations.get(activeConversationId)
       if (!conv) return
       const updated = { 
         ...conv, 
-        messages: [...conv.messages, msg].slice(-MAX_MESSAGES_PER_CONV),
+        messages: [...conv.messages, msg],
         updatedAt: Date.now()
       }
       set((state) => {
@@ -765,8 +952,8 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
         newConversations.set(activeConversationId, updated)
         return { conversations: newConversations }
       })
+      persistSingleConversation(updated, get().conversations)
     }
-    persistConversations(get().conversations)
 
     // 自动标题生成: 第一条用户消息触发
     if (msg.role === 'user') {
@@ -795,7 +982,7 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
       newConversations.set(activeConversationId, updated)
       return { conversations: newConversations }
     })
-    persistConversations(get().conversations)
+    persistSingleConversation(updated, get().conversations)
   },
 
   setLlmConfig: (config) => {
@@ -870,7 +1057,8 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
   },
 
   sendChat: async (message, view, hiddenContext?) => {
-    if (!isLLMConfigured()) return
+    // isLLMConfigured 检查下移到前端 LLM fallback 分支
+    // Native 模式由 LocalClawService 内部检查, OpenClaw 模式由 Gateway 处理 LLM
 
     // 确保有活跃会话
     let activeId = get().activeConversationId
@@ -907,6 +1095,8 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
       const connectionMode = state.connectionMode || 'native'
       const connectionStatus = state.connectionStatus || 'disconnected'
       const isNativeConnected = connectionMode === 'native' && connectionStatus === 'connected'
+
+      console.log('[sendChat] connectionMode:', connectionMode, 'connectionStatus:', connectionStatus)
 
       // ========== Native 模式: 直通 ReAct (跳过前端 LLM) ==========
       if (isNativeConnected) {
@@ -1153,7 +1343,268 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
         return // Native 分支结束，不进入 OpenClaw/前端 LLM 流程
       }
 
-      // ========== OpenClaw / 未连接模式: 保持原有前端 LLM 流程 ==========
+      // ========== OpenClaw 模式: 通过 Gateway chat.send ==========
+      const isOpenClawConnected = connectionMode === 'openclaw' && connectionStatus === 'connected'
+      if (isOpenClawConnected) {
+        const execId = `oc-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+        const idempotencyKey = `ddos-${execId}`
+        const chatTaskId = `oc-chat-${execId}`
+        const chatTaskStartedAt = Date.now()
+
+        // 0. 获取当前 Nexus 上下文（与 Native 模式对齐）
+        const fullState = get() as any
+        const activeConvId: string | undefined = fullState.activeConversationId
+        const activeConv = activeConvId ? fullState.conversations?.get(activeConvId) : undefined
+        const activeNexusId: string | undefined = activeConv?.nexusId || fullState.activeNexusId || undefined
+        let nexusContext = ''
+        if (activeNexusId) {
+          const nexus = fullState.nexuses?.get(activeNexusId)
+          if (nexus) {
+            const parts: string[] = ['[Nexus 上下文]']
+            if (nexus.label) parts.push(`名称: ${nexus.label}`)
+            if (nexus.objective) parts.push(`目标: ${nexus.objective}`)
+            if (nexus.metrics && nexus.metrics.length > 0) {
+              parts.push(`验收标准:\n${nexus.metrics.map((m: string, i: number) => `  ${i + 1}. ${m}`).join('\n')}`)
+            }
+            if (nexus.sopContent) parts.push(`流程(SOP):\n${nexus.sopContent}`)
+            if (nexus.strategy) parts.push(`失败策略: ${nexus.strategy}`)
+            if (nexus.boundSkillIds && nexus.boundSkillIds.length > 0) {
+              // 解析绑定技能名称
+              const skillNames = nexus.boundSkillIds.map((sid: string) => {
+                const skill = fullState.openClawSkills?.find((s: any) => s.name === sid)
+                return skill ? `${skill.name}${skill.description ? ` - ${skill.description}` : ''}` : sid
+              })
+              parts.push(`绑定技能: ${skillNames.join(', ')}`)
+            }
+            parts.push('---')
+            // 输出格式指令：当有多个选择时使用 suggestion 标记
+            parts.push('[输出格式] 当你完成任务或需要用户做选择时，如果有多个可选的下一步操作，请用以下格式输出：')
+            parts.push('<!-- suggestions -->')
+            parts.push('引导语（告诉用户为什么选择）')
+            parts.push('- 选项A')
+            parts.push('- 选项B')
+            parts.push('<!-- /suggestions -->')
+            nexusContext = parts.join('\n')
+          }
+        }
+
+        // 0.5. 创建 TaskItem 到 activeExecutions (任务面板显示)
+        fullState.addActiveExecution?.({
+          id: chatTaskId,
+          title: message.slice(0, 80),
+          description: message,
+          status: 'executing' as const,
+          priority: 'medium' as const,
+          timestamp: new Date().toISOString(),
+          executionSteps: [],
+          startedAt: chatTaskStartedAt,
+        })
+
+        // 0.6. 启动 Nexus 执行状态 (如果有激活的 Nexus)
+        if (activeNexusId) {
+          fullState.startNexusExecution?.(activeNexusId)
+        }
+
+        // 1. 创建占位消息
+        const placeholderMsg: ChatMessage = {
+          id: execId,
+          role: 'assistant',
+          content: '',
+          timestamp: Date.now(),
+        }
+        get()._addMessageToActiveConv(placeholderMsg)
+
+        try {
+          // 2. 获取或创建 OpenClaw 会话 key (同一对话复用，保持上下文连贯)
+          let sessionKey = activeConv?.openClawSessionKey || ''
+          let isNewSession = false
+          if (!sessionKey) {
+            sessionKey = openClawService.createChatSession(message.slice(0, 50))
+            isNewSession = true
+            // 持久化到 Conversation 对象，后续消息复用同一 session
+            if (activeConvId) {
+              const convs = get().conversations
+              const conv = convs.get(activeConvId)
+              if (conv) {
+                const updated = new Map(convs)
+                updated.set(activeConvId, { ...conv, openClawSessionKey: sessionKey })
+                set({ conversations: updated })
+              }
+            }
+          }
+
+          // 3. 用 Promise 包装事件驱动的流式响应
+          // 注册 listener 用 idempotencyKey (即 Gateway 的 runId，不会被规范化)
+          const resultPromise = new Promise<string>((resolve, reject) => {
+            let fullContent = ''
+            let settled = false
+
+            // 滑动活动超时 (300秒)
+            // Agent 任务可能涉及网页抓取/工具调用等耗时操作，
+            // 期间 Gateway 不发 chat delta，只在 agent 完成后发 final
+            // 每次收到任何活动信号 (agent keep-alive / delta / tool) 都重置
+            const ACTIVITY_TIMEOUT = 300000
+            let activityTimer = setTimeout(() => {
+              if (!settled) {
+                settled = true
+                openClawService.unsubscribeChatSession(idempotencyKey)
+                reject(new Error(`Gateway 响应超时 (300s) [key=${idempotencyKey}]`))
+              }
+            }, ACTIVITY_TIMEOUT)
+
+            const resetActivityTimer = () => {
+              clearTimeout(activityTimer)
+              activityTimer = setTimeout(() => {
+                if (!settled) {
+                  settled = true
+                  openClawService.unsubscribeChatSession(idempotencyKey)
+                  reject(new Error(`Gateway 响应超时 (300s) [key=${idempotencyKey}]`))
+                }
+              }, ACTIVITY_TIMEOUT)
+            }
+
+            openClawService.subscribeChatSession(idempotencyKey, {
+              onDelta: (text, _seq) => {
+                resetActivityTimer()
+                // 空 delta 是 agent 事件的 keep-alive 信号，不追加到内容
+                if (text) {
+                  fullContent += text
+                  set({ chatStreamContent: fullContent })
+                }
+              },
+              onFinal: (text) => {
+                if (!settled) {
+                  settled = true
+                  clearTimeout(activityTimer)
+                  // final 可能包含完整内容，也可能为空 (依赖 delta 累积)
+                  resolve(text || fullContent)
+                }
+              },
+              onError: (error) => {
+                if (!settled) {
+                  settled = true
+                  clearTimeout(activityTimer)
+                  reject(new Error(error))
+                }
+              },
+              onAborted: () => {
+                if (!settled) {
+                  settled = true
+                  clearTimeout(activityTimer)
+                  reject(Object.assign(new Error('已终止'), { name: 'AbortError' }))
+                }
+              },
+            })
+
+            // abort 信号处理：发送 chat.abort 到 Gateway
+            abortController.signal.addEventListener('abort', () => {
+              clearTimeout(activityTimer)
+              openClawService.abortChatSession(sessionKey).catch(() => {})
+              // 不在这里 reject —— 等 Gateway 发回 aborted 事件
+            }, { once: true })
+          })
+
+          // 4. 发送消息 (listener 已就绪，不会丢事件)
+          // Nexus 上下文仅在会话首条消息注入，后续消息 Gateway 已有对话历史
+          let llmMessage = message
+          if (nexusContext && isNewSession) {
+            llmMessage = `${nexusContext}\n${llmMessage}`
+          }
+          if (hiddenContext) {
+            llmMessage = `${llmMessage}\n\n[上下文参考]\n${hiddenContext}`
+          }
+          // 预注册 chat 任务，让 agent 事件复用而非重复创建
+          openClawService.registerChatTask(idempotencyKey, chatTaskId, message.slice(0, 80))
+          console.log('[aiSlice] Sending chat.send with sessionKey:', sessionKey, 'idempotencyKey:', idempotencyKey)
+          await openClawService.sendToSession(sessionKey, llmMessage, idempotencyKey)
+          console.log('[aiSlice] chat.send returned, waiting for events...')
+
+          // 5. 等待结果
+          const result = await resultPromise
+
+          // 6. 更新占位消息为最终结果
+          get()._updateMessageInActiveConv(execId, { content: result })
+          set({
+            chatStreaming: false,
+            chatStreamContent: '',
+            _chatAbort: null,
+          })
+
+          // 7. 更新 TaskItem 状态为完成
+          fullState.updateActiveExecution?.(chatTaskId, {
+            status: 'done' as const,
+            executionOutput: result.slice(0, 5000),
+            executionDuration: Date.now() - chatTaskStartedAt,
+          })
+
+          // 8. 完成 Nexus 执行状态
+          if (activeNexusId) {
+            fullState.completeNexusExecution?.(activeNexusId, {
+              success: true,
+              output: result.slice(0, 2000),
+            })
+          }
+
+        } catch (err: any) {
+          const isAborted = abortController.signal.aborted || err.name === 'AbortError'
+          if (isAborted) {
+            const partial = get().chatStreamContent
+            get()._updateMessageInActiveConv(execId, {
+              content: partial ? partial + ' [已中断]' : '任务已被终止。',
+            })
+          } else {
+            // 将常见 Gateway 错误翻译为更友好的提示
+            const rawMsg = err.message || String(err)
+            let userMsg = rawMsg
+            if (/timed?\s*out/i.test(rawMsg) || /timeout/i.test(rawMsg)) {
+              userMsg = `LLM 请求超时 — 请检查: 1) Gateway 配置的模型是否可用 2) API Key 是否有效 3) 网络是否通畅。\n原始错误: ${rawMsg}`
+            } else if (/rate.?limit/i.test(rawMsg) || /429/i.test(rawMsg)) {
+              userMsg = `LLM 请求被限流 (429) — 请稍后重试或更换模型。\n原始错误: ${rawMsg}`
+            } else if (/auth|unauthorized|401|403/i.test(rawMsg)) {
+              userMsg = `LLM 认证失败 — 请检查 Gateway 端的 API Key 配置。\n原始错误: ${rawMsg}`
+            }
+            get()._updateMessageInActiveConv(execId, {
+              content: `OpenClaw 执行失败: ${userMsg}`,
+              error: true,
+            })
+          }
+          set({
+            chatStreaming: false,
+            chatStreamContent: '',
+            _chatAbort: null,
+            ...(isAborted ? {} : { chatError: err.message }),
+          })
+
+          // 更新 TaskItem 状态
+          fullState.updateActiveExecution?.(chatTaskId, {
+            status: isAborted ? 'interrupted' as const : 'terminated' as const,
+            executionError: isAborted ? '用户中断' : err.message,
+            executionDuration: Date.now() - chatTaskStartedAt,
+          })
+
+          // 完成 Nexus 执行状态（失败/中断）
+          if (activeNexusId) {
+            fullState.completeNexusExecution?.(activeNexusId, {
+              success: false,
+              output: isAborted ? '用户中断' : err.message,
+            })
+          }
+        }
+
+        // Observer 行为记录
+        const ocFullState = get() as any
+        if (ocFullState.addBehaviorRecord) {
+          ocFullState.addBehaviorRecord({ type: 'chat', content: message })
+        }
+
+        return // OpenClaw 分支结束
+      }
+
+      // ========== 未连接模式: 前端 LLM 流式 fallback ==========
+      if (!isLLMConfigured()) {
+        set({ chatStreaming: false, chatStreamContent: '', _chatAbort: null, chatError: '请先在设置中配置 LLM (API Key / Base URL / Model)' })
+        return
+      }
       const storeData = {
         tasks: state.tasks || [],
         skills: state.skills || [],
@@ -1362,7 +1813,7 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
             executionStatuses: {} 
           }
         })
-        persistConversations(get().conversations)
+        persistSingleConversation(updated, get().conversations)
       }
     }
     localStorage.removeItem(STORAGE_KEYS.EXECUTION_STATUS)

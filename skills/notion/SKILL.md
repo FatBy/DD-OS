@@ -1,12 +1,15 @@
 ---
 name: notion
-description: Notion API for creating and managing pages, databases, and blocks.
+description: "Notion API for creating and managing pages, databases, and blocks."
+version: "1.0.0"
+author: "DD-OS"
 homepage: https://developers.notion.com
 metadata:
-  {
-    "openclaw":
-      { "emoji": "📝", "requires": { "env": ["NOTION_API_KEY"] }, "primaryEnv": "NOTION_API_KEY" },
-  }
+  openclaw:
+    emoji: "📝"
+    primaryEnv: "NOTION_API_KEY"
+    requires:
+      env: ["NOTION_API_KEY"]
 ---
 
 # notion

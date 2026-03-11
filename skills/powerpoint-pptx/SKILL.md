@@ -1,10 +1,13 @@
 ---
 name: PowerPoint PPTX
-slug: powerpoint-pptx
-version: 1.0.0
+description: "Create, edit, and automate PowerPoint presentations with python-pptx for slides, layouts, charts, and batch processing."
+version: "1.0.0"
+author: "DD-OS"
 homepage: https://clawic.com/skills/powerpoint-pptx
-description: Create, edit, and automate PowerPoint presentations with python-pptx for slides, layouts, charts, and batch processing.
-metadata: {"clawdbot":{"emoji":"📊","requires":{"bins":["python3"]},"os":["linux","darwin","win32"]}}
+metadata:
+  openclaw:
+    emoji: "🔧"
+    primaryEnv: "shell"
 ---
 
 ## When to Use

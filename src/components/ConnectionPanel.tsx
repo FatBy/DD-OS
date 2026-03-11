@@ -96,6 +96,8 @@ export function ConnectionPanel() {
     useStore.getState().setConnectionMode(mode)
     
     if (mode === 'native') {
+      // 切到 Native 时，主动断开 OpenClaw（防止后台重连覆盖模式）
+      openClawService.disconnect()
       useStore.getState().setConnectionStatus('connecting')
       const success = await localClawService.connect()
       if (!success) {

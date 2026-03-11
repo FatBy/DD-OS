@@ -1,0 +1,24 @@
+{
+  "id": "gene-1773216372900-1",
+  "category": "repair",
+  "signals_match": [
+    "write",
+    "missing",
+    "missing required parameter: path (path or file_path). supply correct parameters before retrying."
+  ],
+  "strategy": [
+    "Error encountered: Missing required parameter: path (path or file_path). Supply correct parameters before retrying.",
+    "Parameter changes: content: \"# 2026-03-11 技术设计文档\\n\\n## 扩展 openclaw.json Schema 支持 Nexus ... -> \"\\n# 2026-03-11 技术设计文档（续）\\n\\n## 扩展 openclaw.json Schema 支持 N...; file_path: null -> \"C:\\\\Users\\\\邓思迪\\\\.openclaw\\\\workspace\\\\memory\\\\2026-03-11.md...",
+    "Recovery result: {\"content\":[{\"type\":\"text\",\"text\":\"Successfully wrote 11940 bytes to C:\\\\Users\\\\邓思迪\\\\.openclaw\\\\workspace\\\\memory\\\\2026-03-11.md\"}]}"
+  ],
+  "source": {
+    "traceId": "trace-0",
+    "createdAt": 1773216372900
+  },
+  "metadata": {
+    "confidence": 0.4,
+    "useCount": 1,
+    "successCount": 0,
+    "lastUsedAt": 1773218028745
+  }
+}

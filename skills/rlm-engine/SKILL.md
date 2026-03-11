@@ -1,9 +1,17 @@
---- 
-name: rlm-engine 
-description: Deep programmatic reasoning over complete conversation history using RLM. Activates only when explicitly requested. 
-metadata: {"openclaw":{"emoji":"🧠","requires":{"bins":["uv"],"env":["MOONSHOT_API_KEY"]},"primaryEnv":"MOONSHOT_API_KEY"}} 
-version: 4.2.1 
---- 
+---
+name: rlm-engine
+description: "Deep programmatic reasoning over complete conversation history using RLM. Activates only when explicitly requested."
+version: "4.2.1"
+author: "DD-OS"
+metadata:
+  openclaw:
+    emoji: "🧠"
+    primaryEnv: "MOONSHOT_API_KEY"
+    requires:
+      bins: ["uv"]
+      env: ["MOONSHOT_API_KEY"]
+---
+
 # RLM Engine — Explicit deep reasoning over history 
 ## IMPORTANT: Explicit activation only 
 This skill ONLY activates when the user EXPLICITLY requests RLM analysis. Do NOT use this skill based on question complexity — let the user decide. 

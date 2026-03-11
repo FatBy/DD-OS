@@ -42,6 +42,14 @@ from urllib.parse import unquote, urlparse, parse_qs
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, Future
 
+# 🌐 全局绕过系统代理: Windows 注册表可能配有本地代理 (如 Clash/V2Ray 的 127.0.0.1:13658)
+# Python 的 urllib/requests 默认读取系统代理，如果代理未运行则所有外发 HTTP 请求超时
+# 在服务启动时全局安装无代理的 opener，确保 urllib.request.urlopen() 直连
+import urllib.request as _urllib_req
+_no_proxy_handler = _urllib_req.ProxyHandler({})
+_opener = _urllib_req.build_opener(_no_proxy_handler)
+_urllib_req.install_opener(_opener)
+
 # PyYAML (skill-executor/parser.py 已依赖)
 try:
     import yaml
@@ -87,6 +95,13 @@ import base64
 import io
 
 VERSION = "4.0.0"
+
+# 🏠 应用根目录 (兼容 PyInstaller frozen 模式)
+# PyInstaller --onefile 模式下 __file__ 指向临时解压目录，需用 sys.executable 定位实际路径
+if getattr(sys, 'frozen', False):
+    APP_DIR = Path(sys.executable).parent.resolve()
+else:
+    APP_DIR = Path(__file__).parent.resolve()
 
 # 🛡️ 安全配置
 DANGEROUS_COMMANDS = {'rm -rf /', 'format', 'mkfs', 'dd if=/dev/zero'}
@@ -159,7 +174,7 @@ def calculate_text_similarity(text1: str, text2: str) -> float:
 # ============================================
 
 def parse_skill_frontmatter(skill_md_path: Path) -> dict:
-    """从 SKILL.md 提取 YAML frontmatter 元数据"""
+    """从 SKILL.md 提取 YAML frontmatter 元数据 (支持嵌套 metadata.openclaw)"""
     try:
         content = skill_md_path.read_text(encoding='utf-8')
     except Exception:
@@ -178,12 +193,12 @@ def parse_skill_frontmatter(skill_md_path: Path) -> dict:
 
     if HAS_YAML:
         try:
-            return yaml.safe_load(match.group(1)) or {}
+            raw = yaml.safe_load(match.group(1)) or {}
         except Exception:
             return {}
     else:
         # 无 PyYAML 时用简单正则提取 key: value
-        result = {}
+        raw = {}
         for line in match.group(1).split('\n'):
             m = re.match(r'^(\w+)\s*:\s*(.+)$', line.strip())
             if m:
@@ -191,8 +206,46 @@ def parse_skill_frontmatter(skill_md_path: Path) -> dict:
                 # 简单处理数组 [a, b, c]
                 if val.startswith('[') and val.endswith(']'):
                     val = [v.strip().strip('"\'') for v in val[1:-1].split(',') if v.strip()]
-                result[key] = val
-        return result
+                # 尝试 JSON 解析 (处理 metadata 等嵌套字段)
+                elif val.startswith('{'):
+                    try:
+                        val = json.loads(val)
+                    except Exception:
+                        pass
+                raw[key] = val
+        return _flatten_openclaw_metadata(raw)
+
+    return _flatten_openclaw_metadata(raw)
+
+
+def _flatten_openclaw_metadata(raw: dict) -> dict:
+    """从 frontmatter 中提取 metadata.openclaw 字段并扁平化到顶层"""
+    metadata = raw.get('metadata', {})
+    if isinstance(metadata, dict):
+        openclaw = metadata.get('openclaw', {})
+        if isinstance(openclaw, dict):
+            # 提升 openclaw 字段到顶层 (不覆盖已有字段)
+            for key in ('emoji', 'primaryEnv', 'requires', 'install', 'anyBins'):
+                if key in openclaw and key not in raw:
+                    raw[key] = openclaw[key]
+            # requires 中的 anyBins 提升
+            oc_requires = openclaw.get('requires', {})
+            if isinstance(oc_requires, dict):
+                if 'requires' not in raw:
+                    raw['requires'] = oc_requires
+                else:
+                    # 合并
+                    existing = raw['requires'] if isinstance(raw['requires'], dict) else {}
+                    for k, v in oc_requires.items():
+                        if k not in existing:
+                            existing[k] = v
+                    raw['requires'] = existing
+            oc_install = openclaw.get('install', [])
+            if oc_install and 'install' not in raw:
+                raw['install'] = oc_install
+        # 保留原始 metadata.openclaw 用于序列化
+        raw['_openclaw'] = openclaw
+    return raw
 
 
 def skill_name_to_tool_name(name: str) -> str:
@@ -301,8 +354,8 @@ class ToolRegistry:
 
     def __init__(self, clawd_path: Path, project_path: Path = None):
         self.clawd_path = clawd_path
-        # 项目目录 (脚本所在目录)，用于加载内置技能
-        self.project_path = project_path or Path(__file__).parent.resolve()
+        # 项目目录 (脚本/exe 所在目录)，用于加载内置技能
+        self.project_path = project_path or APP_DIR
         self.builtin_tools: dict = {}      # name -> callable
         self.plugin_tools: dict = {}       # name -> ToolSpec dict (有 execute.py)
         self.instruction_tools: dict = {}  # name -> InstructionSpec (纯 SKILL.md)
@@ -327,7 +380,7 @@ class ToolRegistry:
         return dirs
 
     def scan_plugins(self):
-        """递归扫描 skills/ 目录，注册可执行插件 + 指令型技能"""
+        """递归扫描 skills/ 目录，统一从 SKILL.md frontmatter 注册可执行插件 + 指令型技能"""
         skills_dirs = self._get_skills_dirs()
         if not skills_dirs:
             return
@@ -335,12 +388,111 @@ class ToolRegistry:
         plugin_count = 0
         instruction_count = 0
 
-        # 递归查找所有包含 SKILL.md 或 manifest.json 的目录
         seen_dirs: set = set()
         seen_tools: set = set()  # 防止重复注册同名工具
 
         for skills_dir in skills_dirs:
-            # 1. 先扫描 manifest.json (可执行插件优先)
+            # ── 统一扫描 SKILL.md ──
+            for skill_md in skills_dir.rglob('SKILL.md'):
+                skill_dir = skill_md.parent
+                dir_key = str(skill_dir.resolve())
+
+                if dir_key in seen_dirs:
+                    continue
+                seen_dirs.add(dir_key)
+
+                try:
+                    frontmatter = parse_skill_frontmatter(skill_md)
+                    original_name = frontmatter.get('name', skill_dir.name)
+                    executable = frontmatter.get('executable', '')
+                    runtime = frontmatter.get('runtime', 'python')
+
+                    if executable:
+                        # ── 可执行技能 (有 executable 字段) ──
+                        exe_path = skill_dir / executable
+                        if not exe_path.exists():
+                            print(f"[ToolRegistry] Warning: {exe_path} not found for skill '{original_name}', skipping")
+                            continue
+
+                        tools_list = frontmatter.get('tools', [])
+                        if tools_list:
+                            # 多工具技能: frontmatter 中有 tools 数组
+                            for tool_spec in tools_list:
+                                tool_name = tool_spec.get('toolName', '')
+                                if not tool_name:
+                                    continue
+                                if tool_name in seen_tools:
+                                    continue
+                                if tool_name in self.builtin_tools:
+                                    print(f"[ToolRegistry] Warning: plugin '{tool_name}' conflicts with builtin, skipping")
+                                    continue
+
+                                self.plugin_tools[tool_name] = {
+                                    'name': tool_name,
+                                    'exe_path': str(exe_path),
+                                    'runtime': tool_spec.get('runtime', runtime),
+                                    'inputs': tool_spec.get('inputs', {}),
+                                    'outputs': tool_spec.get('outputs', {}),
+                                    'description': tool_spec.get('description', ''),
+                                    'dangerLevel': tool_spec.get('dangerLevel', frontmatter.get('dangerLevel', 'safe')),
+                                    'version': frontmatter.get('version', '1.0.0'),
+                                    'skill_dir': str(skill_dir),
+                                    'keywords': tool_spec.get('keywords', frontmatter.get('keywords', [])),
+                                }
+                                seen_tools.add(tool_name)
+                                plugin_count += 1
+                                print(f"[ToolRegistry] Registered plugin: {tool_name} ({exe_path.name})")
+                        else:
+                            # 单工具技能: toolName = skill_name_to_tool_name(name)
+                            tool_name = skill_name_to_tool_name(original_name)
+                            if tool_name in seen_tools:
+                                continue
+                            if tool_name in self.builtin_tools:
+                                print(f"[ToolRegistry] Warning: plugin '{tool_name}' conflicts with builtin, skipping")
+                                continue
+
+                            self.plugin_tools[tool_name] = {
+                                'name': tool_name,
+                                'exe_path': str(exe_path),
+                                'runtime': runtime,
+                                'inputs': frontmatter.get('inputs', {}),
+                                'outputs': {},
+                                'description': frontmatter.get('description', ''),
+                                'dangerLevel': frontmatter.get('dangerLevel', 'safe'),
+                                'version': frontmatter.get('version', '1.0.0'),
+                                'skill_dir': str(skill_dir),
+                                'keywords': frontmatter.get('tags', frontmatter.get('keywords', [])),
+                            }
+                            seen_tools.add(tool_name)
+                            plugin_count += 1
+                            print(f"[ToolRegistry] Registered plugin: {tool_name} ({exe_path.name})")
+                    else:
+                        # ── 指令型技能 (无 executable) ──
+                        tool_name = skill_name_to_tool_name(original_name)
+
+                        if tool_name in self.builtin_tools or tool_name in self.plugin_tools or tool_name in seen_tools:
+                            print(f"[ToolRegistry] Warning: instruction skill '{tool_name}' conflicts, skipping")
+                            continue
+
+                        self.instruction_tools[tool_name] = {
+                            'name': tool_name,
+                            'original_name': original_name,
+                            'skill_path': str(skill_md),
+                            'skill_dir': str(skill_dir),
+                            'description': frontmatter.get('description', ''),
+                            'inputs': frontmatter.get('inputs', {}),
+                            'keywords': frontmatter.get('tags', frontmatter.get('keywords', [])),
+                            'dangerLevel': 'safe',
+                            'version': frontmatter.get('version', '1.0.0'),
+                        }
+                        seen_tools.add(tool_name)
+                        instruction_count += 1
+                        print(f"[ToolRegistry] Registered instruction skill: {tool_name} (from {skills_dir.name})")
+
+                except Exception as e:
+                    print(f"[ToolRegistry] Error loading {skill_md}: {e}")
+
+            # ── Deprecated fallback: manifest.json (兼容无 SKILL.md 的第三方技能) ──
             for manifest_path in skills_dir.rglob('manifest.json'):
                 skill_dir = manifest_path.parent
                 dir_key = str(skill_dir.resolve())
@@ -348,9 +500,10 @@ class ToolRegistry:
                     continue
                 seen_dirs.add(dir_key)
 
+                print(f"[ToolRegistry] ⚠️ DEPRECATED: {manifest_path} has no SKILL.md, please migrate to SKILL.md format")
+
                 try:
                     spec = json.loads(manifest_path.read_text(encoding='utf-8'))
-
                     tools_list = spec.get('tools', [])
                     if not tools_list:
                         tools_list = [spec]
@@ -359,21 +512,14 @@ class ToolRegistry:
                         tool_name = tool_spec.get('toolName', '')
                         executable = tool_spec.get('executable', spec.get('executable', 'execute.py'))
 
-                        if not tool_name:
-                            continue
-
-                        # 跳过已注册的同名工具
-                        if tool_name in seen_tools:
+                        if not tool_name or tool_name in seen_tools:
                             continue
 
                         exe_path = skill_dir / executable
                         if not exe_path.exists():
-                            print(f"[ToolRegistry] Warning: {exe_path} not found, skipping {tool_name}")
                             continue
 
-                        # 内置工具不可被覆盖
                         if tool_name in self.builtin_tools:
-                            print(f"[ToolRegistry] Warning: plugin '{tool_name}' conflicts with builtin, skipping")
                             continue
 
                         self.plugin_tools[tool_name] = {
@@ -390,48 +536,9 @@ class ToolRegistry:
                         }
                         seen_tools.add(tool_name)
                         plugin_count += 1
-                        print(f"[ToolRegistry] Registered plugin: {tool_name} ({exe_path.name})")
 
                 except Exception as e:
-                    print(f"[ToolRegistry] Error loading {manifest_path}: {e}")
-
-            # 2. 扫描 SKILL.md (指令型技能 - 没有 manifest.json 或没有 executable 的)
-            for skill_md in skills_dir.rglob('SKILL.md'):
-                skill_dir = skill_md.parent
-                dir_key = str(skill_dir.resolve())
-
-                # 已被 manifest.json 扫描注册的目录跳过
-                if dir_key in seen_dirs:
-                    continue
-                seen_dirs.add(dir_key)
-
-                try:
-                    frontmatter = parse_skill_frontmatter(skill_md)
-                    original_name = frontmatter.get('name', skill_dir.name)
-                    tool_name = skill_name_to_tool_name(original_name)
-
-                    # 冲突检查
-                    if tool_name in self.builtin_tools or tool_name in self.plugin_tools or tool_name in seen_tools:
-                        print(f"[ToolRegistry] Warning: instruction skill '{tool_name}' conflicts, skipping")
-                        continue
-
-                    self.instruction_tools[tool_name] = {
-                        'name': tool_name,
-                        'original_name': original_name,
-                        'skill_path': str(skill_md),
-                        'skill_dir': str(skill_dir),
-                        'description': frontmatter.get('description', ''),
-                        'inputs': frontmatter.get('inputs', {}),
-                        'keywords': frontmatter.get('tags', frontmatter.get('keywords', [])),
-                        'dangerLevel': 'safe',
-                        'version': frontmatter.get('version', '1.0.0'),
-                    }
-                    seen_tools.add(tool_name)
-                    instruction_count += 1
-                    print(f"[ToolRegistry] Registered instruction skill: {tool_name} (from {skills_dir.name})")
-
-                except Exception as e:
-                    print(f"[ToolRegistry] Error loading {skill_md}: {e}")
+                    print(f"[ToolRegistry] Error loading deprecated manifest {manifest_path}: {e}")
 
         total = plugin_count + instruction_count
         if total > 0:
@@ -851,6 +958,12 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
             nexus_name = path[9:]  # strip '/nexuses/'
             if nexus_name == 'health':
                 self.handle_nexuses_health()
+            elif nexus_name.endswith('/fitness'):
+                self.handle_nexus_fitness_get(nexus_name[:-8])  # strip '/fitness'
+            elif nexus_name.endswith('/sop-content'):
+                self.handle_nexus_sop_content_get(nexus_name[:-12])  # strip '/sop-content'
+            elif nexus_name.endswith('/sop-history'):
+                self.handle_nexus_sop_history_get(nexus_name[:-12])  # strip '/sop-history'
             else:
                 self.handle_nexus_detail(nexus_name)
         elif path.startswith('/task/status/'):
@@ -869,6 +982,9 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
             self.handle_registry_skills_search(query)
         elif path == '/api/registry/mcp':
             self.handle_registry_mcp_search(query)
+        elif path.startswith('/skills/') and path.endswith('/raw'):
+            skill_name = path[8:-4]  # strip '/skills/' and '/raw'
+            self.handle_skill_raw(skill_name)
         elif path == '/mcp/servers':
             self.handle_mcp_servers_list()
         elif path.startswith('/data/'):
@@ -925,6 +1041,10 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
             self.handle_skill_install(data)
         elif path == '/skills/uninstall':
             self.handle_skill_uninstall(data)
+        elif path == '/clawhub/install':
+            self.handle_clawhub_install(data)
+        elif path == '/clawhub/publish':
+            self.handle_clawhub_publish(data)
         elif path.startswith('/nexuses/') and path.endswith('/skills'):
             nexus_name = path[9:-7]  # strip '/nexuses/' and '/skills'
             self.handle_nexus_update_skills(nexus_name, data)
@@ -934,6 +1054,15 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
         elif path.startswith('/nexuses/') and path.endswith('/meta'):
             nexus_name = path[9:-5]  # strip '/nexuses/' and '/meta'
             self.handle_nexus_update_meta(nexus_name, data)
+        elif path.startswith('/nexuses/') and path.endswith('/fitness'):
+            nexus_name = path[9:-8]  # strip '/nexuses/' and '/fitness'
+            self.handle_nexus_fitness_save(nexus_name, data)
+        elif path.startswith('/nexuses/') and path.endswith('/sop-content'):
+            nexus_name = path[9:-12]  # strip '/nexuses/' and '/sop-content'
+            self.handle_nexus_sop_content_save(nexus_name, data)
+        elif path.startswith('/nexuses/') and path.endswith('/sop-history'):
+            nexus_name = path[9:-12]  # strip '/nexuses/' and '/sop-history'
+            self.handle_nexus_sop_history_save(nexus_name, data)
         elif path == '/task/execute':
             self.handle_task_execute(data)
         elif path.startswith('/data/'):
@@ -951,6 +1080,9 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
         # 🌐 EvoMap 代理 (解决 CORS 问题)
         elif path.startswith('/api/evomap/'):
             self.handle_evomap_proxy(path, data)
+        # 🌐 LLM API 代理 (解决 CORS 问题: Moonshot 等 API 的 preflight 不返回 CORS 头)
+        elif path == '/api/llm/proxy':
+            self.handle_llm_proxy(data)
         else:
             self.send_error_json(f'Unknown endpoint: {path}', 404)
     
@@ -960,8 +1092,8 @@ class ClawdDataHandler(BaseHTTPRequestHandler):
     
     def serve_static_file(self, path: str):
         """托管 dist/ 目录的前端构建产物，支持 SPA 路由"""
-        # 静态文件目录 (与服务器脚本同级的 dist/)
-        static_dir = Path(__file__).parent / 'dist'
+        # 静态文件目录 (与服务器脚本/exe 同级的 dist/)
+        static_dir = APP_DIR / 'dist'
         
         if not static_dir.exists():
             # dist/ 不存在时返回提示
@@ -2425,6 +2557,13 @@ python {safe_name}.py
     # ============================================
     
     def handle_index(self):
+        # 优先托管前端 dist/index.html (便携式分发模式)
+        index_file = APP_DIR / 'dist' / 'index.html'
+        if index_file.exists():
+            self.serve_static_file('/')
+            return
+
+        # dist 不存在时显示 API 文档页
         html = f"""<!DOCTYPE html>
 <html>
 <head><title>DD-OS Native Server</title></head>
@@ -2510,7 +2649,7 @@ curl -X POST http://localhost:3001/api/tools/execute \\
             self.send_error_json(f'Read error: {str(e)}', 500)
     
     def handle_skills(self):
-        """GET /skills - 递归扫描所有技能 (SKILL.md + manifest.json)，支持用户目录 + 项目目录"""
+        """GET /skills - 统一从 SKILL.md frontmatter 扫描所有技能，支持用户目录 + 项目目录"""
         skills = []
         seen = set()
         seen_ids = set()  # 防止重复技能 (用户目录优先)
@@ -2521,7 +2660,7 @@ curl -X POST http://localhost:3001/api/tools/execute \\
         if user_skills_dir.exists() and user_skills_dir.is_dir():
             skills_dirs.append(('user', user_skills_dir))
         
-        project_path = self.project_path or Path(__file__).parent.resolve()
+        project_path = self.project_path or APP_DIR
         project_skills_dir = project_path / 'skills'
         if project_skills_dir.exists() and project_skills_dir.is_dir() and project_skills_dir != user_skills_dir:
             skills_dirs.append(('bundled', project_skills_dir))
@@ -2531,7 +2670,7 @@ curl -X POST http://localhost:3001/api/tools/execute \\
             return
 
         for source, skills_dir in skills_dirs:
-            # Phase 1: 扫描有 SKILL.md 的目录
+            # ── 统一扫描 SKILL.md ──
             for skill_md in skills_dir.rglob('SKILL.md'):
                 skill_dir = skill_md.parent
                 dir_key = str(skill_dir.resolve())
@@ -2543,7 +2682,6 @@ curl -X POST http://localhost:3001/api/tools/execute \\
                 seen_ids.add(skill_id)
 
                 frontmatter = parse_skill_frontmatter(skill_md)
-                manifest_path = skill_dir / 'manifest.json'
 
                 skill_data = {
                     'id': skill_id,
@@ -2555,6 +2693,24 @@ curl -X POST http://localhost:3001/api/tools/execute \\
                     'enabled': True,
                     'keywords': frontmatter.get('tags', frontmatter.get('keywords', [])),
                 }
+
+                # OpenClaw 生态字段
+                if frontmatter.get('emoji'):
+                    skill_data['emoji'] = frontmatter['emoji']
+                if frontmatter.get('author'):
+                    skill_data['author'] = frontmatter['author']
+                if frontmatter.get('primaryEnv'):
+                    skill_data['primaryEnv'] = frontmatter['primaryEnv']
+                if frontmatter.get('requires'):
+                    skill_data['requires'] = frontmatter['requires']
+                if frontmatter.get('install'):
+                    skill_data['install'] = frontmatter['install']
+                if frontmatter.get('tags'):
+                    skill_data['tags'] = frontmatter['tags']
+                if frontmatter.get('version'):
+                    skill_data['version'] = frontmatter['version']
+                if frontmatter.get('dangerLevel'):
+                    skill_data['dangerLevel'] = frontmatter['dangerLevel']
 
                 # 无 frontmatter description 时提取正文首段
                 if not skill_data['description']:
@@ -2568,10 +2724,45 @@ curl -X POST http://localhost:3001/api/tools/execute \\
                     except Exception:
                         pass
 
-                self._enrich_skill_from_manifest(skill_data, manifest_path, frontmatter)
+                # ── 从 frontmatter 提取工具信息 (替代 _enrich_skill_from_manifest) ──
+                executable = frontmatter.get('executable', '')
+                if executable and (skill_dir / executable).exists():
+                    # 可执行技能
+                    skill_data['executable'] = True
+                    tools_list = frontmatter.get('tools', [])
+                    if tools_list:
+                        # 多工具: 从 tools 数组提取 toolNames
+                        tool_names = [t.get('toolName') for t in tools_list if t.get('toolName')]
+                        skill_data['toolNames'] = tool_names
+                        skill_data['toolName'] = tool_names[0] if tool_names else skill_name_to_tool_name(skill_data['name'])
+                        # 合并所有工具的 keywords
+                        all_keywords = list(skill_data.get('keywords', []))
+                        all_inputs = {}
+                        for t in tools_list:
+                            all_keywords.extend(t.get('keywords', []))
+                            all_inputs.update(t.get('inputs', {}))
+                        skill_data['keywords'] = list(set(all_keywords))
+                        if all_inputs:
+                            skill_data['inputs'] = all_inputs
+                    else:
+                        # 单工具
+                        tool_name = skill_name_to_tool_name(skill_data['name'])
+                        skill_data['toolName'] = tool_name
+                        skill_data['toolNames'] = [tool_name]
+                        if frontmatter.get('inputs'):
+                            skill_data['inputs'] = frontmatter['inputs']
+                else:
+                    # 指令型技能
+                    skill_data['toolType'] = 'instruction'
+                    tool_name = skill_name_to_tool_name(skill_data['name'])
+                    skill_data['toolName'] = tool_name
+                    skill_data['toolNames'] = [tool_name]
+                    if frontmatter.get('inputs'):
+                        skill_data['inputs'] = frontmatter['inputs']
+
                 skills.append(skill_data)
 
-            # Phase 2: 扫描有 manifest.json 但没有 SKILL.md 的目录
+            # ── Deprecated fallback: manifest.json (兼容无 SKILL.md 的第三方技能) ──
             for manifest_path in skills_dir.rglob('manifest.json'):
                 skill_dir = manifest_path.parent
                 dir_key = str(skill_dir.resolve())
@@ -2598,57 +2789,21 @@ curl -X POST http://localhost:3001/api/tools/execute \\
                     'keywords': manifest.get('keywords', []),
                 }
 
-                self._enrich_skill_from_manifest(skill_data, manifest_path, {})
-                skills.append(skill_data)
-
-        self.send_json(skills)
-
-    def _enrich_skill_from_manifest(self, skill_data: dict, manifest_path: Path, frontmatter: dict):
-        """从 manifest.json 补充技能元数据 (多工具格式 + 关键词合并)"""
-        if manifest_path.exists():
-            try:
-                manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
-
-                # 支持新格式 tools: [...] 和旧格式 toolName: "..."
+                # 从 manifest 提取工具信息
                 tools_list = manifest.get('tools', [])
                 if not tools_list:
                     tools_list = [manifest]
-
                 tool_names = [t.get('toolName') for t in tools_list if t.get('toolName')]
                 if tool_names:
                     skill_data['toolNames'] = tool_names
                     skill_data['toolName'] = tool_names[0]
                     skill_data['executable'] = True
-
-                # 合并关键词 (manifest 优先)
-                manifest_keywords = list(manifest.get('keywords', []))
-                for t in tools_list:
-                    manifest_keywords.extend(t.get('keywords', []))
-                if manifest_keywords:
-                    skill_data['keywords'] = list(set(manifest_keywords))
-
                 skill_data['dangerLevel'] = manifest.get('dangerLevel', 'safe')
                 skill_data['version'] = manifest.get('version', '1.0.0')
-                if manifest.get('description'):
-                    skill_data['description'] = manifest['description']
 
-                # 合并所有 inputs
-                all_inputs = {}
-                for t in tools_list:
-                    all_inputs.update(t.get('inputs', {}))
-                if all_inputs:
-                    skill_data['inputs'] = all_inputs
+                skills.append(skill_data)
 
-            except Exception:
-                pass
-        else:
-            # 纯 SKILL.md - 指令型技能
-            skill_data['toolType'] = 'instruction'
-            tool_name = skill_name_to_tool_name(skill_data['name'])
-            skill_data['toolName'] = tool_name
-            skill_data['toolNames'] = [tool_name]
-            if frontmatter.get('inputs'):
-                skill_data['inputs'] = frontmatter['inputs']
+        self.send_json(skills)
 
     # ============================================
     # 🌌 Nexus 管理
@@ -2786,10 +2941,11 @@ curl -X POST http://localhost:3001/api/tools/execute \\
 
     def handle_nexus_detail(self, nexus_name: str):
         """GET /nexuses/{name} - 获取单个 Nexus 完整信息"""
-        nexuses_dir = self.clawd_path / 'nexuses'
-        nexus_dir = nexuses_dir / nexus_name
+        nexus_dir = self._resolve_nexus_dir(nexus_name)
+        if not nexus_dir:
+            self.send_error_json(f"Nexus '{nexus_name}' not found", 404)
+            return
         nexus_md = nexus_dir / 'NEXUS.md'
-
         if not nexus_md.exists():
             self.send_error_json(f"Nexus '{nexus_name}' not found", 404)
             return
@@ -3041,6 +3197,138 @@ curl -X POST http://localhost:3001/api/tools/execute \\
         # 写入
         with index_file.open('w', encoding='utf-8') as f:
             json.dump(index, f, ensure_ascii=False, indent=2)
+
+    # ============================================
+    # 🧬 SOP Fitness API (SOP 演进系统)
+    # ============================================
+
+    def handle_nexus_fitness_get(self, nexus_name: str):
+        """GET /nexuses/{name}/fitness - 读取 SOP fitness 数据"""
+        nexus_dir = self._resolve_nexus_dir(nexus_name)
+        if not nexus_dir:
+            self.send_error_json(f"Nexus '{nexus_name}' not found", 404)
+            return
+
+        fitness_file = nexus_dir / 'sop-fitness.json'
+        if not fitness_file.exists():
+            # 返回空表示尚无数据，前端会使用默认值
+            self.send_json(None)
+            return
+
+        try:
+            with fitness_file.open('r', encoding='utf-8') as f:
+                data = json.load(f)
+            self.send_json(data)
+        except (json.JSONDecodeError, Exception) as e:
+            self.send_error_json(f'Failed to read fitness data: {str(e)}', 500)
+
+    def handle_nexus_fitness_save(self, nexus_name: str, data: dict):
+        """POST /nexuses/{name}/fitness - 保存 SOP fitness 数据"""
+        nexus_dir = self._resolve_nexus_dir(nexus_name, auto_create=True)
+        if not nexus_dir:
+            self.send_error_json(f"Nexus '{nexus_name}' not found", 404)
+            return
+
+        fitness_file = nexus_dir / 'sop-fitness.json'
+        try:
+            with fitness_file.open('w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            self.send_json({'status': 'ok'})
+        except Exception as e:
+            self.send_error_json(f'Failed to save fitness data: {str(e)}', 500)
+
+    def handle_nexus_sop_content_get(self, nexus_name: str):
+        """GET /nexuses/{name}/sop-content - 读取 NEXUS.md 完整内容"""
+        nexus_dir = self._resolve_nexus_dir(nexus_name)
+        if not nexus_dir:
+            self.send_error_json(f"Nexus '{nexus_name}' not found", 404)
+            return
+
+        nexus_md = nexus_dir / 'NEXUS.md'
+        if not nexus_md.exists():
+            self.send_json({'content': None})
+            return
+
+        try:
+            content = nexus_md.read_text(encoding='utf-8')
+            self.send_json({'content': content})
+        except Exception as e:
+            self.send_error_json(f'Failed to read NEXUS.md: {str(e)}', 500)
+
+    def handle_nexus_sop_content_save(self, nexus_name: str, data: dict):
+        """POST /nexuses/{name}/sop-content - 写入 NEXUS.md 完整内容"""
+        nexus_dir = self._resolve_nexus_dir(nexus_name, auto_create=True)
+        if not nexus_dir:
+            self.send_error_json(f"Nexus '{nexus_name}' not found", 404)
+            return
+
+        content = data.get('content', '')
+        if not content:
+            self.send_error_json('Missing required field: content', 400)
+            return
+
+        nexus_md = nexus_dir / 'NEXUS.md'
+        try:
+            nexus_md.write_text(content, encoding='utf-8')
+            self.send_json({'status': 'ok'})
+        except Exception as e:
+            self.send_error_json(f'Failed to write NEXUS.md: {str(e)}', 500)
+
+    def handle_nexus_sop_history_get(self, nexus_name: str):
+        """GET /nexuses/{name}/sop-history - 读取指定版本的 SOP 历史"""
+        nexus_dir = self._resolve_nexus_dir(nexus_name)
+        if not nexus_dir:
+            self.send_error_json(f"Nexus '{nexus_name}' not found", 404)
+            return
+
+        # 解析 query 参数获取版本号
+        parsed = urlparse(self.path)
+        query = parse_qs(parsed.query)
+        version = query.get('version', [None])[0]
+
+        history_dir = nexus_dir / 'sop-history'
+        if not history_dir.exists():
+            self.send_json({'content': None, 'versions': []})
+            return
+
+        # 列出所有版本
+        versions = sorted([
+            f.stem  # e.g. 'v1', 'v2'
+            for f in history_dir.glob('v*.md')
+        ])
+
+        if version:
+            history_file = history_dir / f'{version}.md'
+            if history_file.exists():
+                content = history_file.read_text(encoding='utf-8')
+                self.send_json({'content': content, 'versions': versions})
+            else:
+                self.send_json({'content': None, 'versions': versions})
+        else:
+            self.send_json({'content': None, 'versions': versions})
+
+    def handle_nexus_sop_history_save(self, nexus_name: str, data: dict):
+        """POST /nexuses/{name}/sop-history - 保存一个 SOP 版本到历史"""
+        nexus_dir = self._resolve_nexus_dir(nexus_name, auto_create=True)
+        if not nexus_dir:
+            self.send_error_json(f"Nexus '{nexus_name}' not found", 404)
+            return
+
+        version = data.get('version', '')
+        content = data.get('content', '')
+        if not version or not content:
+            self.send_error_json('Missing required fields: version, content', 400)
+            return
+
+        history_dir = nexus_dir / 'sop-history'
+        history_dir.mkdir(parents=True, exist_ok=True)
+
+        history_file = history_dir / f'v{version}.md'
+        try:
+            history_file.write_text(content, encoding='utf-8')
+            self.send_json({'status': 'ok', 'version': version})
+        except Exception as e:
+            self.send_error_json(f'Failed to save SOP history: {str(e)}', 500)
 
     def handle_tools_list(self):
         """GET /tools - 列出所有已注册的工具"""
@@ -3390,14 +3678,17 @@ curl -X POST http://localhost:3001/api/tools/execute \\
                 stderr = process.stderr[:500] if process.stderr else 'Unknown error'
                 raise RuntimeError(f"git clone failed: {stderr}")
 
-            # 验证: 必须有 SKILL.md 或 manifest.json
+            # 验证: 必须有 SKILL.md (manifest.json 已 deprecated)
             has_skill_md = (target / 'SKILL.md').exists() or any(target.rglob('SKILL.md'))
             has_manifest = (target / 'manifest.json').exists()
 
-            if not has_skill_md and not has_manifest:
-                shutil.rmtree(target, ignore_errors=True)
-                self.send_error_json('Invalid skill: no SKILL.md or manifest.json found', 400)
-                return
+            if not has_skill_md:
+                if has_manifest:
+                    print(f"[SkillInstall] ⚠️ DEPRECATED: {target.name} only has manifest.json, please add SKILL.md")
+                else:
+                    shutil.rmtree(target, ignore_errors=True)
+                    self.send_error_json('Invalid skill: no SKILL.md found', 400)
+                    return
 
             # 重新扫描注册
             self.registry.plugin_tools.clear()
@@ -3462,7 +3753,219 @@ curl -X POST http://localhost:3001/api/tools/execute \\
         except Exception as e:
             self.send_error_json(f'Uninstall failed: {str(e)}', 500)
 
-    def handle_trace_save(self, data):
+    def handle_clawhub_install(self, data):
+        """POST /clawhub/install - 从 ClawHub 下载并安装技能"""
+        slug = data.get('slug', '')
+        archive_url = data.get('archive_url', '')
+        skill_name = data.get('name', '')
+
+        if not archive_url:
+            self.send_error_json('Missing archive_url parameter', 400)
+            return
+
+        # 从 slug 提取技能名
+        if not skill_name:
+            skill_name = slug.split('/')[-1] if '/' in slug else slug
+        skill_name = re.sub(r'[^\w\-.]', '_', skill_name)
+
+        if not skill_name:
+            self.send_error_json('Cannot determine skill name', 400)
+            return
+
+        target = self.clawd_path / 'skills' / skill_name
+
+        if target.exists():
+            self.send_error_json(f'Skill already exists: {skill_name}. Use /skills/uninstall first.', 409)
+            return
+
+        try:
+            import tempfile
+            import tarfile
+            import io
+
+            # 确保 skills/ 目录存在
+            (self.clawd_path / 'skills').mkdir(parents=True, exist_ok=True)
+
+            # 下载归档
+            req = _urllib_req.Request(archive_url, headers={'User-Agent': 'DD-OS/3.0'})
+            with _urllib_req.urlopen(req, timeout=60) as resp:
+                archive_data = resp.read()
+
+            # 解压 tar.gz
+            with tarfile.open(fileobj=io.BytesIO(archive_data), mode='r:gz') as tar:
+                # 安全检查: 确保没有路径遍历
+                for member in tar.getmembers():
+                    if member.name.startswith('/') or '..' in member.name:
+                        raise RuntimeError(f'Unsafe path in archive: {member.name}')
+
+                # 创建目标目录
+                target.mkdir(parents=True, exist_ok=True)
+
+                # 解压时去掉顶层目录 (如果存在)
+                members = tar.getmembers()
+                top_dirs = set()
+                for m in members:
+                    parts = m.name.split('/')
+                    if parts[0]:
+                        top_dirs.add(parts[0])
+
+                strip_prefix = ''
+                if len(top_dirs) == 1:
+                    strip_prefix = top_dirs.pop() + '/'
+
+                for member in members:
+                    if strip_prefix and member.name.startswith(strip_prefix):
+                        member.name = member.name[len(strip_prefix):]
+                    if not member.name or member.name == '.':
+                        continue
+                    tar.extract(member, target)
+
+            # 验证
+            has_skill_md = (target / 'SKILL.md').exists()
+            has_manifest = (target / 'manifest.json').exists()
+            if not has_skill_md:
+                if has_manifest:
+                    print(f"[SkillInstall] ⚠️ DEPRECATED: {target.name} only has manifest.json, please add SKILL.md")
+                else:
+                    shutil.rmtree(target, ignore_errors=True)
+                    self.send_error_json('Invalid skill: no SKILL.md found', 400)
+                    return
+
+            # 重新扫描注册
+            self.registry.plugin_tools.clear()
+            self.registry.instruction_tools.clear()
+            self.registry.scan_plugins()
+
+            self.send_json({
+                'status': 'ok',
+                'name': skill_name,
+                'slug': slug,
+                'path': str(target),
+                'message': f'Skill installed from ClawHub: {skill_name}',
+                'toolCount': len(self.registry.list_all()),
+            })
+
+        except Exception as e:
+            if target.exists():
+                shutil.rmtree(target, ignore_errors=True)
+            self.send_error_json(f'ClawHub install failed: {str(e)}', 500)
+
+    def handle_clawhub_publish(self, data):
+        """POST /clawhub/publish - 打包本地技能供发布到 ClawHub"""
+        skill_name = data.get('skill_name', '')
+
+        if not skill_name:
+            self.send_error_json('Missing skill_name parameter', 400)
+            return
+
+        if '..' in skill_name or '/' in skill_name or '\\' in skill_name:
+            self.send_error_json('Invalid skill name', 400)
+            return
+
+        # 搜索技能目录
+        skill_dir = None
+        for skills_parent in [self.clawd_path / 'skills', (self.project_path or APP_DIR) / 'skills']:
+            candidate = skills_parent / skill_name
+            if candidate.exists() and candidate.is_dir():
+                skill_dir = candidate
+                break
+
+        if not skill_dir:
+            self.send_error_json(f'Skill not found: {skill_name}', 404)
+            return
+
+        try:
+            import tarfile
+            import io
+            import base64
+
+            # 读取 frontmatter 元数据
+            skill_md = skill_dir / 'SKILL.md'
+            frontmatter = parse_skill_frontmatter(skill_md) if skill_md.exists() else {}
+
+            # 打包为 tar.gz (排除 __pycache__, node_modules, .git)
+            buffer = io.BytesIO()
+            exclude_patterns = {'__pycache__', 'node_modules', '.git', '.env', '.DS_Store'}
+
+            with tarfile.open(fileobj=buffer, mode='w:gz') as tar:
+                for item in skill_dir.rglob('*'):
+                    # 排除不需要的文件/目录
+                    parts = item.relative_to(skill_dir).parts
+                    if any(p in exclude_patterns for p in parts):
+                        continue
+                    if item.is_file():
+                        arcname = str(item.relative_to(skill_dir))
+                        tar.add(str(item), arcname=arcname)
+
+            archive_b64 = base64.b64encode(buffer.getvalue()).decode('ascii')
+
+            # 收集文件列表
+            file_list = []
+            for item in skill_dir.rglob('*'):
+                parts = item.relative_to(skill_dir).parts
+                if any(p in exclude_patterns for p in parts):
+                    continue
+                if item.is_file():
+                    file_list.append(str(item.relative_to(skill_dir)))
+
+            self.send_json({
+                'status': 'ok',
+                'name': frontmatter.get('name', skill_name),
+                'description': frontmatter.get('description', ''),
+                'version': frontmatter.get('version', '1.0.0'),
+                'tags': frontmatter.get('tags', []),
+                'archive_base64': archive_b64,
+                'file_list': file_list,
+                'archive_size': len(buffer.getvalue()),
+            })
+
+        except Exception as e:
+            self.send_error_json(f'Publish packaging failed: {str(e)}', 500)
+
+    def handle_skill_raw(self, skill_name: str):
+        """GET /skills/<name>/raw - 获取技能原始文件列表和内容"""
+        if '..' in skill_name or '/' in skill_name or '\\' in skill_name:
+            self.send_error_json('Invalid skill name', 400)
+            return
+
+        skill_dir = None
+        for skills_parent in [self.clawd_path / 'skills', (self.project_path or APP_DIR) / 'skills']:
+            candidate = skills_parent / skill_name
+            if candidate.exists() and candidate.is_dir():
+                skill_dir = candidate
+                break
+
+        if not skill_dir:
+            self.send_error_json(f'Skill not found: {skill_name}', 404)
+            return
+
+        try:
+            exclude_patterns = {'__pycache__', 'node_modules', '.git', '.env'}
+            files = []
+            for item in skill_dir.rglob('*'):
+                parts = item.relative_to(skill_dir).parts
+                if any(p in exclude_patterns for p in parts):
+                    continue
+                if item.is_file():
+                    rel_path = str(item.relative_to(skill_dir))
+                    try:
+                        content = item.read_text(encoding='utf-8')
+                    except Exception:
+                        content = f'[binary file, {item.stat().st_size} bytes]'
+                    files.append({
+                        'path': rel_path,
+                        'size': item.stat().st_size,
+                        'content': content[:10000],  # 限制内容大小
+                    })
+
+            self.send_json({
+                'name': skill_name,
+                'path': str(skill_dir),
+                'files': files,
+            })
+
+        except Exception as e:
+            self.send_error_json(f'Failed to read skill: {str(e)}', 500)
         """POST /api/traces/save - 保存执行追踪 (P2: 执行流记忆)"""
         if not data:
             self.send_error_json('Missing trace data', 400)
@@ -3877,6 +4380,105 @@ curl -X POST http://localhost:3001/api/tools/execute \\
         except Exception as e:
             self.send_error_json(f'Failed to collect results: {e}', 500)
     
+    def handle_llm_proxy(self, data: dict):
+        """代理转发 LLM API 请求（解决 CORS 问题）
+        
+        前端请求: POST /api/llm/proxy
+        Body: { "url": "https://api.moonshot.cn/v1/chat/completions", "apiKey": "sk-...", "body": {...}, "stream": true }
+        
+        对于 stream=true，使用分块传输将 SSE 事件流式转发给前端。
+        """
+        target_url = data.get('url')
+        api_key = data.get('apiKey')
+        request_body = data.get('body')
+        is_stream = data.get('stream', False)
+        
+        if not target_url or not api_key or not request_body:
+            self.send_error_json('Missing url, apiKey, or body', 400)
+            return
+        
+        try:
+            import requests as req_lib
+            import urllib3
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        except ImportError as e:
+            self.send_error_json(f'LLM proxy requires "requests" package: pip install requests', 500)
+            return
+        
+        print(f'[LLM Proxy] -> {target_url} (stream={is_stream})', file=sys.stderr)
+        
+        # 创建独立 Session，禁止读取系统代理 (Windows 注册表可能配有本地代理如 Clash/V2Ray)
+        session = req_lib.Session()
+        session.trust_env = False
+        
+        try:
+            resp = session.post(
+                target_url,
+                json=request_body,
+                headers={
+                    'Content-Type': 'application/json',
+                    'Authorization': f'Bearer {api_key}',
+                },
+                stream=is_stream,
+                timeout=(10, 300),  # connect 10s, read 300s (长任务可能很久)
+                verify=False,
+            )
+            
+            if is_stream:
+                # 流式转发: 使用 chunked transfer encoding
+                self.send_response(resp.status_code)
+                self.send_header('Content-Type', 'text/event-stream; charset=utf-8')
+                self.send_header('Cache-Control', 'no-cache')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+                self.send_header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+                self.send_header('Transfer-Encoding', 'chunked')
+                self.end_headers()
+                
+                try:
+                    for chunk in resp.iter_content(chunk_size=None):
+                        if chunk:
+                            # HTTP chunked encoding: size\r\ndata\r\n
+                            chunk_data = chunk
+                            self.wfile.write(f'{len(chunk_data):x}\r\n'.encode())
+                            self.wfile.write(chunk_data)
+                            self.wfile.write(b'\r\n')
+                            self.wfile.flush()
+                    # 终止 chunk
+                    self.wfile.write(b'0\r\n\r\n')
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    pass  # 客户端断开
+                finally:
+                    resp.close()
+            else:
+                # 非流式: 直接转发响应
+                if resp.ok:
+                    try:
+                        self.send_json(resp.json())
+                    except Exception:
+                        self.send_response(resp.status_code)
+                        self.send_header('Content-Type', 'application/json')
+                        self.send_header('Access-Control-Allow-Origin', '*')
+                        self.end_headers()
+                        self.wfile.write(resp.content)
+                else:
+                    error_text = resp.text[:500]
+                    print(f'[LLM Proxy] HTTP error: {resp.status_code} - {error_text}', file=sys.stderr)
+                    self.send_error_json(f'LLM API error ({resp.status_code}): {error_text}', resp.status_code)
+        
+        except req_lib.exceptions.ConnectTimeout:
+            self.send_error_json('LLM API connect timeout', 504)
+        except req_lib.exceptions.ReadTimeout:
+            self.send_error_json('LLM API read timeout', 504)
+        except req_lib.exceptions.ConnectionError as e:
+            self.send_error_json(f'Failed to connect to LLM API: {str(e)[:200]}', 502)
+        except Exception as e:
+            print(f'[LLM Proxy] Error: {type(e).__name__}: {e}', file=sys.stderr)
+            self.send_error_json(f'LLM proxy error: {type(e).__name__}: {str(e)[:200]}', 500)
+        finally:
+            session.close()
+
     def handle_evomap_proxy(self, path: str, data: dict):
         """代理转发 EvoMap API 请求（解决 CORS 问题）
         
@@ -3900,7 +4502,9 @@ curl -X POST http://localhost:3001/api/tools/execute \\
         
         try:
             # evomap.ai 响应较慢 (实测需要 30+ 秒)，使用较长超时
-            response = requests.post(
+            session = requests.Session()
+            session.trust_env = False  # 绕过系统代理
+            response = session.post(
                 target_url,
                 json=data if data else {},
                 headers={
@@ -3936,6 +4540,8 @@ curl -X POST http://localhost:3001/api/tools/execute \\
         except Exception as e:
             print(f'[EvoMap Proxy] Error: {type(e).__name__}: {e}', file=sys.stderr)
             self.send_error_json(f'EvoMap proxy error: {type(e).__name__}: {str(e)[:200]}', 500)
+        finally:
+            session.close()
     
     def handle_task_status(self, task_id, offset=0):
         with self.tasks_lock:
@@ -4239,8 +4845,8 @@ You are DD-OS, a local AI operating system running directly on the user's comput
     cleanup_old_traces(clawd_path)
     cleanup_temp_uploads(clawd_path)
 
-    # 项目目录 (脚本所在目录)
-    project_path = Path(__file__).parent.resolve()
+    # 项目目录 (脚本所在目录 / exe 所在目录)
+    project_path = APP_DIR
     
     ClawdDataHandler.clawd_path = clawd_path
     ClawdDataHandler.project_path = project_path

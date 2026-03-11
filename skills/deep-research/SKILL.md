@@ -1,11 +1,15 @@
---- 
-name: deep-research 
-description: Async deep research via Gemini Interactions API (no Gemini CLI dependency). RAG-ground queries on local files (--context), preview costs (--dry-run), structured JSON output, adaptive polling. Universal skill for 30+ AI agents including Claude Code, Amp, Codex, and Gemini CLI. 
-license: MIT 
-metadata: 
-  version: "1.3.0" 
-  author: "24601" 
---- 
+---
+name: deep-research
+description: "Async deep research via Gemini Interactions API (no Gemini CLI dependency). RAG-ground queries on local files (--context), preview costs (--dry-run), structured JSON output, adaptive polling. Universal skill for 30+ AI agents including Claude Code, Amp, Codex, and Gemini CLI."
+version: "1.0.0"
+author: "DD-OS"
+license: MIT
+metadata:
+  openclaw:
+    emoji: "🔬"
+    primaryEnv: "shell"
+---
+
 # Deep Research Skill 
 Perform deep research powered by Google Gemini's deep research agent. Upload documents to file search stores for RAG-grounded answers. Manage research sessions with persistent workspace state. 
 

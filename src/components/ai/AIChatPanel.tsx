@@ -51,6 +51,8 @@ export function AIChatPanel() {
   const activeConversationId = useStore((s) => s.activeConversationId)
   const getCurrentMessages = useStore((s) => s.getCurrentMessages)
   const chatMessages = useMemo(() => getCurrentMessages(), [conversations, activeConversationId, getCurrentMessages])
+  const activeConv = activeConversationId ? conversations.get(activeConversationId) : null
+  const isMessagesLoading = activeConv ? activeConv.messagesLoaded === false : false
   const chatStreaming = useStore((s) => s.chatStreaming)
   const chatStreamContent = useStore((s) => s.chatStreamContent)
   const chatError = useStore((s) => s.chatError)
@@ -316,6 +318,18 @@ export function AIChatPanel() {
                 }
               } catch { /* 刷新失败不影响 */ }
             }
+            // 将 suggestedSkills 映射为实际安装的技能名称
+            const nameMap = new Map<string, string>()
+            for (const r of results) {
+              if (r.installedName && (r.status === 'installed' || r.status === 'already')) {
+                nameMap.set(r.skillName, r.installedName)
+              }
+            }
+            if (nameMap.size > 0) {
+              analysisResult.suggestedSkills = analysisResult.suggestedSkills.map(
+                s => nameMap.get(s) || s
+              )
+            }
             if (notFound.length > 0) {
               installSummary += `，${notFound.length} 个未找到`
             }
@@ -569,6 +583,13 @@ export function AIChatPanel() {
                     <p className="text-lg font-mono text-skin-text-tertiary mb-2">{t('chat.not_configured')}</p>
                     <p className="text-base font-mono text-skin-text-tertiary/60">
                       {t('chat.configure_prompt')}
+                    </p>
+                  </div>
+                ) : isMessagesLoading ? (
+                  <div className="flex flex-col items-center justify-center h-full text-center">
+                    <Loader2 className="w-10 h-10 text-skin-text-tertiary/40 mb-4 animate-spin" />
+                    <p className="text-sm font-mono text-skin-text-tertiary/60">
+                      加载对话记录...
                     </p>
                   </div>
                 ) : chatMessages.length === 0 && !chatStreaming ? (

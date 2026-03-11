@@ -1,26 +1,22 @@
 ---
 name: openai-image-gen
-description: Batch-generate images via OpenAI Images API. Random prompt sampler + `index.html` gallery.
+description: "Batch-generate images via OpenAI Images API. Random prompt sampler + `index.html` gallery."
+version: "1.0.0"
+author: "DD-OS"
 homepage: https://platform.openai.com/docs/api-reference/images
 metadata:
-  {
-    "openclaw":
-      {
-        "emoji": "🖼️",
-        "requires": { "bins": ["python3"], "env": ["OPENAI_API_KEY"] },
-        "primaryEnv": "OPENAI_API_KEY",
-        "install":
-          [
-            {
-              "id": "python-brew",
-              "kind": "brew",
-              "formula": "python",
-              "bins": ["python3"],
-              "label": "Install Python (brew)",
-            },
-          ],
-      },
-  }
+  openclaw:
+    emoji: "🖼️"
+    primaryEnv: "OPENAI_API_KEY"
+    requires:
+      bins: ["python3"]
+      env: ["OPENAI_API_KEY"]
+    install:
+      - id: "python-brew"
+        kind: "brew"
+        formula: "python"
+        bins: ["python3"]
+        label: "Install Python (brew)"
 ---
 
 # OpenAI Image Gen

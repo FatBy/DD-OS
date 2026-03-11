@@ -1,25 +1,21 @@
 ---
 name: obsidian
-description: Work with Obsidian vaults (plain Markdown notes) and automate via obsidian-cli.
+description: "Work with Obsidian vaults (plain Markdown notes) and automate via obsidian-cli."
+version: "1.0.0"
+author: "DD-OS"
 homepage: https://help.obsidian.md
 metadata:
-  {
-    "openclaw":
-      {
-        "emoji": "💎",
-        "requires": { "bins": ["obsidian-cli"] },
-        "install":
-          [
-            {
-              "id": "brew",
-              "kind": "brew",
-              "formula": "yakitrak/yakitrak/obsidian-cli",
-              "bins": ["obsidian-cli"],
-              "label": "Install obsidian-cli (brew)",
-            },
-          ],
-      },
-  }
+  openclaw:
+    emoji: "💎"
+    primaryEnv: "shell"
+    requires:
+      bins: ["obsidian-cli"]
+    install:
+      - id: "brew"
+        kind: "brew"
+        formula: "yakitrak/yakitrak/obsidian-cli"
+        bins: ["obsidian-cli"]
+        label: "Install obsidian-cli (brew)"
 ---
 
 # Obsidian

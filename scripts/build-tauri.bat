@@ -48,7 +48,7 @@ if not exist "src-tauri\binaries" mkdir "src-tauri\binaries"
 
 :: 根据架构确定目标文件名
 set TARGET=x86_64-pc-windows-msvc
-copy /Y "dist\ddos-server\ddos-server.exe" "src-tauri\binaries\ddos-server-%TARGET%.exe"
+copy /Y "dist\ddos-server.exe" "src-tauri\binaries\ddos-server-%TARGET%.exe"
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] Failed to copy sidecar binary!
     exit /b 1

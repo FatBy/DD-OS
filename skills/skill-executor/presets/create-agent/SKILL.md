@@ -1,26 +1,30 @@
 ---
 name: create-agent
-description: Create a new specialized AI agent with custom prompts and tools
-version: 1.0.0
-author: DD-OS Team
-tags: [agent, automation, create]
+description: "Create a new specialized AI agent with custom prompts and tools"
+version: "1.0.0"
+author: "DD-OS Team"
+metadata:
+  openclaw:
+    emoji: "🔧"
+    primaryEnv: "shell"
+tags: ["agent", "automation", "create"]
 inputs:
   agent_name:
-    type: string
+    type: "string"
     required: true
-    description: Name of the new agent
+    description: "Name of the new agent"
   purpose:
-    type: string
+    type: "string"
     required: true
-    description: Purpose/description of the agent
+    description: "Purpose/description of the agent"
   tools:
-    type: array
+    type: "array"
     required: false
-    description: List of tools the agent should have access to
+    description: "List of tools the agent should have access to"
   system_prompt:
-    type: string
+    type: "string"
     required: false
-    description: Custom system prompt for the agent
+    description: "Custom system prompt for the agent"
 ---
 
 # Create Agent

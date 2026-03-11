@@ -442,9 +442,12 @@ function ExecutionCard({ execution, content }: { execution: ExecutionStatus; con
         <span className={cn('text-sm font-mono font-medium', `text-${config.color}-400`)}>
           {config.label}
         </span>
-        <span className="text-xs font-mono text-white/40 ml-1 truncate flex-1">
-          {content && content.slice(0, 60)}{content && content.length > 60 ? '...' : ''}
-        </span>
+        {/* 仅当 content 与 output 不同时才在状态栏显示 content 摘要，避免重复 */}
+        {content && content !== execution.output && (
+          <span className="text-xs font-mono text-white/40 ml-1 truncate flex-1">
+            {content.slice(0, 60)}{content.length > 60 ? '...' : ''}
+          </span>
+        )}
         {logLines.length > 0 && (
           <button
             onClick={handleCopyOutput}
@@ -625,19 +628,7 @@ export function ChatMessage({ message, containerWidth = 'main' }: ChatMessagePro
         </div>
       )}
 
-      {/* 纯文本气泡 (有执行但也有文本内容时) */}
-      {hasExecution && !(message.execution?.status === 'suggestion') && message.content && (
-        <div className="flex gap-2">
-          <div className="w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 bg-amber-500/20">
-            <Bot className="w-3.5 h-3.5 text-amber-400" />
-          </div>
-          <div className="max-w-[80%] px-3 py-2 rounded-lg text-sm leading-relaxed bg-white/5 border border-white/10 text-white/70">
-            <MarkdownRenderer content={message.content} />
-          </div>
-        </div>
-      )}
-
-      {/* 执行卡片 - 全宽独立展示 */}
+      {/* 执行卡片 - 全宽独立展示（不再额外渲染文本气泡，避免 content 重复显示） */}
       {hasExecution && (
         <ExecutionCard execution={message.execution!} content={message.content} />
       )}

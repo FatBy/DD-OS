@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "DD-OS",
   "version": "1.0.0",
-  "identifier": "com.ddos.app",
+  "identifier": "com.ddos.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:5173",
@@ -23,7 +23,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' http://localhost:3001 http://127.0.0.1:3001 ws://localhost:3001 ws://127.0.0.1:3001; img-src 'self' data: blob:"
+      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' http: https: ws: wss:; img-src 'self' data: blob: https:"
     }
   },
   "bundle": {
@@ -38,18 +38,19 @@
     "externalBin": [
       "binaries/ddos-server"
     ],
+    "resources": {
+      "resources/openclaw-extension/index.ts": "openclaw-extension/index.ts",
+      "resources/openclaw-extension/openclaw.plugin.json": "openclaw-extension/openclaw.plugin.json",
+      "resources/openclaw-extension/package.json": "openclaw-extension/package.json",
+      "resources/openclaw-extension/tsconfig.json": "openclaw-extension/tsconfig.json",
+      "resources/openclaw-extension/src/nexus-manager.ts": "openclaw-extension/src/nexus-manager.ts",
+      "resources/openclaw-extension/src/system-brief.ts": "openclaw-extension/src/system-brief.ts",
+      "resources/openclaw-extension/src/gene-pool.ts": "openclaw-extension/src/gene-pool.ts",
+      "resources/openclaw-extension/src/signal-matcher.ts": "openclaw-extension/src/signal-matcher.ts"
+    },
     "windows": {
       "wix": {
         "language": ["zh-CN", "en-US"]
-      }
-    },
-    "ios": {
-      "developmentTeam": "$DEVELOPMENT_TEAM",
-      "provisioningProfile": "$PROVISIONING_PROFILE",
-      "entitlements": {
-        "com.apple.security.app-sandbox": true,
-        "com.apple.security.network.client": true,
-        "com.apple.security.files.user-selected.read-write": true
       }
     }
   }

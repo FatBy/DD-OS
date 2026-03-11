@@ -1,6 +1,12 @@
 ---
 name: wps-ppt-automation
-description: Automate common PowerPoint/WPS Presentation operations on Windows via COM (read text/notes/outline, export PDF/images, replace text, insert/delete slides, unify font/size/theme, extract images/media). Use for single-presentation actions (no batch).
+description: "Automate common PowerPoint/WPS Presentation operations on Windows via COM (read text/notes/outline, export PDF/images, replace text, insert/delete slides, unify font/size/theme, extract images/media). Use for single-presentation actions (no batch)."
+version: "1.0.0"
+author: "DD-OS"
+metadata:
+  openclaw:
+    emoji: "🔧"
+    primaryEnv: "shell"
 ---
 
 # WPS/PowerPoint Automation (Windows)

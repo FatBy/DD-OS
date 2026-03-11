@@ -3,11 +3,13 @@ import { motion, AnimatePresence } from 'framer-motion'
 import {
   Brain, ChevronRight, ChevronUp,
   TrendingUp, TrendingDown, Minus, Award, Search, ChevronDown,
-  BarChart3, Star
+  BarChart3, Star, Upload
 } from 'lucide-react'
 import { cn } from '@/utils/cn'
 import { skillStatsService, ABILITY_DOMAIN_CONFIGS } from '@/services/skillStatsService'
 import type { SkillNode, AbilitySnapshot, DomainStats, AbilityDomain, OpenClawSkill } from '@/types'
+import { useState as usePublishState } from 'react'
+import { SkillPublishDialog } from './SkillPublishDialog'
 
 // ============================================
 // 雷达图组件 (SVG)
@@ -385,6 +387,7 @@ export function SkillDetailPanel({ snapshot, skills, isExpanded, onToggle, stats
   const [viewMode, setViewMode] = useState<'dashboard' | 'list'>('dashboard')
   const [searchQuery, setSearchQuery] = useState('')
   const [expandedDomains, setExpandedDomains] = useState<Set<string>>(new Set())
+  const [publishSkillName, setPublishSkillName] = usePublishState<string | null>(null)
 
   const maxDomainScore = Math.max(...snapshot.domains.map(d => d.abilityScore), 1)
 
@@ -449,6 +452,19 @@ export function SkillDetailPanel({ snapshot, skills, isExpanded, onToggle, stats
               <div className="flex items-center gap-3 mb-4">
                 <Brain className="w-5 h-5 text-cyan-400" />
                 <h3 className="font-mono text-sm text-cyan-300 tracking-wider">Agent Abilities</h3>
+
+                {/* 发布按钮 */}
+                <button
+                  onClick={() => {
+                    // 选择第一个本地技能作为发布候选
+                    const localSkill = skills.find(s => s.id)
+                    if (localSkill) setPublishSkillName(localSkill.id || localSkill.name)
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-1 text-xs font-medium bg-purple-500/10 text-purple-400 rounded-md hover:bg-purple-500/20 transition-colors"
+                >
+                  <Upload className="w-3 h-3" />
+                  发布到 ClawHub
+                </button>
 
                 {/* 视图切换 */}
                 <div className="ml-auto flex items-center gap-1 bg-white/5 rounded-lg p-0.5">
@@ -573,6 +589,14 @@ export function SkillDetailPanel({ snapshot, skills, isExpanded, onToggle, stats
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* 发布对话框 */}
+      {publishSkillName && (
+        <SkillPublishDialog
+          skillName={publishSkillName}
+          onClose={() => setPublishSkillName(null)}
+        />
+      )}
     </div>
   )
 }

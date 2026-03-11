@@ -1,25 +1,21 @@
 ---
 name: openai-whisper
-description: Local speech-to-text with the Whisper CLI (no API key).
+description: "Local speech-to-text with the Whisper CLI (no API key)."
+version: "1.0.0"
+author: "DD-OS"
 homepage: https://openai.com/research/whisper
 metadata:
-  {
-    "openclaw":
-      {
-        "emoji": "🎙️",
-        "requires": { "bins": ["whisper"] },
-        "install":
-          [
-            {
-              "id": "brew",
-              "kind": "brew",
-              "formula": "openai-whisper",
-              "bins": ["whisper"],
-              "label": "Install OpenAI Whisper (brew)",
-            },
-          ],
-      },
-  }
+  openclaw:
+    emoji: "🎙️"
+    primaryEnv: "shell"
+    requires:
+      bins: ["whisper"]
+    install:
+      - id: "brew"
+        kind: "brew"
+        formula: "openai-whisper"
+        bins: ["whisper"]
+        label: "Install OpenAI Whisper (brew)"
 ---
 
 # Whisper (CLI)

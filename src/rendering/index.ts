@@ -27,6 +27,18 @@ import { IsometricBackground } from './isometric/IsometricBackground'
 import { IsometricGrid } from './isometric/IsometricGrid'
 import { IsometricBuildingRenderer } from './isometric/IsometricBuildingRenderer'
 
+// Smallville 像素 RPG 村庄主题
+import { SmallvilleViewManager, SmallvilleBackground, SmallvilleGrid, SmallvilleBuildingRenderer, SmallvilleNPCRenderer } from './smallville'
+import { SmallvilleRoomRenderer } from './smallville/SmallvilleRoomRenderer'
+import { SmallvilleAgentRenderer } from './smallville/SmallvilleAgentRenderer'
+import { SmallvilleSpriteAtlas } from './smallville/SmallvilleSpriteAtlas'
+
+// 像素小镇主题 (Canvas 手绘风格)
+import { PixelTownBackground } from './pixeltown/PixelTownBackground'
+import { PixelTownGrid } from './pixeltown/PixelTownGrid'
+import { PixelTownBuildingRenderer } from './pixeltown/PixelTownBuildingRenderer'
+import { PixelTownDecoRenderer } from './pixeltown/PixelTownDecoRenderer'
+
 /**
  * 创建 Cosmos 主题渲染器集合
  */
@@ -85,6 +97,41 @@ export function createMinimalistRenderers(): RendererSet {
   }
 }
 
+/**
+ * 创建 Smallville 主题渲染器集合
+ * 像素 RPG 村庄 (Kenney RPG Urban Pack 瓦片)
+ */
+export function createSmallvilleRenderers(): RendererSet {
+  const atlas = new SmallvilleSpriteAtlas()
+  const viewManager = new SmallvilleViewManager()
+  const grid = new SmallvilleGrid(viewManager, atlas)
+  const npcRenderer = new SmallvilleNPCRenderer(viewManager, atlas)
+  const roomRenderer = new SmallvilleRoomRenderer(viewManager, atlas)
+  const agentRenderer = new SmallvilleAgentRenderer(viewManager, atlas)
+  return {
+    background: new SmallvilleBackground(viewManager, atlas),
+    grid,
+    entities: [new SmallvilleBuildingRenderer(viewManager, atlas)],
+    particles: [npcRenderer, roomRenderer, agentRenderer],
+    ripple: new CosmosRippleRenderer(),
+  }
+}
+
+/**
+ * 创建 PixelTown 主题渲染器集合
+ * Canvas 手绘像素小镇 - 基于 Minimalist 设计语言
+ */
+export function createPixelTownRenderers(): RendererSet {
+  return {
+    background: new PixelTownBackground(),
+    grid: new PixelTownGrid(),
+    decorations: new PixelTownDecoRenderer(),
+    entities: [new PixelTownBuildingRenderer()],
+    particles: [],
+    ripple: new CosmosRippleRenderer(),
+  }
+}
+
 // 导出所有类型
 export * from './types'
 
@@ -113,3 +160,9 @@ export * from './topdown'
 
 // 等轴测城市渲染器
 export * from './isometric'
+
+// Smallville 像素 RPG 村庄渲染器
+export * from './smallville'
+
+// 像素小镇渲染器 (Canvas 手绘)
+export * from './pixeltown'

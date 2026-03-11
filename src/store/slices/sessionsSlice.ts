@@ -120,6 +120,7 @@ export interface SessionsSlice {
   updateActiveExecution: (id: string, updates: Partial<TaskItem>) => void
   removeActiveExecution: (id: string) => void
   appendExecutionStep: (taskId: string, step: ExecutionStep) => void
+  updateExecutionStep: (taskId: string, stepId: string, updates: Partial<ExecutionStep>) => void
   clearTaskHistory: () => void
   
   // 中断任务处理
@@ -232,6 +233,21 @@ export const createSessionsSlice: StateCreator<SessionsSlice> = (set, get) => ({
     return { activeExecutions: newExecutions }
   }),
   
+  // 更新指定任务中的指定执行步骤（用于累积 assistant delta 到单个 thinking step）
+  updateExecutionStep: (taskId, stepId, updates) => set((state) => {
+    const newExecutions = state.activeExecutions.map(t => {
+      if (t.id !== taskId) return t
+      const steps = t.executionSteps || []
+      return {
+        ...t,
+        executionSteps: steps.map(s =>
+          s.id === stepId ? { ...s, ...updates } : s
+        ),
+      }
+    })
+    return { activeExecutions: newExecutions }
+  }),
+
   clearTaskHistory: () => {
     localStorage.removeItem(STORAGE_KEYS.TASK_HISTORY)
     localStorage.removeItem(STORAGE_KEYS.SILENT_ANALYSIS)

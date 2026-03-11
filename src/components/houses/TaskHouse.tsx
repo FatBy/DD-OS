@@ -1,13 +1,14 @@
 import { useState } from 'react'
-import { Loader2, Zap, Clock, CheckCircle2, AlertTriangle, BarChart3 } from 'lucide-react'
+import { Loader2, Zap, Clock, CheckCircle2, AlertTriangle, BarChart3, Activity } from 'lucide-react'
 import { useStore } from '@/store'
 import { cn } from '@/utils/cn'
 import { SilentAnalysisView } from './task/SilentAnalysisView'
 import { ExecutionFocusView } from './task/ExecutionFocusView'
 import { HistoryDrawer } from './task/HistoryDrawer'
 import { MonitorPanel } from './task/MonitorPanel'
+import { AgentRunStatePanel } from './task/AgentRunStatePanel'
 
-type TabType = 'executing' | 'history' | 'interrupted' | 'monitor'
+type TabType = 'executing' | 'live' | 'history' | 'interrupted' | 'monitor'
 
 interface TabConfig {
   id: TabType
@@ -18,6 +19,7 @@ interface TabConfig {
 
 const TABS: TabConfig[] = [
   { id: 'executing', label: '执行中', icon: Zap, color: 'cyan' },
+  { id: 'live', label: '实时', icon: Activity, color: 'purple' },
   { id: 'history', label: '历史', icon: CheckCircle2, color: 'emerald' },
   { id: 'interrupted', label: '已中断', icon: AlertTriangle, color: 'amber' },
   { id: 'monitor', label: '监控', icon: BarChart3, color: 'violet' },
@@ -42,6 +44,7 @@ export function TaskHouse() {
   // Tab 计数
   const tabCounts: Record<TabType, number> = {
     executing: executingTasks.length,
+    live: 0, // 实时 Tab 不显示计数
     history: historyTasks.length,
     interrupted: interruptedTasks.length,
     monitor: 0, // 监控 Tab 不显示计数
@@ -127,6 +130,10 @@ export function TaskHouse() {
               <SilentAnalysisView />
             )}
           </>
+        )}
+
+        {currentTab === 'live' && (
+          <AgentRunStatePanel />
         )}
 
         {currentTab === 'history' && (

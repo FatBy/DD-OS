@@ -1,25 +1,21 @@
 ---
 name: sonoscli
-description: Control Sonos speakers (discover/status/play/volume/group).
+description: "Control Sonos speakers (discover/status/play/volume/group)."
+version: "1.0.0"
+author: "DD-OS"
 homepage: https://sonoscli.sh
 metadata:
-  {
-    "openclaw":
-      {
-        "emoji": "🔊",
-        "requires": { "bins": ["sonos"] },
-        "install":
-          [
-            {
-              "id": "go",
-              "kind": "go",
-              "module": "github.com/steipete/sonoscli/cmd/sonos@latest",
-              "bins": ["sonos"],
-              "label": "Install sonoscli (go)",
-            },
-          ],
-      },
-  }
+  openclaw:
+    emoji: "🔊"
+    primaryEnv: "shell"
+    requires:
+      bins: ["sonos"]
+    install:
+      - id: "go"
+        kind: "go"
+        module: "github.com/steipete/sonoscli/cmd/sonos@latest"
+        bins: ["sonos"]
+        label: "Install sonoscli (go)"
 ---
 
 # Sonos CLI

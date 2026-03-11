@@ -5,15 +5,18 @@ import {
   ChevronDown, ChevronRight, Puzzle, Cpu,
   BookOpen, Zap, CheckCircle2, XCircle, Timer, Target, TrendingUp, AlertCircle,
   Loader2, Pause, SkipForward, Activity, Edit2,
-  GripVertical, Download
+  GripVertical, Download, MessageSquare, Upload, Plus, Search
 } from 'lucide-react'
 import { useStore } from '@/store'
 import { cn } from '@/utils/cn'
 import { useT } from '@/i18n'
 import { searchOnlineSkills } from '@/services/onlineSearchService'
-import { installSkill } from '@/services/installService'
+import { installSkill, triggerHotReload } from '@/services/installService'
 import { nexusRuleEngine, RULE_LABELS, type NexusRule } from '@/services/nexusRuleEngine'
-import type { NexusEntity, NexusExperience } from '@/types'
+import { nexusScoringService } from '@/services/nexusScoringService'
+import type { NexusEntity, NexusExperience, NexusScoring } from '@/types'
+import { getScoreTier, SCORE_TIER_COLORS } from '@/types'
+import { formatTime } from '@/utils/formatTime'
 
 // 建造总时长（与 worldSlice tickConstructionAnimations 中的 3000ms 一致）
 const CONSTRUCTION_DURATION_MS = 3000
@@ -49,13 +52,19 @@ function getDynamicConfig(nexus: NexusEntity | undefined) {
   }
 }
 
-const XP_THRESHOLDS = [0, 20, 100, 500] as const
+// Tier 中文标签
+const TIER_LABELS: Record<string, string> = {
+  Expert: '专家',
+  Capable: '胜任',
+  Learning: '学习中',
+  Weak: '薄弱',
+}
 
-function xpProgress(xp: number, level: number): number {
-  if (level >= XP_THRESHOLDS.length) return 100
-  const currentThreshold = XP_THRESHOLDS[level - 1]
-  const nextThreshold = XP_THRESHOLDS[level] ?? XP_THRESHOLDS[XP_THRESHOLDS.length - 1] * 2
-  return Math.min(100, ((xp - currentThreshold) / (nextThreshold - currentThreshold)) * 100)
+/** 格式化毫秒为人类可读的时长 */
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`
+  return `${(ms / 60000).toFixed(1)}m`
 }
 
 // Planet SVG preview
@@ -129,7 +138,9 @@ export function NexusDetailPanel() {
   // 多会话系统 - 用于点击 Execute 时创建新的 Nexus 会话
   const createNewNexusConversation = useStore((s) => s.createNewNexusConversation)
   const getOrCreateNexusConversation = useStore((s) => s.getOrCreateNexusConversation)
+  const switchConversation = useStore((s) => s.switchConversation)
   const setChatOpen = useStore((s) => s.setChatOpen)
+  const conversations = useStore((s) => s.conversations)
   
   const [showModelConfig, setShowModelConfig] = useState(false)
   const [showSOP, setShowSOP] = useState(true)  // 默认展开 SOP
@@ -140,33 +151,179 @@ export function NexusDetailPanel() {
   const [experiences, setExperiences] = useState<NexusExperience[]>([])
   const [activeRules, setActiveRules] = useState<NexusRule[]>([])
   
+  // V2: 评分系统状态
+  const [scoring, setScoring] = useState<NexusScoring | null>(null)
+  const [showToolDimensions, setShowToolDimensions] = useState(false)
+  const [showRecentRuns, setShowRecentRuns] = useState(false)
+  
   // 名称编辑状态
   const [isEditingName, setIsEditingName] = useState(false)
   const [editNameValue, setEditNameValue] = useState('')
   
   // 技能安装状态
   const [installingSkillId, setInstallingSkillId] = useState<string | null>(null)
+  // 技能浏览器状态
+  const [showSkillPicker, setShowSkillPicker] = useState(false)
+  const [skillSearchQuery, setSkillSearchQuery] = useState('')
+  // 导入文件 ref
+  const importFileRef = useRef<HTMLInputElement>(null)
 
   const constraintsRef = useRef<HTMLDivElement>(null)
   const dragControls = useDragControls()
   
   const nexus = selectedNexusForPanel ? nexuses.get(selectedNexusForPanel) : null
   
-  // Resolve all bound skills (标记未加载为 unavailable)
+  // Resolve all bound skills (标记未加载为 unavailable, 尊重实际状态)
   const boundSkills = useMemo(() => {
     if (!nexus) return []
     const ids = nexus.boundSkillIds || []
     return ids.map(id => {
-      const fromStore = skills.find(s => s.id === id || s.name === id)
-      const fromOC = openClawSkills.find(s => s.name === id)
+      const normalized = id.toLowerCase().trim()
+      const fromStore = skills.find(s => 
+        s.id?.toLowerCase() === normalized || 
+        s.name?.toLowerCase() === normalized ||
+        (s.skillName && s.skillName.toLowerCase() === normalized)
+      )
+      const fromOC = openClawSkills.find(s => 
+        s.name?.toLowerCase() === normalized
+      )
       if (fromStore) return fromStore
-      if (fromOC) return { id: fromOC.name, name: fromOC.name, description: fromOC.description, status: 'active' as const, unlocked: true }
+      if (fromOC) {
+        // 使用 OpenClaw 返回的真实状态而非硬编码 active
+        const realStatus = fromOC.status === 'active' ? 'active' as const
+          : fromOC.status === 'inactive' ? 'inactive' as const
+          : 'error' as const
+        return {
+          id: fromOC.name,
+          name: fromOC.name,
+          description: fromOC.description,
+          status: realStatus,
+          unlocked: realStatus === 'active',
+        }
+      }
       return { id, name: id, description: '', status: 'unavailable' as const, unlocked: false }
     }) as Array<{ id: string; name: string; description?: string; status: string; unlocked?: boolean }>
   }, [nexus, skills, openClawSkills])
 
   // File-based Nexus can execute even without bound skills (it has SOP)
   const canExecute = boundSkills.length > 0 || !!nexus?.sopContent
+
+  // 可用技能列表（排除已绑定的，按搜索词过滤）
+  const availableSkillsForPicker = useMemo(() => {
+    const boundIds = new Set((nexus?.boundSkillIds || []).map(s => s.toLowerCase().trim()))
+    // 合并 skills (本地) 和 openClawSkills (OpenClaw) 去重
+    const allSkills: Array<{ id: string; name: string; description?: string; status?: string }> = []
+    const seen = new Set<string>()
+    for (const s of skills) {
+      const key = (s.name || s.id || '').toLowerCase().trim()
+      if (key && !seen.has(key) && !boundIds.has(key)) {
+        seen.add(key)
+        allSkills.push({ id: s.id || s.name || '', name: s.name || s.id || '', description: s.description, status: s.status as string })
+      }
+    }
+    for (const s of openClawSkills) {
+      const key = (s.name || '').toLowerCase().trim()
+      if (key && !seen.has(key) && !boundIds.has(key)) {
+        seen.add(key)
+        allSkills.push({ id: s.name || '', name: s.name || '', description: s.description, status: s.status })
+      }
+    }
+    if (!skillSearchQuery) return allSkills
+    const q = skillSearchQuery.toLowerCase()
+    return allSkills.filter(s =>
+      s.name.toLowerCase().includes(q) ||
+      (s.description?.toLowerCase().includes(q))
+    )
+  }, [nexus, skills, openClawSkills, skillSearchQuery])
+
+  // 绑定技能到当前 Nexus
+  const handleBindSkill = (skillName: string) => {
+    if (!nexus) return
+    const existing = nexus.boundSkillIds || []
+    if (existing.includes(skillName)) return
+    removeNexus(nexus.id)
+    addNexus({ ...nexus, boundSkillIds: [...existing, skillName] })
+    addToast({ type: 'success', title: `已绑定技能: ${skillName}` })
+  }
+
+  // 导出 Nexus 为 JSON
+  const handleExportNexus = () => {
+    if (!nexus) return
+    const exportData = {
+      exportVersion: 1,
+      id: nexus.id,
+      label: nexus.label,
+      level: nexus.level,
+      xp: nexus.xp,
+      visualDNA: nexus.visualDNA,
+      position: nexus.position,
+      boundSkillIds: nexus.boundSkillIds,
+      flavorText: nexus.flavorText,
+      sopContent: nexus.sopContent,
+      triggers: nexus.triggers,
+      version: nexus.version,
+      objective: nexus.objective,
+      metrics: nexus.metrics,
+      strategy: nexus.strategy,
+      customModel: nexus.customModel,
+      createdAt: nexus.createdAt,
+    }
+    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${(nexus.label || nexus.id).replace(/[^a-zA-Z0-9\u4e00-\u9fff-_]/g, '_')}.nexus.json`
+    a.click()
+    URL.revokeObjectURL(url)
+    addToast({ type: 'success', title: 'Nexus 配置已导出' })
+  }
+
+  // 导入 Nexus JSON
+  const handleImportNexus = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(reader.result as string)
+        if (!data.label && !data.id) {
+          addToast({ type: 'error', title: '无效的 Nexus 配置文件' })
+          return
+        }
+        const newId = `imported-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+        const gridX = Math.floor(Math.random() * 6) - 3
+        const gridY = Math.floor(Math.random() * 6) - 3
+        addNexus({
+          ...data,
+          id: newId,
+          position: { gridX, gridY },
+          constructionProgress: 0,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          source: `imported:${file.name}`,
+        })
+        addToast({ type: 'success', title: `已导入 Nexus: ${data.label || data.id}` })
+      } catch {
+        addToast({ type: 'error', title: '文件解析失败，请检查 JSON 格式' })
+      }
+    }
+    reader.readAsText(file)
+    // 重置 input 以允许重复选择同一文件
+    e.target.value = ''
+  }
+
+  // 当前 Nexus 的历史对话列表
+  const nexusConversations = useMemo(() => {
+    if (!nexus) return []
+    return [...conversations.values()]
+      .filter(c => c.type === 'nexus' && c.nexusId === nexus.id)
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+  }, [conversations, nexus])
+
+  const handleOpenConversation = (convId: string) => {
+    switchConversation(convId)
+    setChatOpen(true)
+  }
 
   // 搜索并安装技能
   const handleSearchAndInstallSkill = async (skillName: string) => {
@@ -184,7 +341,41 @@ export function NexusDetailPanel() {
       const installResult = await installSkill(matched)
       
       if (installResult.success) {
-        addToast({ type: 'success', title: `技能 "${matched.name}" 安装成功，请重新加载` })
+        // 3. 触发后端热重载 + 刷新前端技能列表（带重试）
+        await triggerHotReload().catch(() => {})
+        
+        // 等待后端扫描完成再拉取技能列表
+        let freshSkills: typeof openClawSkills = []
+        for (let attempt = 0; attempt < 3; attempt++) {
+          await new Promise(r => setTimeout(r, 300))
+          try {
+            const serverUrl = localStorage.getItem('ddos_server_url') || 'http://localhost:3001'
+            const res = await fetch(`${serverUrl}/skills`)
+            if (res.ok) {
+              freshSkills = await res.json()
+              // 检查新技能是否已出现在列表中
+              const found = freshSkills.some(s => 
+                s.name?.toLowerCase() === matched.name.toLowerCase()
+              )
+              if (found) break
+            }
+          } catch { /* 重试 */ }
+        }
+        if (freshSkills.length > 0) {
+          useStore.getState().setOpenClawSkills(freshSkills)
+        }
+
+        // 4. 自动绑定到当前 Nexus：用安装后的真实名称替换原 unavailable 条目
+        if (nexus) {
+          const oldIds = nexus.boundSkillIds || []
+          const newIds = oldIds.map(id => id === skillName ? matched.name : id)
+          // 如果安装的技能名与原名不同，确保不重复
+          const deduped = [...new Set(newIds)]
+          removeNexus(nexus.id)
+          addNexus({ ...nexus, boundSkillIds: deduped })
+        }
+
+        addToast({ type: 'success', title: `技能 "${matched.name}" 安装并绑定成功` })
       } else {
         addToast({ type: 'error', title: `安装失败: ${installResult.message}` })
       }
@@ -229,6 +420,25 @@ export function NexusDetailPanel() {
     const rules = nexusRuleEngine.getActiveRulesForNexus(nexus.id)
     setActiveRules(rules)
   }, [nexus?.id, nexusPanelOpen])
+
+  // V2: Load scoring data when panel opens
+  useEffect(() => {
+    if (!nexus?.id || !nexusPanelOpen) {
+      setScoring(null)
+      return
+    }
+    // 先从缓存加载
+    const cached = nexusScoringService.getScoring(nexus.id)
+    if (cached) {
+      setScoring(cached)
+    } else {
+      // 尝试从服务端加载，失败则用 getOrCreate 创建初始值
+      const serverUrl = localStorage.getItem('ddos_server_url') || 'http://localhost:3001'
+      nexusScoringService.loadFromServer(nexus.id, serverUrl).then(loaded => {
+        setScoring(loaded || nexusScoringService.getOrCreate(nexus.id))
+      })
+    }
+  }, [nexus?.id, nexusPanelOpen])
   
   // 面板打开/关闭时处理状态
   useEffect(() => {
@@ -254,7 +464,12 @@ export function NexusDetailPanel() {
   const dynamicBg = { backgroundColor: `hsla(${hue}, 70%, 50%, 0.2)` }
   const dynamicBorder = { borderColor: `hsla(${hue}, 70%, 50%, 0.3)` }
   const dynamicText = { color: dynamicColor }
-  const progress = xpProgress(nexus.xp, nexus.level)
+
+  // V2: 评分制数据
+  const scoreTier = scoring ? getScoreTier(scoring.score) : 'Learning'
+  const tierColor = SCORE_TIER_COLORS[scoreTier]
+  const toolDims = scoring ? Object.values(scoring.dimensions) : []
+  const recentRuns = scoring?.recentRuns || []
   
   // 保存名称修改
   const handleSaveName = async () => {
@@ -415,7 +630,10 @@ export function NexusDetailPanel() {
                     )}
                   </div>
                   <p className="text-xs font-mono text-white/40 mt-0.5">
-                    LV.{nexus.level} {nexus.label || 'Nexus'}
+                    <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold" style={{ color: tierColor, backgroundColor: `${tierColor}20` }}>
+                      {TIER_LABELS[scoreTier] || scoreTier}
+                    </span>
+                    {' '}{nexus.label || 'Nexus'}
                   </p>
                 </div>
               </div>
@@ -506,7 +724,7 @@ export function NexusDetailPanel() {
               {/* === 正常内容（仅在建造完成后显示） === */}
               {nexus.constructionProgress >= 1 && (
                 <>
-              {/* Planet preview + level */}
+              {/* Planet preview + Score (V2) */}
               <div className="flex items-center gap-4">
                 <PlanetPreview 
                   hue={nexus.visualDNA?.primaryHue ?? 180}
@@ -514,25 +732,41 @@ export function NexusDetailPanel() {
                   level={nexus.level}
                 />
                 <div className="flex-1 space-y-2">
+                  {/* 分数 + Tier */}
                   <div className="flex items-center gap-2">
-                    <Star className="w-4 h-4" style={dynamicText} />
-                    <span className="text-xs font-mono text-white/50 uppercase">Level</span>
-                    <span className="text-3xl font-bold font-mono" style={dynamicText}>
-                      {nexus.level}
+                    <TrendingUp className="w-4 h-4" style={{ color: tierColor }} />
+                    <span className="text-xs font-mono text-white/50 uppercase">Score</span>
+                    <span className="text-3xl font-bold font-mono" style={{ color: tierColor }}>
+                      {scoring?.score ?? 50}
+                    </span>
+                    <span
+                      className="text-[11px] font-mono font-semibold px-2 py-0.5 rounded-full border"
+                      style={{ color: tierColor, borderColor: `${tierColor}40`, backgroundColor: `${tierColor}15` }}
+                    >
+                      {TIER_LABELS[scoreTier] || scoreTier}
                     </span>
                   </div>
+                  {/* 分数进度条 */}
                   <div>
                     <div className="flex justify-between text-xs font-mono text-white/40 mb-1">
-                      <span>XP</span>
-                      <span>{nexus.xp}</span>
+                      <span>
+                        {scoring && scoring.streak !== 0 && (
+                          <span style={{ color: scoring.streak > 0 ? '#22c55e' : '#ef4444' }}>
+                            {scoring.streak > 0 ? `+${scoring.streak}` : scoring.streak} streak
+                          </span>
+                        )}
+                      </span>
+                      <span>
+                        {scoring ? `${(scoring.successRate * 100).toFixed(0)}% (${scoring.successCount}/${scoring.totalRuns})` : '—'}
+                      </span>
                     </div>
                     <div className="h-2 bg-white/5 rounded-full overflow-hidden">
                       <motion.div
                         initial={{ width: 0 }}
-                        animate={{ width: `${progress}%` }}
+                        animate={{ width: `${scoring?.score ?? 50}%` }}
                         transition={{ duration: 0.8, ease: 'easeOut' }}
                         className="h-full rounded-full"
-                        style={dynamicBg}
+                        style={{ backgroundColor: tierColor }}
                       />
                     </div>
                   </div>
@@ -586,7 +820,72 @@ export function NexusDetailPanel() {
                   <span className="ml-auto text-xs font-mono text-white/25">
                     {boundSkills.length}
                   </span>
+                  <button
+                    onClick={() => { setShowSkillPicker(!showSkillPicker); setSkillSearchQuery('') }}
+                    className={cn(
+                      "w-6 h-6 rounded flex items-center justify-center transition-colors",
+                      showSkillPicker
+                        ? "bg-white/10 text-white/60"
+                        : "bg-white/5 text-white/30 hover:bg-white/10 hover:text-white/50"
+                    )}
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                  </button>
                 </div>
+                
+                {/* 技能选择器面板 */}
+                <AnimatePresence>
+                  {showSkillPicker && (
+                    <motion.div
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: 'auto', opacity: 1 }}
+                      exit={{ height: 0, opacity: 0 }}
+                      transition={{ duration: 0.2 }}
+                      className="overflow-hidden mb-3"
+                    >
+                      <div className="p-3 rounded-lg bg-white/[0.02] border border-white/[0.08]">
+                        <div className="relative mb-2">
+                          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-white/30" />
+                          <input
+                            type="text"
+                            value={skillSearchQuery}
+                            onChange={(e) => setSkillSearchQuery(e.target.value)}
+                            placeholder="搜索可用技能..."
+                            className="w-full pl-8 pr-3 py-1.5 bg-black/30 border border-white/10 rounded text-xs font-mono text-white/70 placeholder-white/25 focus:border-white/20 focus:outline-none"
+                            autoFocus
+                          />
+                        </div>
+                        <div className="max-h-[200px] overflow-y-auto space-y-1">
+                          {availableSkillsForPicker.length > 0 ? (
+                            availableSkillsForPicker.slice(0, 20).map(skill => (
+                              <button
+                                key={skill.id}
+                                onClick={() => handleBindSkill(skill.name)}
+                                className="w-full text-left p-2 rounded hover:bg-white/[0.05] transition-colors group/skill"
+                              >
+                                <div className="flex items-center gap-2">
+                                  <span className="text-xs font-mono text-white/70 group-hover/skill:text-white/90">{skill.name}</span>
+                                  {skill.status === 'active' && (
+                                    <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400/70 border border-emerald-500/15">
+                                      ACTIVE
+                                    </span>
+                                  )}
+                                </div>
+                                {skill.description && (
+                                  <p className="text-[11px] font-mono text-white/25 mt-0.5 line-clamp-1">{skill.description}</p>
+                                )}
+                              </button>
+                            ))
+                          ) : (
+                            <p className="text-[11px] font-mono text-white/20 py-2 text-center">
+                              {skillSearchQuery ? '无匹配技能' : '所有技能已绑定'}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
                 
                 {boundSkills.length > 0 ? (
                   <div className="space-y-2.5">
@@ -602,9 +901,11 @@ export function NexusDetailPanel() {
                               'text-[13px] font-mono px-2 py-0.5 rounded-full',
                               skill.status === 'active' 
                                 ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/20'
+                                : skill.status === 'error'
+                                ? 'bg-amber-500/20 text-amber-400 border border-amber-500/20'
                                 : 'bg-red-500/20 text-red-400 border border-red-500/20'
                             )}>
-                              {skill.status === 'active' ? 'ONLINE' : 'UNAVAILABLE'}
+                              {skill.status === 'active' ? 'ONLINE' : skill.status === 'error' ? 'MISSING DEPS' : 'UNAVAILABLE'}
                             </span>
                             <button
                               onClick={(e) => {
@@ -949,6 +1250,205 @@ export function NexusDetailPanel() {
                 </div>
               )}
 
+              {/* ==================== Tool Dimensions (V2) ==================== */}
+              {toolDims.length > 0 && (
+                <div className="p-5 rounded-xl bg-white/[0.03] border border-white/[0.06]">
+                  <button
+                    onClick={() => setShowToolDimensions(!showToolDimensions)}
+                    className="w-full flex items-center gap-2"
+                  >
+                    <Puzzle className="w-4 h-4" style={{ color: tierColor }} />
+                    <span className="text-xs font-mono text-white/50 uppercase tracking-wider">
+                      Tool Dimensions
+                    </span>
+                    <span className="ml-auto text-xs font-mono text-white/25">
+                      {toolDims.length}
+                    </span>
+                    {showToolDimensions
+                      ? <ChevronDown className="w-3 h-3 text-white/30" />
+                      : <ChevronRight className="w-3 h-3 text-white/30" />
+                    }
+                  </button>
+
+                  {/* 概览统计（始终显示） */}
+                  <div className="mt-2 flex gap-3 text-[11px] font-mono text-white/35">
+                    <span>
+                      Avg Score: <span style={{ color: tierColor }}>{toolDims.length > 0 ? Math.round(toolDims.reduce((a, d) => a + d.score, 0) / toolDims.length) : '—'}</span>
+                    </span>
+                    <span>
+                      Total Calls: <span className="text-white/50">{toolDims.reduce((a, d) => a + d.calls, 0)}</span>
+                    </span>
+                  </div>
+
+                  <AnimatePresence initial={false}>
+                    {showToolDimensions && (
+                      <motion.div
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: 'auto', opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        transition={{ duration: 0.2 }}
+                        className="overflow-hidden"
+                      >
+                        <div className="mt-3 pt-3 border-t border-white/5 space-y-2 max-h-[280px] overflow-y-auto">
+                          {toolDims
+                            .sort((a, b) => b.calls - a.calls)
+                            .map(dim => {
+                              const dimTierColor = dim.score >= 80 ? '#22c55e'
+                                : dim.score >= 60 ? '#3b82f6'
+                                : dim.score >= 40 ? '#f59e0b'
+                                : '#ef4444'
+                              const successPct = dim.calls > 0 ? Math.round((dim.successes / dim.calls) * 100) : 0
+                              return (
+                                <div
+                                  key={dim.toolName}
+                                  className="p-2.5 rounded-lg bg-white/[0.02] border border-white/[0.04]"
+                                >
+                                  <div className="flex items-center justify-between mb-1.5">
+                                    <span className="text-xs font-mono text-white/70 font-medium truncate max-w-[180px]">
+                                      {dim.toolName}
+                                    </span>
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-[10px] font-mono font-semibold" style={{ color: dimTierColor }}>
+                                        {dim.score}
+                                      </span>
+                                    </div>
+                                  </div>
+                                  {/* 分数条 */}
+                                  <div className="h-1.5 bg-white/5 rounded-full overflow-hidden mb-1.5">
+                                    <div
+                                      className="h-full rounded-full transition-all duration-500"
+                                      style={{ width: `${dim.score}%`, backgroundColor: dimTierColor }}
+                                    />
+                                  </div>
+                                  {/* 指标 */}
+                                  <div className="flex gap-3 text-[10px] font-mono text-white/30">
+                                    <span>{dim.calls} calls</span>
+                                    <span className="text-emerald-400/60">{dim.successes}ok</span>
+                                    <span className="text-red-400/60">{dim.failures}err</span>
+                                    <span>{successPct}%</span>
+                                    <span className="ml-auto">{formatDuration(dim.avgDurationMs)} avg</span>
+                                  </div>
+                                </div>
+                              )
+                            })}
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+              )}
+
+              {/* ==================== Recent Runs (V2) ==================== */}
+              {recentRuns.length > 0 && (
+                <div className="p-5 rounded-xl bg-white/[0.03] border border-white/[0.06]">
+                  <button
+                    onClick={() => setShowRecentRuns(!showRecentRuns)}
+                    className="w-full flex items-center gap-2"
+                  >
+                    <Activity className="w-4 h-4" style={{ color: tierColor }} />
+                    <span className="text-xs font-mono text-white/50 uppercase tracking-wider">
+                      Recent Runs
+                    </span>
+                    <span className="ml-auto text-xs font-mono text-white/25">
+                      {recentRuns.length}
+                    </span>
+                    {showRecentRuns
+                      ? <ChevronDown className="w-3 h-3 text-white/30" />
+                      : <ChevronRight className="w-3 h-3 text-white/30" />
+                    }
+                  </button>
+
+                  <AnimatePresence initial={false}>
+                    {showRecentRuns && (
+                      <motion.div
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: 'auto', opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        transition={{ duration: 0.2 }}
+                        className="overflow-hidden"
+                      >
+                        <div className="mt-3 pt-3 border-t border-white/5 space-y-1.5 max-h-[300px] overflow-y-auto">
+                          {[...recentRuns].reverse().map((run, i) => (
+                            <div
+                              key={`${run.runId}-${i}`}
+                              className={cn(
+                                'p-2.5 rounded-lg border flex items-start gap-2',
+                                run.success
+                                  ? 'bg-emerald-500/5 border-emerald-500/10'
+                                  : 'bg-red-500/5 border-red-500/10'
+                              )}
+                            >
+                              {run.success
+                                ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
+                                : <XCircle className="w-3.5 h-3.5 text-red-400 shrink-0 mt-0.5" />
+                              }
+                              <div className="flex-1 min-w-0">
+                                <p className="text-xs font-mono text-white/60 truncate">
+                                  {run.task}
+                                </p>
+                                <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-1 text-[10px] font-mono text-white/30">
+                                  <span style={{ color: run.scoreChange >= 0 ? '#22c55e' : '#ef4444' }}>
+                                    {run.scoreChange > 0 ? '+' : ''}{run.scoreChange}
+                                  </span>
+                                  <span>{run.turns} turns</span>
+                                  <span>{formatDuration(run.durationMs)}</span>
+                                  {run.toolsCalled.length > 0 && (
+                                    <span className="truncate max-w-[120px]">
+                                      {run.toolsCalled.join(', ')}
+                                    </span>
+                                  )}
+                                  {run.genesHarvested && run.genesHarvested > 0 && (
+                                    <span className="text-amber-400/50">
+                                      +{run.genesHarvested} genes
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                              <span className="text-[10px] font-mono text-white/20 shrink-0">
+                                {formatTime(run.timestamp)}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+              )}
+
+              {/* ==================== Conversation History ==================== */}
+              {nexusConversations.length > 0 && (
+                <div className="p-5 rounded-xl bg-white/[0.03] border border-white/[0.06]">
+                  <div className="flex items-center gap-2 mb-3">
+                    <MessageSquare className="w-4 h-4" style={dynamicText} />
+                    <span className="text-xs font-mono text-white/50 uppercase tracking-wider">
+                      对话记录
+                    </span>
+                    <span className="ml-auto text-xs font-mono text-white/25">
+                      {nexusConversations.length}
+                    </span>
+                  </div>
+                  <div className="space-y-1.5 max-h-[300px] overflow-y-auto">
+                    {nexusConversations.map(conv => (
+                      <button 
+                        key={conv.id} 
+                        onClick={() => handleOpenConversation(conv.id)}
+                        className="w-full p-2.5 rounded-lg bg-white/[0.02] border border-white/[0.04] 
+                                   hover:bg-white/[0.05] transition-colors text-left flex items-center gap-2"
+                      >
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs font-mono text-white/60 truncate">{conv.title}</p>
+                          <p className="text-[10px] font-mono text-white/30">
+                            {conv.messages.length}条消息 · {formatTime(conv.updatedAt)}
+                          </p>
+                        </div>
+                        <ChevronRight className="w-3 h-3 text-white/20 flex-shrink-0" />
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* ==================== Active Rules Section ==================== */}
               {activeRules.length > 0 && (
                 <div className="p-5 rounded-xl bg-amber-500/5 border border-amber-500/15">
@@ -1093,7 +1593,36 @@ export function NexusDetailPanel() {
             </div>
             
             {/* Footer */}
-            <div className="p-5 border-t border-white/10 bg-black/20">
+            <div className="p-5 border-t border-white/10 bg-black/20 space-y-2">
+              {/* Export / Import */}
+              <div className="flex gap-2">
+                <button
+                  onClick={handleExportNexus}
+                  className="flex-1 py-2 px-3 rounded-lg flex items-center justify-center gap-2
+                           text-xs font-mono text-white/40 hover:text-white/70
+                           border border-white/10 hover:bg-white/5 transition-colors"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  导出配置
+                </button>
+                <button
+                  onClick={() => importFileRef.current?.click()}
+                  className="flex-1 py-2 px-3 rounded-lg flex items-center justify-center gap-2
+                           text-xs font-mono text-white/40 hover:text-white/70
+                           border border-white/10 hover:bg-white/5 transition-colors"
+                >
+                  <Upload className="w-3.5 h-3.5" />
+                  导入配置
+                </button>
+                <input
+                  ref={importFileRef}
+                  type="file"
+                  accept=".json"
+                  onChange={handleImportNexus}
+                  className="hidden"
+                />
+              </div>
+              {/* Delete */}
               <button
                 onClick={handleDelete}
                 className="w-full py-2.5 px-4 rounded-lg flex items-center justify-center gap-2

@@ -1,6 +1,12 @@
 ---
 name: review-pr
-description: Script-first review-only GitHub pull request analysis. Use for deterministic PR review with structured findings handoff to /prepare-pr.
+description: "Script-first review-only GitHub pull request analysis. Use for deterministic PR review with structured findings handoff to /prepare-pr."
+version: "1.0.0"
+author: "DD-OS"
+metadata:
+  openclaw:
+    emoji: "🔧"
+    primaryEnv: "shell"
 ---
 
 # Review PR

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import { 
-  Monitor, Info, Check, Sparkles, Eye, EyeOff, Type, Wifi, WifiOff, Palette, Globe, Languages, Zap, ExternalLink, Copy
+  Monitor, Info, Check, Sparkles, Eye, EyeOff, Type, Wifi, WifiOff, Palette, Globe, Languages, Zap, ExternalLink, Copy, Store, LogOut, Loader2
 } from 'lucide-react'
 import { GlassCard } from '@/components/GlassCard'
 import { staggerContainer, staggerItem } from '@/utils/animations'
@@ -25,6 +25,8 @@ const WORLD_THEME_OPTIONS: Array<{
   { id: 'cityscape', labelKey: 'settings.world_cityscape', descKey: 'settings.world_cityscape_desc', color: 'rgb(251, 191, 36)' },
   { id: 'village', labelKey: 'settings.world_village', descKey: 'settings.world_village_desc', color: 'rgb(126, 200, 80)' },
   { id: 'minimalist', labelKey: 'settings.world_minimalist', descKey: 'settings.world_minimalist_desc', color: 'rgb(168, 162, 158)' },
+  { id: 'smallville', labelKey: 'settings.world_smallville', descKey: 'settings.world_smallville_desc', color: 'rgb(34, 197, 94)' },
+  { id: 'pixeltown', labelKey: 'settings.world_pixeltown', descKey: 'settings.world_pixeltown_desc', color: 'rgb(244, 162, 97)' },
 ]
 
 const settingsData: Array<{
@@ -36,6 +38,76 @@ const settingsData: Array<{
   { id: 'particles', labelKey: 'settings.particles', descKey: 'settings.particles_desc', enabled: true },
   { id: 'glow', labelKey: 'settings.glow', descKey: 'settings.glow_desc', enabled: true },
 ]
+
+function ClawHubAccountSection() {
+  const isAuthenticated = useStore(s => s.clawHubAuthenticated)
+  const user = useStore(s => s.clawHubUser)
+  const authLoading = useStore(s => s.clawHubAuthLoading)
+  const login = useStore(s => s.clawHubLogin)
+  const logout = useStore(s => s.clawHubLogout)
+  const validateToken = useStore(s => s.clawHubValidateToken)
+
+  // 启动时验证 token
+  useEffect(() => {
+    validateToken()
+  }, [])
+
+  if (authLoading) {
+    return (
+      <div className="flex items-center gap-2 text-white/50 text-sm">
+        <Loader2 className="w-4 h-4 animate-spin" />
+        验证中...
+      </div>
+    )
+  }
+
+  if (isAuthenticated && user) {
+    return (
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            {user.avatar && (
+              <img src={user.avatar} alt="" className="w-8 h-8 rounded-full" />
+            )}
+            <div>
+              <p className="text-sm text-white/90 font-medium">{user.username}</p>
+              <p className="text-xs text-white/40">{user.email}</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="flex items-center gap-1 px-2 py-0.5 text-xs bg-emerald-500/10 text-emerald-400 rounded-full">
+              <Check className="w-3 h-3" />
+              已连接
+            </span>
+          </div>
+        </div>
+        <button
+          onClick={logout}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-white/50 hover:text-white/70 border border-white/10 rounded-lg hover:bg-white/5 transition-colors"
+        >
+          <LogOut className="w-3 h-3" />
+          断开连接
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-white/50">
+        连接 ClawHub 账户以发布和管理你的技能。
+      </p>
+      <button
+        onClick={() => login()}
+        disabled={authLoading}
+        className="flex items-center gap-2 px-4 py-2 text-sm font-medium bg-cyan-500/20 text-cyan-400 rounded-lg hover:bg-cyan-500/30 disabled:opacity-50 transition-colors"
+      >
+        <Store className="w-4 h-4" />
+        连接 ClawHub
+      </button>
+    </div>
+  )
+}
 
 export function SettingsHouse() {
   const t = useT()
@@ -621,8 +693,8 @@ export function SettingsHouse() {
               <div className="grid grid-cols-3 gap-2">
                 {WORLD_THEME_OPTIONS.map((option) => {
                   const isActive = worldTheme === option.id
-                  // cosmos/cityscape/village/minimalist 已实现，wildlife 开发中
-                  const isAvailable = option.id === 'cosmos' || option.id === 'cityscape' || option.id === 'village' || option.id === 'minimalist'
+                  // cosmos/cityscape/village/minimalist/smallville 已实现，wildlife 开发中
+                  const isAvailable = option.id === 'cosmos' || option.id === 'cityscape' || option.id === 'village' || option.id === 'minimalist' || option.id === 'smallville' || option.id === 'pixeltown'
                   return (
                     <button
                       key={option.id}
@@ -743,6 +815,19 @@ export function SettingsHouse() {
               </span>
             </div>
           </div>
+        </GlassCard>
+      </div>
+
+      {/* ClawHub 账户 */}
+      <div>
+        <div className="flex items-center gap-2 mb-2">
+          <Store className="w-4 h-4 text-cyan-400" />
+          <h3 className="font-mono text-sm text-cyan-300 tracking-wider">
+            ClawHub 账户
+          </h3>
+        </div>
+        <GlassCard className="p-4">
+          <ClawHubAccountSection />
         </GlassCard>
       </div>
     </div>

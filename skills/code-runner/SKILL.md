@@ -1,3 +1,14 @@
+---
+name: code-runner
+description: "Execute shell commands and scripts on the user's local machine."
+version: "1.0.0"
+author: "DD-OS"
+metadata:
+  openclaw:
+    emoji: "⚡"
+    primaryEnv: "shell"
+---
+
 # Code Runner Skill
 
 Execute shell commands and scripts on the user's local machine.

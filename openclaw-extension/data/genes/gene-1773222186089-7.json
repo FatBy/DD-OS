@@ -1,0 +1,23 @@
+{
+  "id": "gene-1773222186089-7",
+  "category": "repair",
+  "signals_match": [
+    "gateway",
+    "not found",
+    "config schema path not found"
+  ],
+  "strategy": [
+    "Error encountered: config schema path not found",
+    "Parameter changes: path: \"models.disabledProviders\" -> \"agents.list.*.model\"",
+    "Recovery result: {\"content\":[{\"type\":\"text\",\"text\":\"{\\n  \\\"ok\\\": true,\\n  \\\"result\\\": {\\n    \\\"path\\\": \\\"agents.list.*.model\\\",\\n    \\\"schema\\\": {},\\n    \\\"children\\\": []\\n  }\\n}\"}],\"details\":{\"ok\":true,\"result\":{\"pat"
+  ],
+  "source": {
+    "traceId": "trace-0",
+    "createdAt": 1773222186089
+  },
+  "metadata": {
+    "confidence": 0.4,
+    "useCount": 0,
+    "successCount": 0
+  }
+}

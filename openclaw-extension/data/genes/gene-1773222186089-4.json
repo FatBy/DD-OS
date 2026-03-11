@@ -1,0 +1,22 @@
+{
+  "id": "gene-1773222186089-4",
+  "category": "repair",
+  "signals_match": [
+    "gateway",
+    "raw required"
+  ],
+  "strategy": [
+    "Error encountered: raw required",
+    "Parameter changes: action: \"config.patch\" -> \"config.apply\"; patch: \"{\\\"agents\\\": {\\\"defaults\\\": {\\\"model\\\": {\\\"primary\\\": \\\"ste... -> null; note: \"更新模型配置为不包含冒号的版本\" -> \"配置使用标准的stepfun/step-3.5-flash模型（不带:free后缀）\"; raw: null -> \"{\\n  \\\"meta\\\": {\\n    \\\"lastTouchedVersion\\\": \\\"2026.3.7\\\",...",
+    "Recovery result: {\"content\":[{\"type\":\"text\",\"text\":\"{\\n  \\\"ok\\\": true,\\n  \\\"result\\\": {\\n    \\\"ok\\\": true,\\n    \\\"path\\\": \\\"C:\\\\\\\\Users\\\\\\\\邓思迪\\\\\\\\.openclaw\\\\\\\\openclaw.json\\\",\\n    \\\"config\\\": {\\n      \\\"meta\\\": {\\n  "
+  ],
+  "source": {
+    "traceId": "trace-0",
+    "createdAt": 1773222186089
+  },
+  "metadata": {
+    "confidence": 0.4,
+    "useCount": 0,
+    "successCount": 0
+  }
+}

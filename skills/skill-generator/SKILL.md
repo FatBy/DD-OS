@@ -1,3 +1,14 @@
+---
+name: skill-generator
+description: "帮助用户通过对话创建新的 DD-OS 技能。"
+version: "1.0.0"
+author: "DD-OS"
+metadata:
+  openclaw:
+    emoji: "🛠️"
+    primaryEnv: "shell"
+---
+
 # Skill Generator
 
 帮助用户通过对话创建新的 DD-OS 技能。

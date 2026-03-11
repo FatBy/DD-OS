@@ -1,25 +1,21 @@
 ---
 name: blogwatcher
-description: Monitor blogs and RSS/Atom feeds for updates using the blogwatcher CLI.
+description: "Monitor blogs and RSS/Atom feeds for updates using the blogwatcher CLI."
+version: "1.0.0"
+author: "DD-OS"
 homepage: https://github.com/Hyaxia/blogwatcher
 metadata:
-  {
-    "openclaw":
-      {
-        "emoji": "📰",
-        "requires": { "bins": ["blogwatcher"] },
-        "install":
-          [
-            {
-              "id": "go",
-              "kind": "go",
-              "module": "github.com/Hyaxia/blogwatcher/cmd/blogwatcher@latest",
-              "bins": ["blogwatcher"],
-              "label": "Install blogwatcher (go)",
-            },
-          ],
-      },
-  }
+  openclaw:
+    emoji: "📰"
+    primaryEnv: "shell"
+    requires:
+      bins: ["blogwatcher"]
+    install:
+      - id: "go"
+        kind: "go"
+        module: "github.com/Hyaxia/blogwatcher/cmd/blogwatcher@latest"
+        bins: ["blogwatcher"]
+        label: "Install blogwatcher (go)"
 ---
 
 # blogwatcher

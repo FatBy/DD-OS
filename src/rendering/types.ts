@@ -9,7 +9,7 @@ import type { CanvasPalette } from '@/types/theme'
 // 世界主题
 // ============================================
 
-export type WorldTheme = 'cosmos' | 'cityscape' | 'village' | 'minimalist'
+export type WorldTheme = 'cosmos' | 'cityscape' | 'village' | 'minimalist' | 'smallville' | 'pixeltown'
 
 // ============================================
 // 坐标与几何
@@ -64,6 +64,9 @@ export interface RenderState {
   energyCore?: EnergyCoreState
   executingNexusId?: string | null
   executionStartTime?: number | null
+  // Smallville 主题专用
+  smallvilleViewMode?: 'town' | 'zooming-in' | 'zooming-out' | 'room'
+  smallvilleRoomNexusId?: string | null
 }
 
 // ============================================

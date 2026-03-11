@@ -1,12 +1,16 @@
 ---
 name: trello
-description: Manage Trello boards, lists, and cards via the Trello REST API.
+description: "Manage Trello boards, lists, and cards via the Trello REST API."
+version: "1.0.0"
+author: "DD-OS"
 homepage: https://developer.atlassian.com/cloud/trello/rest/
 metadata:
-  {
-    "openclaw":
-      { "emoji": "📋", "requires": { "bins": ["jq"], "env": ["TRELLO_API_KEY", "TRELLO_TOKEN"] } },
-  }
+  openclaw:
+    emoji: "📋"
+    primaryEnv: "shell"
+    requires:
+      bins: ["jq"]
+      env: ["TRELLO_API_KEY", "TRELLO_TOKEN"]
 ---
 
 # Trello Skill

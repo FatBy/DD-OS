@@ -1,3 +1,23 @@
+---
+name: weather
+description: "Query weather information for any location."
+version: "1.0.0"
+author: "DD-OS"
+executable: execute.py
+runtime: python
+dangerLevel: safe
+inputs:
+  location:
+    type: string
+    required: true
+    description: "City name (e.g., Beijing, Tokyo, London)"
+keywords: [weather, temperature, forecast, rain, sunny, cloudy, 天气, 气温, 预报, 下雨, 晴天, 多云, 温度]
+metadata:
+  openclaw:
+    emoji: "☁️"
+    primaryEnv: "python"
+---
+
 # Weather Skill
 
 Query weather information for any location.

@@ -21,6 +21,7 @@ import { getLocalSoulData, getLocalSkills, getLocalMemories } from '@/utils/loca
 import { simpleVisualDNA } from '@/store/slices/worldSlice'
 import { restoreLLMConfigFromServer } from '@/services/llmService'
 import { persistTaskHistory } from '@/store/slices/sessionsSlice'
+import { getCachedMBTIResult } from '@/services/mbtiAnalyzer'
 
 /**
  * 从 localStorage 缓存立即恢复数据到 store
@@ -28,6 +29,13 @@ import { persistTaskHistory } from '@/store/slices/sessionsSlice'
  */
 function restoreLocalCacheToStore(storeActions: any) {
   let restored = false
+
+  // MBTI (先恢复缓存结果，立即显示 avatar，不等检测)
+  const cachedMBTI = getCachedMBTIResult()
+  if (cachedMBTI) {
+    useStore.setState({ soulMBTI: cachedMBTI })
+    restored = true
+  }
 
   // Soul
   const soulData = getLocalSoulData()
@@ -72,6 +80,7 @@ function App() {
     const storeActions = {
       // Connection
       setConnectionStatus: useStore.getState().setConnectionStatus,
+      setConnectionMode: useStore.getState().setConnectionMode,
       setConnectionError: useStore.getState().setConnectionError,
       setReconnectAttempt: useStore.getState().setReconnectAttempt,
       setReconnectCountdown: useStore.getState().setReconnectCountdown,
@@ -117,6 +126,9 @@ function App() {
       // AI 执行状态
       updateExecutionStatus: useStore.getState().updateExecutionStatus,
       
+      // Gateway sessions → DD-OS 对话回填
+      syncGatewaySessionsToConversations: useStore.getState().syncGatewaySessionsToConversations,
+      
       // Native 模式: Agent 任务上下文
       setCurrentTask: useStore.getState().setCurrentTask,
       
@@ -124,6 +136,8 @@ function App() {
       addActiveExecution: useStore.getState().addActiveExecution,
       updateActiveExecution: useStore.getState().updateActiveExecution,
       removeActiveExecution: useStore.getState().removeActiveExecution,
+      appendExecutionStep: useStore.getState().appendExecutionStep,
+      updateExecutionStep: useStore.getState().updateExecutionStep,
       
       // P3: 危险操作审批
       requestApproval: useStore.getState().requestApproval,
@@ -132,7 +146,10 @@ function App() {
       setNexusesFromServer: useStore.getState().setNexusesFromServer,
       setActiveNexus: useStore.getState().setActiveNexus,
       updateNexusXP: useStore.getState().updateNexusXP,
+      bindSkillToNexus: useStore.getState().bindSkillToNexus,
       getNexuses: () => useStore.getState().nexuses,
+      syncAgentsAsNexuses: useStore.getState().syncAgentsAsNexuses,
+      getConnectionMode: () => useStore.getState().connectionMode,
       get activeNexusId() { return useStore.getState().activeNexusId },
       get nexuses() { return useStore.getState().nexuses },
     }
@@ -235,6 +252,10 @@ function App() {
           openClawService.setGatewayUrl(savedGateway)
           openClawService.setAuthToken(savedToken)
           openClawService.connect()
+          // 恢复本地持久化的对话数据（与 Native 模式一致）
+          useStore.getState().loadConversationsFromServer().catch((e) => {
+            console.warn('[App] Failed to load conversations for OpenClaw mode:', e)
+          })
         }
       }
     } else {

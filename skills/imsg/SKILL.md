@@ -1,26 +1,21 @@
 ---
 name: imsg
-description: iMessage/SMS CLI for listing chats, history, and sending messages via Messages.app.
+description: "iMessage/SMS CLI for listing chats, history, and sending messages via Messages.app."
+version: "1.0.0"
+author: "DD-OS"
 homepage: https://imsg.to
 metadata:
-  {
-    "openclaw":
-      {
-        "emoji": "📨",
-        "os": ["darwin"],
-        "requires": { "bins": ["imsg"] },
-        "install":
-          [
-            {
-              "id": "brew",
-              "kind": "brew",
-              "formula": "steipete/tap/imsg",
-              "bins": ["imsg"],
-              "label": "Install imsg (brew)",
-            },
-          ],
-      },
-  }
+  openclaw:
+    emoji: "📨"
+    primaryEnv: "shell"
+    requires:
+      bins: ["imsg"]
+    install:
+      - id: "brew"
+        kind: "brew"
+        formula: "steipete/tap/imsg"
+        bins: ["imsg"]
+        label: "Install imsg (brew)"
 ---
 
 # imsg

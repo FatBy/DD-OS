@@ -48,6 +48,10 @@ const en: Record<TranslationKey, string> = {
   'settings.world_village_desc': 'Top-down village',
   'settings.world_minimalist': 'Minimalist',
   'settings.world_minimalist_desc': 'Cozy blocks',
+  'settings.world_smallville': 'Smallville',
+  'settings.world_smallville_desc': 'Pixel RPG village',
+  'settings.world_pixeltown': 'Pixel Town',
+  'settings.world_pixeltown_desc': 'Hand-drawn pixel town',
   'settings.world_wildlife': 'Wildlife',
   'settings.world_wildlife_desc': 'Natural creatures',
   'settings.world_dev': 'Coming soon',
@@ -170,6 +174,9 @@ const en: Record<TranslationKey, string> = {
   'soul.activity': 'Activity',
   'soul.complexity': 'Complexity',
   'soul.dimensions': 'Dimensions',
+  'soul.boundaries': 'Boundaries',
+  'soul.vibe': 'Vibe & MBTI',
+  'soul.soul_avatar': 'Soul Avatar',
 
   // ---- Observer Proposal ----
   'build.signal': 'Observer Signal',

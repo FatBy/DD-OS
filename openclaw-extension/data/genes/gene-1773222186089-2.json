@@ -1,0 +1,23 @@
+{
+  "id": "gene-1773222186089-2",
+  "category": "repair",
+  "signals_match": [
+    "session_status",
+    "model \"stepfun/step-3.5-flash:free\" is not allowed."
+  ],
+  "strategy": [
+    "Error encountered: Model \"stepfun/step-3.5-flash:free\" is not allowed.",
+    "Parameter changes: model: \"stepfun/step-3.5-flash:free\" -> null",
+    "Intermediate tools used: gateway, message",
+    "Recovery result: {\"content\":[{\"type\":\"text\",\"text\":\"🦞 OpenClaw 2026.3.7 (42a1394)\\n🕒 Time: Wednesday, March 11th, 2026 — 17:39 (Asia/Shanghai)\\n🧠 Model: stepfun/step-3.5-flash · 🔑 api-key (stepfun:default)\\n🧮 Tok"
+  ],
+  "source": {
+    "traceId": "trace-0",
+    "createdAt": 1773222186089
+  },
+  "metadata": {
+    "confidence": 0.4,
+    "useCount": 0,
+    "successCount": 0
+  }
+}

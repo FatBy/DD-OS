@@ -1,26 +1,21 @@
 ---
 name: things-mac
-description: Manage Things 3 via the `things` CLI on macOS (add/update projects+todos via URL scheme; read/search/list from the local Things database). Use when a user asks OpenClaw to add a task to Things, list inbox/today/upcoming, search tasks, or inspect projects/areas/tags.
+description: "Manage Things 3 via the `things` CLI on macOS (add/update projects+todos via URL scheme; read/search/list from the local Things database). Use when a user asks OpenClaw to add a task to Things, list inbox/today/upcoming, search tasks, or inspect projects/areas/tags."
+version: "1.0.0"
+author: "DD-OS"
 homepage: https://github.com/ossianhempel/things3-cli
 metadata:
-  {
-    "openclaw":
-      {
-        "emoji": "✅",
-        "os": ["darwin"],
-        "requires": { "bins": ["things"] },
-        "install":
-          [
-            {
-              "id": "go",
-              "kind": "go",
-              "module": "github.com/ossianhempel/things3-cli/cmd/things@latest",
-              "bins": ["things"],
-              "label": "Install things3-cli (go)",
-            },
-          ],
-      },
-  }
+  openclaw:
+    emoji: "✅"
+    primaryEnv: "shell"
+    requires:
+      bins: ["things"]
+    install:
+      - id: "go"
+        kind: "go"
+        module: "github.com/ossianhempel/things3-cli/cmd/things@latest"
+        bins: ["things"]
+        label: "Install things3-cli (go)"
 ---
 
 # Things 3 CLI

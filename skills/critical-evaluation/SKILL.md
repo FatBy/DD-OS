@@ -1,9 +1,14 @@
 ---
 name: critical-evaluation
 description: "Systematic critical evaluation framework for analyzing arguments, detecting cognitive biases, and improving decision quality. Use for complex decisions, debate analysis, and identifying logical fallacies."
-version: 1.0.0
-metadata: {"openclaw":{"emoji":"🔍","always":true}}
+version: "1.0.0"
+author: "DD-OS"
+metadata:
+  openclaw:
+    emoji: "🔍"
+    primaryEnv: "shell"
 ---
+
 # Critical Evaluation Skill
 
 A systematic framework for analyzing arguments, detecting cognitive biases, and improving decision quality through structured critical thinking.

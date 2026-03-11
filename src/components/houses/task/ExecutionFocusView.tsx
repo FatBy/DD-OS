@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import {
   Play, Loader2, Brain, Wrench, Terminal,
   MessageSquare, AlertCircle, CheckCircle2, XCircle,
-  Activity, ChevronDown, Clock, Pause, SkipForward, Zap,
+  Activity, ChevronDown, Clock, Pause, SkipForward, Zap, Code,
 } from 'lucide-react'
 import { cn } from '@/utils/cn'
 import { useStore } from '@/store'
@@ -207,6 +207,42 @@ function SubTaskTreeView({ plan }: { plan: TaskPlan }) {
   )
 }
 
+// --- 工具参数展示块 ---
+function ToolArgsBlock({ args }: { args: Record<string, unknown> }) {
+  const [expanded, setExpanded] = useState(false)
+  const entries = Object.entries(args)
+  if (entries.length === 0) return null
+
+  // 简短预览 (折叠状态)
+  const preview = entries
+    .slice(0, 3)
+    .map(([k, v]) => {
+      const val = typeof v === 'string' ? v : JSON.stringify(v)
+      return `${k}: ${String(val).slice(0, 60)}`
+    })
+    .join(' | ')
+
+  return (
+    <div className="mt-1">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="flex items-center gap-1 text-[10px] font-mono text-cyan-400/50 hover:text-cyan-400/80 transition-colors"
+      >
+        <Code className="w-2.5 h-2.5" />
+        <span>{expanded ? '收起参数' : '查看参数'}</span>
+        {!expanded && entries.length > 3 && <span className="text-white/20">+{entries.length - 3}</span>}
+      </button>
+      {expanded ? (
+        <pre className="mt-1 p-2 bg-black/30 rounded text-[10px] text-white/40 font-mono whitespace-pre-wrap break-all max-h-40 overflow-y-auto border border-white/5">
+          {JSON.stringify(args, null, 2)}
+        </pre>
+      ) : (
+        <p className="text-[10px] text-white/25 font-mono mt-0.5 truncate">{preview}</p>
+      )}
+    </div>
+  )
+}
+
 // --- 执行步骤查看器 ---
 function ExecutionStepsViewer({ steps, output, error, duration }: {
   steps?: ExecutionStep[]
@@ -301,6 +337,7 @@ function ExecutionStepsViewer({ steps, output, error, duration }: {
                     const sConfig = stepTypeConfig[step.type] || stepTypeConfig.output
                     const StepIcon = sConfig.icon
                     const label = stepTypeLabels[step.type] || '输出'
+                    const hasToolArgs = step.type === 'tool_call' && step.toolArgs && Object.keys(step.toolArgs).length > 0
                     return (
                       <div key={step.id || i} className="flex gap-2 px-3 py-2 border-t border-white/5 hover:bg-white/3">
                         <div className={cn('w-5 h-5 rounded flex items-center justify-center flex-shrink-0 mt-0.5', `bg-${sConfig.color}-500/15`)}>
@@ -316,9 +353,12 @@ function ExecutionStepsViewer({ steps, output, error, duration }: {
                               <span className="text-[11px] font-mono text-white/20 ml-auto">{step.duration}ms</span>
                             )}
                           </div>
-                          <p className="text-[11px] text-white/50 font-mono mt-0.5 whitespace-pre-wrap break-all leading-relaxed line-clamp-4">
+                          <p className="text-[11px] text-white/50 font-mono mt-0.5 whitespace-pre-wrap break-all leading-relaxed line-clamp-6">
                             {step.content}
                           </p>
+                          {hasToolArgs && (
+                            <ToolArgsBlock args={step.toolArgs!} />
+                          )}
                         </div>
                       </div>
                     )

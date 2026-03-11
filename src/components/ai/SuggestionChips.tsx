@@ -60,7 +60,7 @@ export function parseSuggestions(content: string): ParsedSuggestions | null {
       if (optionMatch) {
         items.push({
           index: idx,
-          label: optionMatch[1].trim(),
+          label: optionMatch[1].trim().replace(/\*\*/g, ''),
           letter: LETTERS[idx] || `${idx + 1}`,
         })
         idx++
@@ -83,10 +83,10 @@ export function parseSuggestions(content: string): ParsedSuggestions | null {
   }
 
   // 方案B: fallback — 匹配 "下一步建议" / "你可以" 后面的编号列表
-  const fallbackPattern = /((?:下一步建议|接下来可以|你可以选择|建议如下|可选操作)[：:]*)\s*\n((?:\s*(?:\d+[\.\)、]|[A-Za-z][\.\)]|-)\s+.+\n?){2,})/
+  const fallbackPattern = /((?:下一步建议|接下来可以|你可以选择|建议如下|可选操作|需要我|是否需要|要不要|你希望)[^：:\n]{0,20}[：:?？]*)\s*\n((?:\s*(?:\d+[\.\)、]|[A-Za-z][\.\)]|-)\s+.+\n?){2,})/
   const fallbackMatch = content.match(fallbackPattern)
   if (fallbackMatch) {
-    const prompt = fallbackMatch[1].replace(/[：:]+$/, '').trim()
+    const prompt = fallbackMatch[1].replace(/[：:?？]+$/, '').trim()
     const block = fallbackMatch[2]
     const items: SuggestionItem[] = []
     let idx = 0
@@ -95,9 +95,11 @@ export function parseSuggestions(content: string): ParsedSuggestions | null {
       const trimmed = line.trim()
       const m = trimmed.match(/^(?:\d+[\.\)、]|[A-Za-z][\.\)]|-)\s+(.+)/)
       if (m) {
+        // 清理 Markdown 加粗标记 (全局移除所有 **)
+        const label = m[1].trim().replace(/\*\*/g, '').replace(/^`(.+?)`/, '$1')
         items.push({
           index: idx,
-          label: m[1].trim(),
+          label,
           letter: LETTERS[idx] || `${idx + 1}`,
         })
         idx++
@@ -106,6 +108,41 @@ export function parseSuggestions(content: string): ParsedSuggestions | null {
     if (items.length >= 2) {
       const startIdx = content.indexOf(fallbackMatch[0])
       const endIdx = startIdx + fallbackMatch[0].length
+      return {
+        contentBefore: content.slice(0, startIdx).trimEnd(),
+        contentAfter: content.slice(endIdx).trimStart(),
+        prompt: prompt || '你可以选择以下操作继续：',
+        items,
+      }
+    }
+  }
+
+  // 方案C: 尾部问句 + 编号列表 (OpenClaw Agent 常见格式)
+  // 匹配内容末尾的 "？\n1. xxx\n2. xxx" 格式
+  const tailPattern = /([^\n]*[？?])\s*\n((?:\s*(?:\d+[\.\)、]|[A-Za-z][\.\)]|-)\s+.+\n?){2,})$/
+  const tailMatch = content.match(tailPattern)
+  if (tailMatch) {
+    const prompt = tailMatch[1].trim()
+    const block = tailMatch[2]
+    const items: SuggestionItem[] = []
+    let idx = 0
+    const lines = block.split('\n')
+    for (const line of lines) {
+      const trimmed = line.trim()
+      const m = trimmed.match(/^(?:\d+[\.\)、]|[A-Za-z][\.\)]|-)\s+(.+)/)
+      if (m) {
+        const label = m[1].trim().replace(/\*\*/g, '').replace(/^`(.+?)`/, '$1')
+        items.push({
+          index: idx,
+          label,
+          letter: LETTERS[idx] || `${idx + 1}`,
+        })
+        idx++
+      }
+    }
+    if (items.length >= 2) {
+      const startIdx = content.indexOf(tailMatch[0])
+      const endIdx = startIdx + tailMatch[0].length
       return {
         contentBefore: content.slice(0, startIdx).trimEnd(),
         contentAfter: content.slice(endIdx).trimStart(),

@@ -11,13 +11,19 @@ import type {
   Point,
 } from './types'
 import { RendererRegistry } from './RendererRegistry'
-import { createCosmosRenderers, createCityscapeRenderers, createVillageRenderers, createMinimalistRenderers } from './index'
+import { createCosmosRenderers, createCityscapeRenderers, createVillageRenderers, createMinimalistRenderers, createSmallvilleRenderers, createPixelTownRenderers } from './index'
 import { worldToScreen as wts, screenToWorld as stw } from './utils/coordinateTransforms'
 import { PlanetRenderer } from './entities/PlanetRenderer'
 import { BlockRenderer } from './entities/BlockRenderer'
 import { TopDownBuildingRenderer } from './topdown/TopDownBuildingRenderer'
 import { IsometricBuildingRenderer } from './isometric/IsometricBuildingRenderer'
 import { CosmosRippleRenderer } from './backgrounds/CosmosRipple'
+import { SmallvilleBuildingRenderer } from './smallville/SmallvilleBuildingRenderer'
+import { SmallvilleNPCRenderer } from './smallville/SmallvilleNPCRenderer'
+import { SmallvilleGrid } from './smallville/SmallvilleGrid'
+import { SmallvilleAgentRenderer } from './smallville/SmallvilleAgentRenderer'
+import type { SmallvilleViewManager } from './smallville/SmallvilleViewManager'
+import { PixelTownBuildingRenderer } from './pixeltown/PixelTownBuildingRenderer'
 
 // 俯视角瓦片尺寸 (16px * 3 scale)
 const TOPDOWN_TILE_SIZE = 48
@@ -71,6 +77,8 @@ export class GameCanvas {
     this.registry.register('cityscape', createCityscapeRenderers())
     this.registry.register('village', createVillageRenderers())
     this.registry.register('minimalist', createMinimalistRenderers())
+    this.registry.register('smallville', createSmallvilleRenderers())
+    this.registry.register('pixeltown', createPixelTownRenderers())
     this.registry.setTheme('cosmos')
 
     this.resize()
@@ -155,6 +163,28 @@ export class GameCanvas {
       )
     }
     
+    const smallvilleBuildingRenderer = this.getSmallvilleBuildingRenderer()
+    if (smallvilleBuildingRenderer) {
+      smallvilleBuildingRenderer.setExecutionState(
+        state.executingNexusId ?? null,
+        state.executionStartTime ?? null,
+      )
+    }
+    
+    const pixelTownRenderer = this.getPixelTownBuildingRenderer()
+    if (pixelTownRenderer) {
+      pixelTownRenderer.setExecutionState(
+        state.executingNexusId ?? null,
+        state.executionStartTime ?? null,
+      )
+    }
+    
+    // Smallville Agent 执行状态同步
+    const agentRenderer = this.getSmallvilleAgentRenderer()
+    if (agentRenderer) {
+      agentRenderer.setExecuting(state.executingNexusId != null)
+    }
+    
     // 更新涟漪渲染器的核心状态
     const rippleRenderer = this.getRippleRenderer()
     if (rippleRenderer && state.energyCore) {
@@ -166,6 +196,13 @@ export class GameCanvas {
     if (renderers?.grid?.updateNexusPositions && state.nexuses) {
       const positions = [...state.nexuses.values()].map(n => n.position)
       renderers.grid.updateNexusPositions(positions)
+    }
+    
+    // Smallville 主题：同步道路位置到 NPC 渲染器
+    const smallvilleGrid = this.getSmallvilleGrid()
+    const smallvilleNpc = this.getSmallvilleNPCRenderer()
+    if (smallvilleGrid && smallvilleNpc) {
+      smallvilleNpc.setRoadPositions(smallvilleGrid.getRoadPositions())
     }
     
     // 更新装饰层的建筑位置（用于避开建筑区域）
@@ -199,6 +236,44 @@ export class GameCanvas {
     return this.registry.getCurrentTheme()
   }
 
+  // ---- Smallville Room Transitions ----
+
+  /**
+   * 进入 Smallville 房间视图
+   */
+  enterSmallvilleRoom(nexusId: string): void {
+    const vm = this.getSmallvilleViewManager()
+    if (!vm) return
+    const nexus = this.state.nexuses.get(nexusId)
+    if (!nexus) return
+    const screen = this.worldToScreen(nexus.position.gridX, nexus.position.gridY, this.state.camera)
+    vm.enterRoom(nexusId, nexus, screen.x, screen.y)
+  }
+
+  /**
+   * 退出 Smallville 房间视图
+   */
+  exitSmallvilleRoom(): void {
+    const vm = this.getSmallvilleViewManager()
+    vm?.exitRoom()
+  }
+
+  /**
+   * 查询当前是否处于 Smallville 房间模式
+   */
+  isInSmallvilleRoom(): boolean {
+    const vm = this.getSmallvilleViewManager()
+    return vm?.isInRoomView() ?? false
+  }
+
+  /**
+   * 查询当前是否处于 Smallville 过渡动画
+   */
+  isSmallvilleTransitioning(): boolean {
+    const vm = this.getSmallvilleViewManager()
+    return vm?.isTransitioning() ?? false
+  }
+
   // ---- Coordinate Transforms ----
 
   /**
@@ -230,7 +305,7 @@ export class GameCanvas {
 
   worldToScreen(gridX: number, gridY: number, camera: CameraState): Point {
     const theme = this.registry.getCurrentTheme()
-    if (theme === 'village') {
+    if (theme === 'village' || theme === 'smallville') {
       return this.topDownWorldToScreen(gridX, gridY, camera)
     }
     if (theme === 'cityscape') {
@@ -242,7 +317,7 @@ export class GameCanvas {
 
   screenToWorld(screenX: number, screenY: number, camera: CameraState): { gridX: number; gridY: number } {
     const theme = this.registry.getCurrentTheme()
-    if (theme === 'village') {
+    if (theme === 'village' || theme === 'smallville') {
       // 俯视角逆转换
       const w = this.canvas.clientWidth
       const h = this.canvas.clientHeight
@@ -318,6 +393,48 @@ export class GameCanvas {
     return building as IsometricBuildingRenderer | null
   }
 
+  private getSmallvilleBuildingRenderer(): SmallvilleBuildingRenderer | null {
+    const renderers = this.registry.getCurrent()
+    if (!renderers) return null
+    const building = renderers.entities.find(e => e.id === 'smallville-building')
+    return building as SmallvilleBuildingRenderer | null
+  }
+
+  private getSmallvilleGrid(): SmallvilleGrid | null {
+    const renderers = this.registry.getCurrent()
+    if (!renderers) return null
+    if (renderers.grid && 'getRoadPositions' in renderers.grid) {
+      return renderers.grid as SmallvilleGrid
+    }
+    return null
+  }
+
+  private getSmallvilleNPCRenderer(): SmallvilleNPCRenderer | null {
+    const renderers = this.registry.getCurrent()
+    if (!renderers) return null
+    const npc = renderers.particles.find(p => p.id === 'smallville-npc-renderer')
+    return npc as SmallvilleNPCRenderer | null
+  }
+
+  private getSmallvilleViewManager(): SmallvilleViewManager | null {
+    const building = this.getSmallvilleBuildingRenderer()
+    return building?.viewManager ?? null
+  }
+
+  private getSmallvilleAgentRenderer(): SmallvilleAgentRenderer | null {
+    const renderers = this.registry.getCurrent()
+    if (!renderers) return null
+    const agent = renderers.particles.find(p => p.id === 'smallville-agent-renderer')
+    return agent as SmallvilleAgentRenderer | null
+  }
+
+  private getPixelTownBuildingRenderer(): PixelTownBuildingRenderer | null {
+    const renderers = this.registry.getCurrent()
+    if (!renderers) return null
+    const building = renderers.entities.find(e => e.id === 'pixeltown-building-renderer')
+    return building as PixelTownBuildingRenderer | null
+  }
+
   private getRippleRenderer(): CosmosRippleRenderer | null {
     const renderers = this.registry.getCurrent()
     if (!renderers) return null
@@ -335,6 +452,10 @@ export class GameCanvas {
     const blockRenderer = this.getBlockRenderer()
     if (blockRenderer) {
       blockRenderer.setDpr(this.dpr)
+    }
+    const pixelTownRenderer = this.getPixelTownBuildingRenderer()
+    if (pixelTownRenderer) {
+      pixelTownRenderer.setDpr(this.dpr)
     }
   }
 
@@ -362,6 +483,12 @@ export class GameCanvas {
     if (!renderers) return
 
     this._time += 0.002
+
+    // Smallville ViewManager 帧更新（驱动 zoom 过渡动画）
+    const smallvilleVM = this.getSmallvilleViewManager()
+    if (smallvilleVM) {
+      smallvilleVM.update(timestamp)
+    }
 
     const { camera, nexuses, selectedNexusId, renderSettings } = this.state
 

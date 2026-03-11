@@ -1,9 +1,14 @@
 ---
 name: strategic-planning
 description: "Long-term strategic thinking framework for vision, roadmap, and scenario planning. Use for business strategy, product roadmaps, career planning, and complex multi-phase initiatives."
-version: 1.0.0
-metadata: {"openclaw":{"emoji":"🎯","always":true}}
+version: "1.0.0"
+author: "DD-OS"
+metadata:
+  openclaw:
+    emoji: "🎯"
+    primaryEnv: "shell"
 ---
+
 # Strategic Planning Skill
 
 A comprehensive framework for long-term strategic thinking, scenario planning, and roadmap development.

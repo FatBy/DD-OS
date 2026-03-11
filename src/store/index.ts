@@ -9,6 +9,7 @@ import { createAiSlice, type AiSlice } from './slices/aiSlice'
 import { createWorldSlice, type WorldSlice } from './slices/worldSlice'
 import { createObserverSlice, type ObserverSlice } from './slices/observerSlice'
 import { createThemeSlice, type ThemeSlice } from './slices/themeSlice'
+import { createClawHubSlice, type ClawHubSlice } from './slices/clawHubSlice'
 
 // ============================================
 // 视图状态
@@ -21,7 +22,7 @@ interface ViewSlice {
 // ============================================
 // 合并后的 Store 类型
 // ============================================
-export type AppStore = ViewSlice & ConnectionSlice & SessionsSlice & ChannelsSlice & AgentSlice & DevicesSlice & AiSlice & WorldSlice & ObserverSlice & ThemeSlice
+export type AppStore = ViewSlice & ConnectionSlice & SessionsSlice & ChannelsSlice & AgentSlice & DevicesSlice & AiSlice & WorldSlice & ObserverSlice & ThemeSlice & ClawHubSlice
 
 // ============================================
 // 创建 Store
@@ -41,6 +42,7 @@ export const useStore = create<AppStore>()((...args) => ({
   ...createWorldSlice(...args),
   ...createObserverSlice(...args),
   ...createThemeSlice(...args),
+  ...createClawHubSlice(...args),
 }))
 
 // ============================================

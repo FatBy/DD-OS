@@ -1,7 +1,12 @@
 ---
 name: feishu-wiki
-description: |
-  Feishu knowledge base navigation. Activate when user mentions knowledge base, wiki, or wiki links.
+description: "Feishu knowledge base navigation. Activate when user mentions knowledge base, wiki, or wiki links."
+version: "1.0.0"
+author: "DD-OS"
+metadata:
+  openclaw:
+    emoji: "🔧"
+    primaryEnv: "shell"
 ---
 
 # Feishu Wiki Tool

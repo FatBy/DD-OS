@@ -1,0 +1,86 @@
+{
+  "id": "ddos",
+  "name": "DD-OS Integration",
+  "description": "DD-OS Nexus system integration for OpenClaw — SOP-driven task execution, experience tracking, and adaptive rule injection.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "nexusDataDir": {
+        "type": "string",
+        "description": "Directory for Nexus persistent data (NEXUS.md, experience logs, rules)"
+      },
+      "enableSOPInjection": {
+        "type": "boolean",
+        "default": true,
+        "description": "Inject SOP roadmap into agent context before each prompt"
+      },
+      "enableAnaphoraResolution": {
+        "type": "boolean",
+        "default": true,
+        "description": "Track recent entities (files, commands, queries) for pronoun resolution"
+      },
+      "enableExperienceRecording": {
+        "type": "boolean",
+        "default": true,
+        "description": "Record success/failure experience after task completion"
+      },
+      "enableGenePool": {
+        "type": "boolean",
+        "default": true,
+        "description": "Enable Gene Pool self-healing: error pattern matching and gene harvesting"
+      },
+      "enableSOPEvolution": {
+        "type": "boolean",
+        "default": true,
+        "description": "Track SOP fitness and inject improvement hints; allow Agent-driven SOP rewrite"
+      },
+      "enableNexusCatalog": {
+        "type": "boolean",
+        "default": true,
+        "description": "Inject Nexus catalog when no Nexus is active, enabling Agent-driven Nexus selection"
+      },
+      "maxSOPContentLength": {
+        "type": "integer",
+        "default": 16000,
+        "description": "Maximum characters of SOP content to inject"
+      },
+      "recentEntityExpireMs": {
+        "type": "integer",
+        "default": 300000,
+        "description": "How long recent entities remain valid (ms, default 5min)"
+      }
+    }
+  },
+  "uiHints": {
+    "nexusDataDir": {
+      "label": "Nexus Data Directory",
+      "help": "Where Nexus files are stored. Defaults to extension data directory.",
+      "placeholder": "~/.openclaw/extensions/ddos/data"
+    },
+    "enableSOPInjection": {
+      "label": "SOP Injection",
+      "help": "Inject active Nexus SOP into agent context for guided execution"
+    },
+    "enableAnaphoraResolution": {
+      "label": "Anaphora Resolution",
+      "help": "Track recently used files/commands to resolve pronouns like 'it', 'that file'"
+    },
+    "enableExperienceRecording": {
+      "label": "Experience Recording",
+      "help": "Automatically log task outcomes to Nexus experience files"
+    },
+    "enableGenePool": {
+      "label": "Gene Pool",
+      "help": "Self-healing system: match error patterns to known fixes, harvest new repair genes"
+    },
+    "enableSOPEvolution": {
+      "label": "SOP Evolution",
+      "help": "Track execution fitness and let the Agent improve SOP based on historical data"
+    },
+    "enableNexusCatalog": {
+      "label": "Nexus Catalog",
+      "help": "Show available Nexuses to the Agent when none is active, enabling intelligent selection"
+    }
+  }
+}

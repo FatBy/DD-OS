@@ -46,6 +46,10 @@ const zh = {
   'settings.world_village_desc': '俯视角村落',
   'settings.world_minimalist': '极简',
   'settings.world_minimalist_desc': '治愈积木',
+  'settings.world_smallville': '小镇',
+  'settings.world_smallville_desc': '像素RPG村庄',
+  'settings.world_pixeltown': '像素镇',
+  'settings.world_pixeltown_desc': '手绘像素小镇',
   'settings.world_wildlife': '生态',
   'settings.world_wildlife_desc': '自然生物',
   'settings.world_dev': '开发中',
@@ -168,6 +172,9 @@ const zh = {
   'soul.activity': '活跃度',
   'soul.complexity': '复杂度',
   'soul.dimensions': '维度',
+  'soul.boundaries': '行为边界',
+  'soul.vibe': '氛围 & MBTI',
+  'soul.soul_avatar': '灵魂形象',
 
   // ---- Observer 提案 ----
   'build.signal': 'Observer Signal',

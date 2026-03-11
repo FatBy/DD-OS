@@ -1,0 +1,23 @@
+{
+  "id": "gene-1773222186089-6",
+  "category": "repair",
+  "signals_match": [
+    "gateway",
+    "invalid",
+    "invalid config"
+  ],
+  "strategy": [
+    "Error encountered: invalid config",
+    "Parameter changes: action: \"config.apply\" -> \"config.schema.lookup\"; raw: \"{\\n  \\\"meta\\\": {\\n    \\\"lastTouchedVersion\\\": \\\"2026.3.7\\\",... -> null; note: \"禁用内置stepfun提供者，强制使用OpenRouter\" -> null; path: null -> \"agents.list.*.model\"",
+    "Recovery result: {\"content\":[{\"type\":\"text\",\"text\":\"{\\n  \\\"ok\\\": true,\\n  \\\"result\\\": {\\n    \\\"path\\\": \\\"agents.list.*.model\\\",\\n    \\\"schema\\\": {},\\n    \\\"children\\\": []\\n  }\\n}\"}],\"details\":{\"ok\":true,\"result\":{\"pat"
+  ],
+  "source": {
+    "traceId": "trace-0",
+    "createdAt": 1773222186089
+  },
+  "metadata": {
+    "confidence": 0.4,
+    "useCount": 0,
+    "successCount": 0
+  }
+}

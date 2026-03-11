@@ -1,26 +1,21 @@
 ---
 name: apple-reminders
-description: Manage Apple Reminders via remindctl CLI (list, add, edit, complete, delete). Supports lists, date filters, and JSON/plain output.
+description: "Manage Apple Reminders via remindctl CLI (list, add, edit, complete, delete). Supports lists, date filters, and JSON/plain output."
+version: "1.0.0"
+author: "DD-OS"
 homepage: https://github.com/steipete/remindctl
 metadata:
-  {
-    "openclaw":
-      {
-        "emoji": "⏰",
-        "os": ["darwin"],
-        "requires": { "bins": ["remindctl"] },
-        "install":
-          [
-            {
-              "id": "brew",
-              "kind": "brew",
-              "formula": "steipete/tap/remindctl",
-              "bins": ["remindctl"],
-              "label": "Install remindctl via Homebrew",
-            },
-          ],
-      },
-  }
+  openclaw:
+    emoji: "⏰"
+    primaryEnv: "shell"
+    requires:
+      bins: ["remindctl"]
+    install:
+      - id: "brew"
+        kind: "brew"
+        formula: "steipete/tap/remindctl"
+        bins: ["remindctl"]
+        label: "Install remindctl via Homebrew"
 ---
 
 # Apple Reminders CLI (remindctl)

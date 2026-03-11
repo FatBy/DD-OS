@@ -1,22 +1,12 @@
 ---
 name: vercel-deploy
-description: Deploy web projects to Vercel with automated setup
-version: 1.0.0
-author: DD-OS Team
-tags: [deploy, vercel, hosting, production]
-inputs:
-  project_name:
-    type: string
-    required: false
-    description: Vercel project name (default: from package.json)
-  production:
-    type: boolean
-    required: false
-    description: Deploy to production (default: false for preview)
-  env_vars:
-    type: object
-    required: false
-    description: Environment variables to set
+description: "Deploy web projects to Vercel with automated CLI setup, authentication, and deployment configuration."
+version: "1.0.0"
+author: "DD-OS"
+metadata:
+  openclaw:
+    emoji: "🔧"
+    primaryEnv: "shell"
 ---
 
 # Vercel Deploy

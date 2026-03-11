@@ -15,8 +15,11 @@ import { parseSoulMd, type ParsedSoul } from '@/utils/soulParser'
 import { skillStatsService } from './skillStatsService'
 import { immuneService } from './capsuleService'
 import { nexusRuleEngine } from './nexusRuleEngine'
-import { nexusManager, type SOPTracker } from './nexusManager'
+import { nexusManager, type SOPTracker, type SOPMode } from './nexusManager'
 import { genePoolService } from './genePoolService'
+import { clawHubService } from './clawHubService'
+import { agentEventBus } from './agentEventBus'
+import { estimateTokens } from './nexusContextEngine'
 
 // ============================================
 // 类型定义
@@ -815,7 +818,7 @@ class LocalClawService {
   /**
    * 检测工具错误是否属于能力缺失，并记录到记忆
    */
-  private detectAndRecordCapabilityGap(toolName: string, errorMsg: string, taskHint: string): void {
+  private async detectAndRecordCapabilityGap(toolName: string, errorMsg: string, taskHint: string): Promise<void> {
     // 能力缺失特征词
     const gapPatterns = [
       /unknown tool/i, /tool not found/i, /不支持/,
@@ -847,6 +850,43 @@ class LocalClawService {
     }).catch(() => {})
 
     console.log(`[LocalClaw] Capability gap detected: ${toolName}`)
+
+    // ClawHub 自动发现
+    this.autoDiscoverFromClawHub(toolName, taskHint).catch(err => {
+      console.warn('[LocalClaw] ClawHub auto-discover failed:', err)
+    })
+  }
+
+  /**
+   * 自动从 ClawHub 搜索匹配技能并推送建议
+   */
+  private async autoDiscoverFromClawHub(toolName: string, taskHint: string): Promise<void> {
+    // 构建搜索词：优先用 toolName (去掉下划线变为连字符)，fallback 到 taskHint 关键词
+    const searchQuery = toolName.replace(/_/g, '-').replace(/\s+/g, ' ').trim()
+    if (!searchQuery) return
+
+    try {
+      const results = await clawHubService.searchSkills(searchQuery)
+      if (!results.skills || results.skills.length === 0) return
+
+      const topMatches = results.skills.slice(0, 3)
+
+      // 动态导入 store 避免循环依赖
+      const { useStore } = await import('@/store')
+      useStore.getState().addClawHubSuggestion({
+        id: `discovery-${toolName}-${Date.now()}`,
+        type: 'skill-discovery',
+        query: searchQuery,
+        matches: topMatches,
+        triggerTool: toolName,
+        triggerTask: taskHint.slice(0, 100),
+      })
+
+      console.log(`[LocalClaw] ClawHub auto-discovery: found ${topMatches.length} matches for "${searchQuery}"`)
+    } catch (error) {
+      // 网络不可用等情况，静默失败
+      console.warn('[LocalClaw] ClawHub search failed:', error)
+    }
   }
 
   /**
@@ -2615,6 +2655,12 @@ ${explorationContext}`
     this.storeActions?.setAgentStatus('thinking')
     this._verificationCache.clear()
 
+    // V2: 初始化 EventBus run (Legacy 模式)
+    const legacyRunId = `run-legacy-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    const legacyRunStartTime = Date.now()
+    const legacyCurrentLLMModel = (window as any).__ddos_llm_model || 'unknown'
+    agentEventBus.startRun(legacyRunId, legacyCurrentLLMModel, nexusId || undefined)
+
     // 🎯 复杂度感知：三级轮次分配
     const isSimpleTask = userPrompt.length < 20 && 
       !userPrompt.match(/代码|编写|创建|修复|分析|部署|配置|脚本|搜索|安装|下载|code|create|fix|analyze|search|install/)
@@ -2680,27 +2726,49 @@ ${explorationContext}`
     const legacySopTracker: SOPTracker | null = effectiveNexusIdLegacy
       ? nexusManager.createSOPTracker(effectiveNexusIdLegacy)
       : null
-    if (legacySopTracker) {
-      console.log(`[LocalClaw] SOP Tracker (Legacy) created for "${legacySopTracker.nexusLabel}" with ${legacySopTracker.phases.length} phases`)
+
+    // 📋 SOP 适用性评估 (Legacy): 与 FC 模式一致
+    let legacySopMode: SOPMode = 'skip'
+    if (legacySopTracker && effectiveNexusIdLegacy) {
+      const legacyEval = nexusManager.evaluateSOPApplicability(userPrompt, effectiveNexusIdLegacy)
+      legacySopMode = legacyEval.mode
+      console.log(`[LocalClaw] SOP evaluation (Legacy): mode=${legacySopMode}, reason="${legacyEval.reason}", phases=${legacySopTracker.phases.length}`)
     }
+    let legacySopActive = legacySopMode === 'strict'
+
     const legacyToolsUsedForSOP: string[] = []
     let legacyLastSOPReminderTurn = 0
     const LEGACY_SOP_REMINDER_INTERVAL = 3
 
-    // 📋 首轮 SOP 强制指引 (Legacy): 让模型从 Step 1 开始，不跳步
-    if (legacySopTracker && legacySopTracker.phases.length > 0) {
+    // 📋 首轮 SOP 指引 (Legacy): 根据 sopMode 决定强制 vs 建议
+    if (legacySopTracker && legacySopTracker.phases.length > 0 && legacySopMode !== 'skip') {
       const firstPhase = legacySopTracker.phases[0]
-      let sopDirective = `[SOP 执行指令 - ${legacySopTracker.nexusLabel}]\n`
-      sopDirective += `你已激活 Nexus "${legacySopTracker.nexusLabel}"，必须严格按照 SOP 流程执行。\n`
-      sopDirective += `当前应执行 Phase 1: ${firstPhase.name}\n`
-      sopDirective += `具体步骤:\n`
-      for (const step of firstPhase.steps) {
-        sopDirective += `  ${step.index}. ${step.text}\n`
+      if (legacySopMode === 'strict') {
+        let sopDirective = `[SOP 执行指令 - ${legacySopTracker.nexusLabel}]\n`
+        sopDirective += `你已激活 Nexus "${legacySopTracker.nexusLabel}"，必须严格按照 SOP 流程执行。\n`
+        sopDirective += `当前应执行 Phase 1: ${firstPhase.name}\n`
+        sopDirective += `具体步骤:\n`
+        for (const step of firstPhase.steps) {
+          sopDirective += `  ${step.index}. ${step.text}\n`
+        }
+        sopDirective += `\n⚠️ 禁止跳过此阶段直接执行后续步骤。请从 Phase 1 的第 1 步开始。`
+        messages.push({ role: 'user', content: sopDirective })
+        legacyLastSOPReminderTurn = 0
+        console.log(`[LocalClaw] SOP strict directive (Legacy) injected: Phase 1 - ${firstPhase.name}`)
+      } else {
+        let sopChoice = `[SOP 适用性评估 - ${legacySopTracker.nexusLabel}]\n`
+        sopChoice += `当前 Nexus "${legacySopTracker.nexusLabel}" 有预定义的 SOP 流程（共 ${legacySopTracker.phases.length} 个阶段）。\n`
+        sopChoice += `请先判断用户的任务是否适合按此 SOP 流程执行：\n\n`
+        sopChoice += `SOP 概要:\n`
+        for (const phase of legacySopTracker.phases) {
+          sopChoice += `  Phase ${phase.index}: ${phase.name}\n`
+        }
+        sopChoice += `\n如果此任务适合按 SOP 执行，请在回复开头包含 [SOP:FOLLOW]，然后从 Phase 1 开始。\n`
+        sopChoice += `如果此任务不需要 SOP（如简单查询、技能加载、单步操作等），请在回复开头包含 [SOP:FREE]，然后自由选择最佳方案。\n`
+        sopChoice += `注意：[SOP:FOLLOW] 和 [SOP:FREE] 标记仅供系统识别，不会展示给用户。`
+        messages.push({ role: 'user', content: sopChoice })
+        console.log(`[LocalClaw] SOP optional choice (Legacy) injected, awaiting model decision`)
       }
-      sopDirective += `\n⚠️ 禁止跳过此阶段直接执行后续步骤。请从 Phase 1 的第 1 步开始。`
-      messages.push({ role: 'user', content: sopDirective })
-      legacyLastSOPReminderTurn = 0
-      console.log(`[LocalClaw] SOP first-turn directive (Legacy) injected: Phase 1 - ${firstPhase.name}`)
     }
 
     // 外层升级循环
@@ -2727,21 +2795,32 @@ ${explorationContext}`
             content: `Turn ${turnCount}: 正在思考...`,
             timestamp: Date.now(),
           })
+          agentEventBus.changePhase('planning', `Legacy Turn ${turnCount}`)
 
           // 调用 LLM
         let response = ''
         
+        agentEventBus.messageStart()
         await streamChat(
           messages.map((m) => ({ role: m.role as any, content: m.content })),
           (chunk) => {
             response += chunk
+            agentEventBus.textDelta(chunk, response)
             onUpdate?.(response)
           },
           signal  // 传入 AbortSignal，终止时中断 fetch
         )
+        agentEventBus.messageEnd(response)
 
         // 检查是否有工具调用
         const toolCall = this.parseToolCall(response)
+
+        // 📋 SOP optional 模式: 首轮回复后检测模型是否采纳 SOP (Legacy)
+        if (turnCount === 1 && legacySopMode === 'optional' && legacySopTracker) {
+          const adopted = nexusManager.detectSOPAdoption(response)
+          legacySopActive = adopted
+          console.log(`[LocalClaw] SOP adoption detection (Legacy): ${adopted ? 'FOLLOW' : 'FREE'} (response preview: "${response.slice(0, 80)}")`)
+        }
 
         // 提取 thought (如果模型输出了)
         if (toolCall) {
@@ -2777,6 +2856,16 @@ ${explorationContext}`
                 message: `[PreCheck] 检测到危险操作 (${matchedDanger.reason}): ${argsStr.slice(0, 100)}`,
               })
 
+              // V2: 审批请求事件 (Legacy)
+              const legacyApprovalReqId = `approval-legacy-${Date.now()}`
+              agentEventBus.approvalRequired(
+                legacyApprovalReqId,
+                argsStr.slice(0, 200),
+                toolCall.name,
+                matchedDanger.level === 'critical' ? 'critical' : 'high',
+                matchedDanger.reason,
+              )
+
               // 请求用户审批 (如果 store 支持)
               let approved = false
               if (this.storeActions?.requestApproval) {
@@ -2791,6 +2880,9 @@ ${explorationContext}`
                   approved = false
                 }
               }
+
+              // V2: 审批结果事件 (Legacy)
+              agentEventBus.approvalResolved(legacyApprovalReqId, approved, 'user')
 
               if (!approved) {
                 // 用户拒绝或无审批UI：阻止执行，让 Agent 重新思考
@@ -2837,9 +2929,23 @@ ${explorationContext}`
             timestamp: Date.now(),
           })
 
+          // V2: 工具开始事件 (Legacy)
+          const legacyCallId = `legacy-${Date.now()}-${toolCall.name}`
+          const legacyIsMutating = CONFIG.CRITIC_TOOLS.includes(toolCall.name)
+          agentEventBus.toolStart(toolCall.name, legacyCallId, toolCall.args, legacyIsMutating)
+
           const toolStartTime = Date.now()
           const toolResult = await this.executeTool(toolCall)
           const toolLatency = Date.now() - toolStartTime
+
+          // V2: 工具结束事件 (Legacy)
+          agentEventBus.toolEnd(
+            legacyCallId,
+            toolCall.name,
+            toolResult.status !== 'error',
+            toolResult.result.slice(0, 2000),
+            toolLatency,
+          )
 
           // 发送工具结果步骤
           onStep?.({
@@ -2935,6 +3041,9 @@ ${explorationContext}`
 
             // 🧬 能力缺失检测
             this.detectAndRecordCapabilityGap(toolCall.name, toolResult.result, userPrompt)
+
+            // V2: Reflexion 开始事件 (Legacy)
+            agentEventBus.reflexionStart(toolCall.name, toolResult.result.slice(0, 500))
             
             // 🛡️ 错误签名追踪: 检测重复错误防止死循环
             const legacyErrorSig = `${toolCall.name}:${toolResult.result.slice(0, 100)}`
@@ -2991,6 +3100,12 @@ ${explorationContext}`
                 message: `[Reflexion] 分析 ${toolCall.name} 失败原因`,
               })
             }
+
+            // V2: Reflexion 结束事件 (Legacy)
+            agentEventBus.reflexionEnd(
+              toolResult.result.slice(0, 200),
+              legacyRepeatCount >= 2 ? 'crisis_intervention' : 'structured_reflection',
+            )
           } else {
             lastToolResult = toolResult.result
             
@@ -3058,6 +3173,25 @@ ${explorationContext}`
                   )
                 }
                 console.log('[LocalClaw] Tools & skills refreshed mid-loop after skill change')
+
+                // ClawHub 发布提示：检测是否写入了新 SKILL.md
+                const writtenPath = String(toolCall.args.path || '').replace(/\\/g, '/')
+                if (writtenPath.endsWith('SKILL.md') && writtenPath.includes('skills/')) {
+                  const skillDirName = writtenPath.split('/').slice(-2, -1)[0]
+                  if (skillDirName) {
+                    try {
+                      const { useStore } = await import('@/store')
+                      useStore.getState().addClawHubSuggestion({
+                        id: `publish-${skillDirName}-${Date.now()}`,
+                        type: 'skill-discovery',
+                        query: skillDirName,
+                        matches: [],
+                        triggerTool: 'skill-generator',
+                        triggerTask: `新技能 "${skillDirName}" 已创建，是否发布到 ClawHub？`,
+                      })
+                    } catch { /* store 不可用时静默 */ }
+                  }
+                }
               } catch {
                 console.warn('[LocalClaw] Failed to refresh tools mid-loop')
               }
@@ -3130,8 +3264,8 @@ ${acceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${nex
           // 📋 SOP: 记录工具调用 (Legacy)
           legacyToolsUsedForSOP.push(toolCall.name)
 
-          // 📋 SOP 中途提醒 (Legacy): 定期注入 SOP 进度提示
-          if (legacySopTracker && (turnCount - legacyLastSOPReminderTurn) >= LEGACY_SOP_REMINDER_INTERVAL) {
+          // 📋 SOP 中途提醒 (Legacy): 仅在 sopActive 时注入
+          if (legacySopActive && legacySopTracker && (turnCount - legacyLastSOPReminderTurn) >= LEGACY_SOP_REMINDER_INTERVAL) {
             const legacySopReminder = nexusManager.buildSOPReminder(legacySopTracker, legacyToolsUsedForSOP, lastToolResult)
             if (legacySopReminder) {
               messages.push({
@@ -3144,10 +3278,14 @@ ${acceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${nex
           }
 
           this.storeActions?.setAgentStatus('thinking')
+          agentEventBus.changePhase('planning', `Legacy Turn ${turnCount} tools complete`)
         } else {
           // 无工具调用，返回最终响应
           finalResponse = response
           
+          // V2: 切换到完成阶段 (Legacy)
+          agentEventBus.changePhase('done', 'Final response generated (Legacy)')
+
           // 发送最终输出步骤
           onStep?.({
             id: `output-${Date.now()}`,
@@ -3164,12 +3302,27 @@ ${acceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${nex
         }
       } catch (error: any) {
         console.error('[LocalClaw] ReAct error:', error)
+        // V2: 错误阶段事件 (Legacy)
+        agentEventBus.changePhase('error', error.message)
         finalResponse = `执行出错: ${error.message}`
         break
       }
     }
 
     this.storeActions?.setAgentStatus('idle')
+
+    // V2: 发出 run_end 事件 (Legacy)
+    const legacyRunDuration = Date.now() - legacyRunStartTime
+    const legacyTotalTools = traceTools.length
+    const legacyRunSuccess = traceTools.length === 0 || traceTools.some(t => t.status === 'success')
+    agentEventBus.endRun({
+      success: legacyRunSuccess,
+      turns: turnCount,
+      tokensUsed: 0,
+      toolsCalled: legacyTotalTools,
+      durationMs: legacyRunDuration,
+      scoreChange: 0,
+    })
 
     // P2: 保存执行追踪 (含 Observer 元数据)
     if (traceTools.length > 0) {
@@ -3208,6 +3361,9 @@ ${acceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${nex
       // 🧬 Gene Pool: 自动收割基因 (Phase 2 - 检测 error→success 修复模式)
       genePoolService.harvestGene(traceTools, userPrompt, activeNexusId || undefined)
 
+      // V2: afterTurn 钩子 — 统一后处理入口 (Legacy)
+      console.log(`[LocalClaw/Legacy] afterTurn: ${traceTools.length} tools, ${traceTools.filter(t => t.status === 'error').length} errors, duration ${Date.now() - traceStartTime}ms`)
+
       // P4: Nexus 经验记录 + XP 更新 (Legacy 模式)
       if (activeNexusId) {
         const success = traceTools.every(t => t.status === 'success')
@@ -3236,32 +3392,47 @@ ${acceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${nex
           status: successCount > 0 ? 'success' : 'failed',
         })
 
-        // 🎮 更新 Nexus XP — 单一数据源: 后端经验文件
-        // recordExperience 写入 successes/failures.md，后端 count_experience_entries 从文件派生 XP
-        // 写入后重新拉取后端 XP 值同步到前端 Store，消除前后端 XP 双源矛盾
-        if (this.storeActions?.updateNexusXP) {
-          try {
-            const res = await fetch(`http://localhost:3001/nexuses/${encodeURIComponent(activeNexusId)}`)
-            if (res.ok) {
-              const nexusData = await res.json()
-              const backendXP = nexusData.xp || 0
-              const currentNexus = this.storeActions.getNexuses?.()?.get(activeNexusId)
-              const currentXP = currentNexus?.xp || 0
-              if (backendXP !== currentXP) {
-                // 用后端权威值覆盖前端: delta = backend - current
-                this.storeActions.updateNexusXP(activeNexusId, backendXP - currentXP)
-                console.log(`[LocalClaw/Legacy] Synced Nexus XP from backend: ${currentXP} → ${backendXP}`)
-              }
-            }
-          } catch {
-            // 同步失败不阻塞主流程
-          }
-        }
-
         // 🧬 SOP 自适应演进 (异步, 不阻塞)
         nexusManager.evolveSOPAfterExecution(activeNexusId, trace, legacySopTracker, currentMaxTurns).catch(err => {
           console.warn('[LocalClaw/Legacy] SOP evolution failed:', err)
         })
+      }
+    }
+
+    // P4: Nexus 经验记录 (无工具调用时也记录 — 纯文字交互也是 Nexus 使用)
+    const legacyActiveNexusId = this.getActiveNexusId()
+    if (legacyActiveNexusId && traceTools.length === 0 && finalResponse) {
+      nexusManager.recordExperience(
+        legacyActiveNexusId,
+        userPrompt,
+        [],
+        true,
+        finalResponse
+      ).catch(err => {
+        console.warn('[LocalClaw/Legacy] Failed to record Nexus text experience:', err)
+      })
+    }
+
+    // 🎮 更新 Nexus XP — 单一数据源: 后端经验文件 (Legacy)
+    const legacyXPNexusId = legacyActiveNexusId || this.getActiveNexusId()
+    if (legacyXPNexusId && this.storeActions?.updateNexusXP) {
+      try {
+        await new Promise(resolve => setTimeout(resolve, 200))
+        const res = await fetch(`${this.serverUrl}/nexuses/${encodeURIComponent(legacyXPNexusId)}`)
+        if (res.ok) {
+          const nexusData = await res.json()
+          const backendXP = nexusData.xp || 0
+          const currentNexus = this.storeActions.getNexuses?.()?.get(legacyXPNexusId)
+          const currentXP = currentNexus?.xp || 0
+          if (backendXP !== currentXP) {
+            this.storeActions.updateNexusXP(legacyXPNexusId, backendXP - currentXP)
+            console.log(`[LocalClaw/Legacy] Synced Nexus XP from backend: ${currentXP} → ${backendXP}`)
+          }
+        } else {
+          console.warn(`[LocalClaw/Legacy] XP sync failed: GET /nexuses/${legacyXPNexusId} returned ${res.status}`)
+        }
+      } catch {
+        // 同步失败不阻塞主流程
       }
     }
 
@@ -3348,6 +3519,12 @@ ${acceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${nex
     this.storeActions?.setAgentStatus('thinking')
     this._verificationCache.clear()
 
+    // V2: 初始化 EventBus run
+    const runId = `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    const runStartTime = Date.now()
+    const currentLLMModel = (window as any).__ddos_llm_model || 'unknown'
+    agentEventBus.startRun(runId, currentLLMModel, nexusId || undefined)
+
     // 复杂度感知轮次分配 (与 Legacy 保持一致)
     const isSimpleTask = userPrompt.length < 20 && 
       !userPrompt.match(/代码|编写|创建|修复|分析|部署|配置|脚本|搜索|安装|下载|code|create|fix|analyze|search|install/)
@@ -3368,6 +3545,10 @@ ${acceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${nex
     const systemPrompt = SYSTEM_PROMPT_FC
       .replace('{soul_summary}', soulSummary || '一个友好、专业的 AI 助手')
       .replace('{context}', dynamicContext)
+
+    // V2: 估算系统提示 token 数并上报
+    const systemTokens = estimateTokens(systemPrompt)
+    console.log(`[LocalClaw/FC] System prompt tokens: ~${systemTokens}`)
 
     // 转换工具为 OpenAI Function Calling 格式
     let tools = convertToolInfoToFunctions(currentTaskTools)
@@ -3420,27 +3601,52 @@ ${acceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${nex
     const sopTracker: SOPTracker | null = effectiveNexusIdFC
       ? nexusManager.createSOPTracker(effectiveNexusIdFC)
       : null
-    if (sopTracker) {
-      console.log(`[LocalClaw/FC] SOP Tracker created for "${sopTracker.nexusLabel}" with ${sopTracker.phases.length} phases`)
+
+    // 📋 SOP 适用性评估: 让系统判断此任务是否需要强制 SOP
+    let sopMode: SOPMode = 'skip'
+    if (sopTracker && effectiveNexusIdFC) {
+      const evaluation = nexusManager.evaluateSOPApplicability(userPrompt, effectiveNexusIdFC)
+      sopMode = evaluation.mode
+      console.log(`[LocalClaw/FC] SOP evaluation: mode=${sopMode}, reason="${evaluation.reason}", phases=${sopTracker.phases.length}`)
     }
+    // sopActive: 控制后续 SOP 提醒是否注入。strict 模式立即激活，optional 模式等模型首轮回复后判断
+    let sopActive = sopMode === 'strict'
+
     const fcToolsUsedForSOP: string[] = []  // 累积工具调用记录 (用于 SOP 进度推断)
     let lastSOPReminderTurn = 0             // 上次注入 SOP 提醒的轮次
     const SOP_REMINDER_INTERVAL = 3         // 每 N 轮注入一次 SOP 提醒
 
-    // 📋 首轮 SOP 强制指引 (FC)：让模型从 Step 1 开始，不跳步
-    if (sopTracker && sopTracker.phases.length > 0) {
+    // 📋 首轮 SOP 指引 (FC)：根据 sopMode 决定强制 vs 建议
+    if (sopTracker && sopTracker.phases.length > 0 && sopMode !== 'skip') {
       const firstPhase = sopTracker.phases[0]
-      let sopDirective = `[SOP 执行指令 - ${sopTracker.nexusLabel}]\n`
-      sopDirective += `你已激活 Nexus "${sopTracker.nexusLabel}"，必须严格按照 SOP 流程执行。\n`
-      sopDirective += `当前应执行 Phase 1: ${firstPhase.name}\n`
-      sopDirective += `具体步骤:\n`
-      for (const step of firstPhase.steps) {
-        sopDirective += `  ${step.index}. ${step.text}\n`
+      if (sopMode === 'strict') {
+        // strict 模式: 保持原有强制指令
+        let sopDirective = `[SOP 执行指令 - ${sopTracker.nexusLabel}]\n`
+        sopDirective += `你已激活 Nexus "${sopTracker.nexusLabel}"，必须严格按照 SOP 流程执行。\n`
+        sopDirective += `当前应执行 Phase 1: ${firstPhase.name}\n`
+        sopDirective += `具体步骤:\n`
+        for (const step of firstPhase.steps) {
+          sopDirective += `  ${step.index}. ${step.text}\n`
+        }
+        sopDirective += `\n⚠️ 禁止跳过此阶段直接执行后续步骤。请从 Phase 1 的第 1 步开始。`
+        messages.push({ role: 'user', content: sopDirective })
+        lastSOPReminderTurn = 0
+        console.log(`[LocalClaw/FC] SOP strict directive injected: Phase 1 - ${firstPhase.name}`)
+      } else {
+        // optional 模式: 让模型自己决定是否走 SOP
+        let sopChoice = `[SOP 适用性评估 - ${sopTracker.nexusLabel}]\n`
+        sopChoice += `当前 Nexus "${sopTracker.nexusLabel}" 有预定义的 SOP 流程（共 ${sopTracker.phases.length} 个阶段）。\n`
+        sopChoice += `请先判断用户的任务是否适合按此 SOP 流程执行：\n\n`
+        sopChoice += `SOP 概要:\n`
+        for (const phase of sopTracker.phases) {
+          sopChoice += `  Phase ${phase.index}: ${phase.name}\n`
+        }
+        sopChoice += `\n如果此任务适合按 SOP 执行，请在回复开头包含 [SOP:FOLLOW]，然后从 Phase 1 开始。\n`
+        sopChoice += `如果此任务不需要 SOP（如简单查询、技能加载、单步操作等），请在回复开头包含 [SOP:FREE]，然后自由选择最佳方案。\n`
+        sopChoice += `注意：[SOP:FOLLOW] 和 [SOP:FREE] 标记仅供系统识别，不会展示给用户。`
+        messages.push({ role: 'user', content: sopChoice })
+        console.log(`[LocalClaw/FC] SOP optional choice injected, awaiting model decision`)
       }
-      sopDirective += `\n⚠️ 禁止跳过此阶段直接执行后续步骤。请从 Phase 1 的第 1 步开始。`
-      messages.push({ role: 'user', content: sopDirective })
-      lastSOPReminderTurn = 0
-      console.log(`[LocalClaw/FC] SOP first-turn directive injected: Phase 1 - ${firstPhase.name}`)
     }
 
     // 外层升级循环
@@ -3467,14 +3673,24 @@ ${acceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${nex
             content: `Turn ${turnCount}: 正在思考...`,
             timestamp: Date.now(),
           })
+          agentEventBus.changePhase('planning', `Turn ${turnCount}`)
+
+          // V2: 每轮开始时估算上下文 token 使用
+          const turnContextTokens = messages.reduce((sum, m) => sum + estimateTokens(typeof m.content === 'string' ? m.content : '') + 4, 0)
+          if (turnContextTokens > 80000) {
+            agentEventBus.tokenWarning(turnContextTokens, 128000)
+            console.log(`[LocalClaw/FC] Token warning: ~${turnContextTokens} tokens in context`)
+          }
 
           // 调用 LLM (带 tools 参数)
           let streamedContent = ''
+          agentEventBus.messageStart()
         const result: LLMStreamResult = await streamChat(
           messages,
           (chunk) => {
             streamedContent += chunk
             onUpdate?.(streamedContent)
+            agentEventBus.textDelta(chunk, streamedContent)
           },
           signal, // 传入 AbortSignal，终止时中断 fetch
           undefined, // config
@@ -3482,7 +3698,19 @@ ${acceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${nex
         )
 
         const { content, toolCalls, finishReason, reasoningContent } = result
+        agentEventBus.messageEnd(content || '')
         console.log(`[LocalClaw/FC] finish_reason: ${finishReason}, toolCalls: ${toolCalls.length}`)
+
+        // 📋 SOP optional 模式: 首轮回复后检测模型是否采纳 SOP
+        if (turnCount === 1 && sopMode === 'optional' && sopTracker) {
+          const responseText = content || ''
+          const adopted = nexusManager.detectSOPAdoption(responseText)
+          sopActive = adopted
+          console.log(`[LocalClaw/FC] SOP adoption detection: ${adopted ? 'FOLLOW' : 'FREE'} (response preview: "${responseText.slice(0, 80)}")`)
+          if (!adopted) {
+            console.log(`[LocalClaw/FC] Model chose FREE mode — SOP reminders will be skipped`)
+          }
+        }
 
         // 判断是否有工具调用
         if (toolCalls.length > 0) {
@@ -3543,6 +3771,16 @@ ${acceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${nex
                   message: `[PreCheck] 检测到危险操作 (${matchedDanger.reason}): ${argsStr.slice(0, 100)}`,
                 })
 
+                // V2: 审批请求事件
+                const approvalReqId = `approval-${Date.now()}`
+                agentEventBus.approvalRequired(
+                  approvalReqId,
+                  argsStr.slice(0, 200),
+                  toolName,
+                  matchedDanger.level === 'critical' ? 'critical' : 'high',
+                  matchedDanger.reason,
+                )
+
                 let approved = false
                 if (this.storeActions?.requestApproval) {
                   try {
@@ -3556,6 +3794,9 @@ ${acceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${nex
                     approved = false
                   }
                 }
+
+                // V2: 审批结果事件
+                agentEventBus.approvalResolved(approvalReqId, approved, 'user')
 
                 if (!approved) {
                   // 用户拒绝：返回错误消息让 LLM 重新思考
@@ -3588,9 +3829,22 @@ ${acceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${nex
               timestamp: Date.now(),
             })
 
+            // V2: 工具开始事件
+            const isMutatingTool = CONFIG.CRITIC_TOOLS.includes(toolName)
+            agentEventBus.toolStart(toolName, tc.id, toolArgs, isMutatingTool)
+
             const toolStartTime = Date.now()
             const toolResult = await this.executeTool({ name: toolName, args: toolArgs })
             const toolLatency = Date.now() - toolStartTime
+
+            // V2: 工具结束事件
+            agentEventBus.toolEnd(
+              tc.id,
+              toolName,
+              toolResult.status !== 'error',
+              toolResult.result.slice(0, 2000),
+              toolLatency,
+            )
 
             onStep?.({
               id: `result-${Date.now()}`,
@@ -3688,6 +3942,9 @@ ${acceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${nex
               // 🧬 能力缺失检测
               this.detectAndRecordCapabilityGap(toolName, toolResult.result, userPrompt)
 
+              // V2: Reflexion 开始事件
+              agentEventBus.reflexionStart(toolName, toolResult.result.slice(0, 500))
+
               // 🎯 Layer 3: 运行时动态扩展 - 工具不足时自动补充
               if (isFiltered) {
                 const expanded = nexusManager.expandToolsForReflexion(currentTaskTools, toolName, toolResult.result)
@@ -3770,6 +4027,12 @@ ${acceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${nex
                 })
               }
               
+              // V2: Reflexion 结束事件
+              agentEventBus.reflexionEnd(
+                toolResult.result.slice(0, 200),
+                repeatCount >= 2 ? 'crisis_intervention' : 'structured_reflection',
+              )
+
               // 🔄 连续失败过多 → 标记需要重规划提示 (延迟到所有 tool 响应之后)
               // 注意: 不能在 tool 响应中间插入 user 消息，否则违反 API 协议导致 400 错误
               if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
@@ -3910,6 +4173,9 @@ ${fcAcceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${n
               // 避免 "tool_call_ids did not have response messages" 400 错误
               console.error(`[LocalClaw/FC] Tool loop error for ${toolName}:`, toolLoopError)
               
+              // V2: 工具异常事件
+              agentEventBus.toolError(tc.id, toolName, toolLoopError?.message || '未知错误', CONFIG.CRITIC_TOOLS.includes(toolName))
+
               // 检查是否已经为这个 tool_call 添加了响应
               const hasResponse = messages.some(m => m.role === 'tool' && m.tool_call_id === tc.id)
               if (!hasResponse) {
@@ -3955,8 +4221,8 @@ ${fcAcceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${n
             })
           }
 
-          // 📋 SOP 中途提醒: 定期注入 SOP 进度提示，防止模型遗忘 SOP
-          if (sopTracker && (turnCount - lastSOPReminderTurn) >= SOP_REMINDER_INTERVAL) {
+          // 📋 SOP 中途提醒: 仅在 sopActive 时注入 (strict 直接激活, optional 需模型采纳)
+          if (sopActive && sopTracker && (turnCount - lastSOPReminderTurn) >= SOP_REMINDER_INTERVAL) {
             const sopReminder = nexusManager.buildSOPReminder(sopTracker, fcToolsUsedForSOP, lastToolResult)
             if (sopReminder) {
               messages.push({
@@ -3969,10 +4235,14 @@ ${fcAcceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${n
           }
 
           this.storeActions?.setAgentStatus('thinking')
+          agentEventBus.changePhase('planning', `Turn ${turnCount} tools complete, re-thinking`)
         } else {
           // 无工具调用 - LLM 直接回复用户
           finalResponse = content || ''
           
+          // V2: 切换到完成阶段
+          agentEventBus.changePhase('done', 'Final response generated')
+
           onStep?.({
             id: `output-${Date.now()}`,
             type: 'output',
@@ -3988,12 +4258,27 @@ ${fcAcceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${n
         }
       } catch (error: any) {
         console.error('[LocalClaw/FC] ReAct error:', error)
+        // V2: 错误阶段事件
+        agentEventBus.changePhase('error', error.message)
         finalResponse = `执行出错: ${error.message}`
         break
       }
     }
 
     this.storeActions?.setAgentStatus('idle')
+
+    // V2: 发出 run_end 事件 (在 trace 保存前，计算最终统计)
+    const runDurationMs = Date.now() - runStartTime
+    const totalToolsCalled = traceTools.length
+    const runSuccess = traceTools.length === 0 || traceTools.some(t => t.status === 'success')
+    agentEventBus.endRun({
+      success: runSuccess,
+      turns: turnCount,
+      tokensUsed: 0, // TODO: Step 4 接入真实 token 计数
+      toolsCalled: totalToolsCalled,
+      durationMs: runDurationMs,
+      scoreChange: 0, // TODO: Step 10 接入 Nexus 评分
+    })
 
     // P2: 保存执行追踪 (含 Observer 元数据)
     const activeNexusId = this.getActiveNexusId()
@@ -4032,7 +4317,11 @@ ${fcAcceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${n
       // 🧬 Gene Pool: 自动收割基因 (Phase 2 - 检测 error→success 修复模式)
       genePoolService.harvestGene(traceTools, userPrompt, activeNexusId || undefined)
 
-      // P4: Nexus 经验记录
+      // V2: afterTurn 钩子 — 统一的后处理入口
+      // 当前由 genePool + nexusManager 各自处理，未来统一到 ContextEngine.afterTurn()
+      console.log(`[LocalClaw/FC] afterTurn: ${traceTools.length} tools, ${traceTools.filter(t => t.status === 'error').length} errors, duration ${Date.now() - traceStartTime}ms`)
+
+      // P4: Nexus 经验记录 (有工具调用时)
       if (activeNexusId) {
         const success = traceTools.every(t => t.status === 'success')
         nexusManager.recordExperience(
@@ -4060,31 +4349,48 @@ ${fcAcceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${n
           status: successCount > 0 ? 'success' : 'failed',
         })
 
-        // 🎮 更新 Nexus XP — 单一数据源: 后端经验文件
-        // recordExperience 写入 successes/failures.md，后端 count_experience_entries 从文件派生 XP
-        // 写入后重新拉取后端 XP 值同步到前端 Store，消除前后端 XP 双源矛盾
-        if (this.storeActions?.updateNexusXP) {
-          try {
-            const res = await fetch(`http://localhost:3001/nexuses/${encodeURIComponent(activeNexusId)}`)
-            if (res.ok) {
-              const nexusData = await res.json()
-              const backendXP = nexusData.xp || 0
-              const currentNexus = this.storeActions.getNexuses?.()?.get(activeNexusId)
-              const currentXP = currentNexus?.xp || 0
-              if (backendXP !== currentXP) {
-                this.storeActions.updateNexusXP(activeNexusId, backendXP - currentXP)
-                console.log(`[LocalClaw/FC] Synced Nexus XP from backend: ${currentXP} → ${backendXP}`)
-              }
-            }
-          } catch {
-            // 同步失败不阻塞主流程
-          }
-        }
-
         // 🧬 SOP 自适应演进 (异步, 不阻塞)
         nexusManager.evolveSOPAfterExecution(activeNexusId, trace, sopTracker, currentMaxTurns).catch(err => {
           console.warn('[LocalClaw/FC] SOP evolution failed:', err)
         })
+      }
+    }
+
+    // P4: Nexus 经验记录 (无工具调用时也记录 — 纯文字交互也是 Nexus 使用)
+    if (activeNexusId && traceTools.length === 0 && finalResponse) {
+      nexusManager.recordExperience(
+        activeNexusId,
+        userPrompt,
+        [],
+        true,
+        finalResponse
+      ).catch(err => {
+        console.warn('[LocalClaw/FC] Failed to record Nexus text experience:', err)
+      })
+    }
+
+    // 🎮 更新 Nexus XP — 单一数据源: 后端经验文件
+    // recordExperience 写入 successes/failures.md，后端 count_experience_entries 从文件派生 XP
+    // 写入后重新拉取后端 XP 值同步到前端 Store，消除前后端 XP 双源矛盾
+    if (activeNexusId && this.storeActions?.updateNexusXP) {
+      try {
+        // 等待 recordExperience 的 POST 写入完成后再读取
+        await new Promise(resolve => setTimeout(resolve, 200))
+        const res = await fetch(`${this.serverUrl}/nexuses/${encodeURIComponent(activeNexusId)}`)
+        if (res.ok) {
+          const nexusData = await res.json()
+          const backendXP = nexusData.xp || 0
+          const currentNexus = this.storeActions.getNexuses?.()?.get(activeNexusId)
+          const currentXP = currentNexus?.xp || 0
+          if (backendXP !== currentXP) {
+            this.storeActions.updateNexusXP(activeNexusId, backendXP - currentXP)
+            console.log(`[LocalClaw/FC] Synced Nexus XP from backend: ${currentXP} → ${backendXP}`)
+          }
+        } else {
+          console.warn(`[LocalClaw/FC] XP sync failed: GET /nexuses/${activeNexusId} returned ${res.status}`)
+        }
+      } catch {
+        // 同步失败不阻塞主流程
       }
     }
 

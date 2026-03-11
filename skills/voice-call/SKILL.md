@@ -1,15 +1,14 @@
 ---
 name: voice-call
-description: Start voice calls via the OpenClaw voice-call plugin.
+description: "Start voice calls via the OpenClaw voice-call plugin."
+version: "1.0.0"
+author: "DD-OS"
 metadata:
-  {
-    "openclaw":
-      {
-        "emoji": "📞",
-        "skillKey": "voice-call",
-        "requires": { "config": ["plugins.entries.voice-call.enabled"] },
-      },
-  }
+  openclaw:
+    emoji: "📞"
+    primaryEnv: "shell"
+    requires:
+      config: ["plugins.entries.voice-call.enabled"]
 ---
 
 # Voice Call

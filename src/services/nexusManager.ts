@@ -31,6 +31,9 @@ export interface SOPTracker {
   nexusLabel: string
 }
 
+// SOP 适用性评估结果
+export type SOPMode = 'strict' | 'optional' | 'skip'
+
 // ---- SOP 自适应演进类型 ----
 
 export interface SOPAnnotation {
@@ -630,7 +633,7 @@ export class NexusManagerService {
 
     if (!sopContent) {
       try {
-        const res = await fetch(`${this.io.getServerUrl()}/nexuses/${nexusId}`)
+        const res = await fetch(`${this.io.getServerUrl()}/nexuses/${encodeURIComponent(nexusId)}`)
         if (res.ok) {
           const detail = await res.json()
           sopContent = detail.sopContent
@@ -905,7 +908,7 @@ export class NexusManagerService {
     if (!this.io) return
     try {
       const insight = this.extractKeyInsight(toolsUsed, finalResponse)
-      await fetch(`${this.io.getServerUrl()}/nexuses/${nexusId}/experience`, {
+      await fetch(`${this.io.getServerUrl()}/nexuses/${encodeURIComponent(nexusId)}/experience`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1119,6 +1122,80 @@ export class NexusManagerService {
     return reminder
   }
 
+  /**
+   * 评估用户任务是否适合按 SOP 流程执行
+   * 返回: strict (强制 SOP) | optional (让模型自行判断) | skip (跳过 SOP)
+   */
+  evaluateSOPApplicability(userQuery: string, nexusId: string): { mode: SOPMode; reason: string } {
+    if (!this.io) return { mode: 'skip', reason: 'no io' }
+    const nexuses = this.io.getNexuses()
+    const nexus = nexuses?.get(nexusId)
+    if (!nexus?.sopContent) return { mode: 'skip', reason: 'no SOP content' }
+
+    const q = userQuery.trim()
+    const qLower = q.toLowerCase()
+
+    // 1. 用户明确要求按 SOP/流程执行 → strict
+    if (/(?:按照|按|遵循|执行|走|跑|启动).*(?:sop|流程|步骤|标准流程)/i.test(q) ||
+        /(?:sop|流程|步骤).*(执行|开始|启动|走)/i.test(q)) {
+      return { mode: 'strict', reason: 'user explicitly requested SOP' }
+    }
+
+    // 2. 简短/问答型 → skip (already handled by isTaskIntent, but double-check)
+    if (q.length < 15 && /[？?]$/.test(q)) {
+      return { mode: 'skip', reason: 'short question' }
+    }
+
+    // 3. Meta 级请求 (加载技能、查看信息等) → skip
+    if (/(?:加载|查看|列出|显示|有什么|哪些|了解|介绍|说明|帮助|help).*(?:技能|skill|工具|tool|能力|功能)/i.test(q)) {
+      return { mode: 'skip', reason: 'meta request about skills/tools' }
+    }
+    if (/(?:技能|skill|工具|tool).*(?:加载|列表|有哪些|是什么)/i.test(q)) {
+      return { mode: 'skip', reason: 'meta request about skills/tools' }
+    }
+
+    // 4. SOP Phase 关键词匹配: 检查用户任务是否明确匹配 SOP 中的多个 Phase
+    const phases = this.parseSOP(nexus.sopContent)
+    if (phases.length > 0) {
+      let phaseMatchCount = 0
+      for (const phase of phases) {
+        const phaseKeywords = phase.steps.flatMap(s => s.keywords)
+        const matched = phaseKeywords.some(kw => qLower.includes(kw.toLowerCase()))
+        if (matched) phaseMatchCount++
+      }
+      // 匹配超过一半的 Phase → strict (任务覆盖 SOP 多个阶段)
+      if (phaseMatchCount >= Math.ceil(phases.length / 2)) {
+        return { mode: 'strict', reason: `query matches ${phaseMatchCount}/${phases.length} SOP phases` }
+      }
+    }
+
+    // 5. 任务复杂度检测: 长任务描述且包含多个动词 → optional (让模型自己判断)
+    const taskVerbCount = (q.match(/(?:做|生成|分析|创建|修改|制作|编写|设计|开发|写|搜索|查找|对比|整理|汇总|导出|绘制|create|make|build|generate|write|analyze|design)/gi) || []).length
+    if (q.length > 80 && taskVerbCount >= 2) {
+      return { mode: 'optional', reason: 'complex task, let model decide' }
+    }
+
+    // 6. 默认: optional — 让模型自己判断是否需要 SOP
+    return { mode: 'optional', reason: 'default: model decides' }
+  }
+
+  /**
+   * 检测模型第一轮回复是否采纳了 SOP 执行
+   * 用于 optional 模式: 如果模型回复表明它选择了 SOP，后续激活 tracker
+   */
+  detectSOPAdoption(firstResponse: string): boolean {
+    if (!firstResponse) return false
+    // 检测明确的 SOP 采纳信号
+    if (firstResponse.includes('[SOP:FOLLOW]')) return true
+    if (firstResponse.includes('[SOP:FREE]')) return false
+
+    // 启发式: 模型提到了 Phase、SOP、步骤执行等
+    const sopSignals = /(?:Phase\s*1|第[一1]阶段|按照\s*SOP|SOP\s*流程|开始执行.*阶段|按.*流程执行|执行.*Phase)/i
+    if (sopSignals.test(firstResponse)) return true
+
+    return false
+  }
+
   matchByTriggers(userQuery: string): string | null {
     if (!this.io) return null
     const query = userQuery.toLowerCase()
@@ -1168,14 +1245,17 @@ export class NexusManagerService {
   }
 
   /**
-   * 加载 Nexus 的 sop-fitness.json
+   * 加载 Nexus 的 sop-fitness.json (通过后端 API)
    */
   private async loadFitness(nexusId: string): Promise<SOPFitnessData> {
     if (!this.io) return this.defaultFitness()
     try {
-      const content = await this.io.readFileWithCache(`nexuses/${nexusId}/sop-fitness.json`)
-      if (content) return JSON.parse(content)
-    } catch { /* 不存在或解析失败 */ }
+      const res = await fetch(`${this.io.getServerUrl()}/nexuses/${encodeURIComponent(nexusId)}/fitness`)
+      if (!res.ok) return this.defaultFitness()
+      const data = await res.json()
+      if (!data || !data.currentVersion) return this.defaultFitness()
+      return data as SOPFitnessData
+    } catch { /* 网络错误或不存在 */ }
     return this.defaultFitness()
   }
 
@@ -1194,28 +1274,26 @@ export class NexusManagerService {
   }
 
   /**
-   * 持久化 sop-fitness.json
+   * 持久化 sop-fitness.json (通过后端 API)
    */
   private async saveFitness(nexusId: string, data: SOPFitnessData): Promise<boolean> {
     if (!this.io) return false
     let retries = 2
     while (retries >= 0) {
       try {
-        await this.io.executeTool({
-          name: 'writeFile',
-          args: {
-            path: `nexuses/${nexusId}/sop-fitness.json`,
-            content: JSON.stringify(data, null, 2),
-          },
+        const res = await fetch(`${this.io.getServerUrl()}/nexuses/${encodeURIComponent(nexusId)}/fitness`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data),
         })
-        return true
+        if (res.ok) return true
+        throw new Error(`HTTP ${res.status}`)
       } catch (err) {
         retries--
         if (retries < 0) {
           console.warn(`[SOP-Evolution] Failed to save fitness for "${nexusId}" after retries:`, err)
           return false
         }
-        // 等待后重试
         await new Promise(r => setTimeout(r, 1000))
       }
     }
@@ -1395,8 +1473,15 @@ export class NexusManagerService {
     const activeAnnotations = data.tier1Annotations.filter(a => a.evidence >= minEvidence)
     if (activeAnnotations.length === 0) return
 
-    // 读取当前 NEXUS.md
-    const nexusContent = await this.io.readFileWithCache(`nexuses/${nexusId}/NEXUS.md`)
+    // 通过 API 读取当前 NEXUS.md
+    let nexusContent: string | null = null
+    try {
+      const res = await fetch(`${this.io.getServerUrl()}/nexuses/${encodeURIComponent(nexusId)}/sop-content`)
+      if (res.ok) {
+        const json = await res.json()
+        nexusContent = json.content
+      }
+    } catch { /* ignore */ }
     if (!nexusContent) return
 
     // 构建批注区段
@@ -1406,22 +1491,23 @@ export class NexusManagerService {
     const marker = '## 🧬 执行经验 (自动更新)'
     let newContent: string
     if (nexusContent.includes(marker)) {
-      // 替换已有区段 (从 marker 到文件末尾或下一个 ## 标题)
       const markerIndex = nexusContent.indexOf(marker)
       const beforeMarker = nexusContent.slice(0, markerIndex).trimEnd()
       newContent = beforeMarker + '\n\n' + annotationSection
     } else {
-      // 追加
       newContent = nexusContent.trimEnd() + '\n\n' + annotationSection
     }
 
-    // 写回
+    // 通过 API 写回
     try {
-      await this.io.executeTool({
-        name: 'writeFile',
-        args: { path: `nexuses/${nexusId}/NEXUS.md`, content: newContent },
+      const res = await fetch(`${this.io.getServerUrl()}/nexuses/${encodeURIComponent(nexusId)}/sop-content`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: newContent }),
       })
-      console.log(`[SOP-Evolution] Tier 1: wrote ${activeAnnotations.length} annotations to NEXUS.md`)
+      if (res.ok) {
+        console.log(`[SOP-Evolution] Tier 1: wrote ${activeAnnotations.length} annotations to NEXUS.md`)
+      }
     } catch (err) {
       console.warn('[SOP-Evolution] Tier 1: failed to write annotations:', err)
     }
@@ -1483,8 +1569,15 @@ export class NexusManagerService {
   private async tier2RewriteSOP(nexusId: string, data: SOPFitnessData): Promise<void> {
     if (!this.io) return
 
-    // 1. 读取当前 SOP
-    const currentSOP = await this.io.readFileWithCache(`nexuses/${nexusId}/NEXUS.md`)
+    // 1. 通过 API 读取当前 SOP
+    let currentSOP: string | null = null
+    try {
+      const res = await fetch(`${this.io.getServerUrl()}/nexuses/${encodeURIComponent(nexusId)}/sop-content`)
+      if (res.ok) {
+        const json = await res.json()
+        currentSOP = json.content
+      }
+    } catch { /* ignore */ }
     if (!currentSOP) return
 
     // 2. 构建 Phase 统计摘要
@@ -1498,14 +1591,12 @@ export class NexusManagerService {
       return `Phase ${a.phase}: ${icon} ${a.text} (${a.evidence}次)`
     }).join('\n')
 
-    // 4. 备份当前版本
+    // 4. 通过 API 备份当前版本
     try {
-      await this.io.executeTool({
-        name: 'writeFile',
-        args: {
-          path: `nexuses/${nexusId}/sop-history/v${data.currentVersion}.md`,
-          content: currentSOP,
-        },
+      await fetch(`${this.io.getServerUrl()}/nexuses/${encodeURIComponent(nexusId)}/sop-history`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ version: String(data.currentVersion), content: currentSOP }),
       })
     } catch (err) {
       console.warn('[SOP-Evolution] Failed to backup SOP version:', err)
@@ -1552,10 +1643,11 @@ ${annotationReport}
       // 清理可能的 markdown code fence
       const cleaned = newSOP.replace(/^```(?:markdown)?\n?/i, '').replace(/\n?```$/i, '').trim()
 
-      // 6. 写入新 SOP
-      await this.io.executeTool({
-        name: 'writeFile',
-        args: { path: `nexuses/${nexusId}/NEXUS.md`, content: cleaned },
+      // 6. 通过 API 写入新 SOP
+      await fetch(`${this.io.getServerUrl()}/nexuses/${encodeURIComponent(nexusId)}/sop-content`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: cleaned }),
       })
 
       // 7. 更新 fitness 数据
@@ -1570,7 +1662,6 @@ ${annotationReport}
       data.currentVersion = newVersion
       data.executionsSinceRewrite = 0
       data.lastRewriteTime = new Date().toISOString()
-      // 清空 Tier 1 批注 (已融入新 SOP)
       data.tier1Annotations = []
 
       await this.saveFitness(nexusId, data)
@@ -1596,15 +1687,24 @@ ${annotationReport}
 
     const prevVersion = data.currentVersion - 1
     try {
-      const prevContent = await this.io.readFileWithCache(`nexuses/${nexusId}/sop-history/v${prevVersion}.md`)
+      // 通过 API 读取历史版本
+      const res = await fetch(`${this.io.getServerUrl()}/nexuses/${encodeURIComponent(nexusId)}/sop-history?version=v${prevVersion}`)
+      if (!res.ok) {
+        console.warn(`[SOP-Evolution] Rollback failed: cannot fetch v${prevVersion}`)
+        return
+      }
+      const json = await res.json()
+      const prevContent = json.content
       if (!prevContent) {
         console.warn(`[SOP-Evolution] Rollback failed: v${prevVersion}.md not found`)
         return
       }
 
-      await this.io.executeTool({
-        name: 'writeFile',
-        args: { path: `nexuses/${nexusId}/NEXUS.md`, content: prevContent },
+      // 通过 API 写回 NEXUS.md
+      await fetch(`${this.io.getServerUrl()}/nexuses/${encodeURIComponent(nexusId)}/sop-content`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: prevContent }),
       })
 
       // 更新 fitness

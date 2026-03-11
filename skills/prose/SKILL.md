@@ -1,7 +1,12 @@
 ---
 name: prose
-description: OpenProse VM skill pack. Activate on any `prose` command, .prose files, or OpenProse mentions; orchestrates multi-agent workflows.
-metadata: { "openclaw": { "emoji": "🪶", "homepage": "https://www.prose.md" } }
+description: "OpenProse VM skill pack. Activate on any `prose` command, .prose files, or OpenProse mentions; orchestrates multi-agent workflows."
+version: "1.0.0"
+author: "DD-OS"
+metadata:
+  openclaw:
+    emoji: "🪶"
+    primaryEnv: "shell"
 ---
 
 # OpenProse Skill

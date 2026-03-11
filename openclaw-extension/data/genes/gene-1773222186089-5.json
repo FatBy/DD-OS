@@ -1,0 +1,23 @@
+{
+  "id": "gene-1773222186089-5",
+  "category": "repair",
+  "signals_match": [
+    "gateway",
+    "gateway closed (1006 abnormal closure (no close frame)): no close reason"
+  ],
+  "strategy": [
+    "Error encountered: gateway closed (1006 abnormal closure (no close frame)): no close reason",
+    "Parameter changes: action: \"config.schema.lookup\" -> \"config.apply\"; path: \"models.providers\" -> null; raw: null -> \"{\\n  \\\"meta\\\": {\\n    \\\"lastTouchedVersion\\\": \\\"2026.3.7\\\",...; note: null -> \"使用 openrouter/ 前缀明确指定OpenRouter提供者\"",
+    "Intermediate tools used: session_status, read",
+    "Recovery result: {\"content\":[{\"type\":\"text\",\"text\":\"{\\n  \\\"ok\\\": true,\\n  \\\"result\\\": {\\n    \\\"ok\\\": true,\\n    \\\"path\\\": \\\"C:\\\\\\\\Users\\\\\\\\邓思迪\\\\\\\\.openclaw\\\\\\\\openclaw.json\\\",\\n    \\\"config\\\": {\\n      \\\"meta\\\": {\\n  "
+  ],
+  "source": {
+    "traceId": "trace-0",
+    "createdAt": 1773222186089
+  },
+  "metadata": {
+    "confidence": 0.4,
+    "useCount": 0,
+    "successCount": 0
+  }
+}

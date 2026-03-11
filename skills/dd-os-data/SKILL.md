@@ -1,3 +1,14 @@
+---
+name: dd-os-data
+description: "Provides structured data from OpenClaw's configuration files for DD-OS frontend visualization."
+version: "1.0.0"
+author: "DD-OS"
+metadata:
+  openclaw:
+    emoji: "💾"
+    primaryEnv: "shell"
+---
+
 # DD-OS Data Provider
 
 Provides structured data from OpenClaw's configuration files for DD-OS frontend visualization.

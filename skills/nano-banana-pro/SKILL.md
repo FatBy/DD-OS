@@ -1,26 +1,22 @@
 ---
 name: nano-banana-pro
-description: Generate or edit images via Gemini 3 Pro Image (Nano Banana Pro).
+description: "Generate or edit images via Gemini 3 Pro Image (Nano Banana Pro)."
+version: "1.0.0"
+author: "DD-OS"
 homepage: https://ai.google.dev/
 metadata:
-  {
-    "openclaw":
-      {
-        "emoji": "🍌",
-        "requires": { "bins": ["uv"], "env": ["GEMINI_API_KEY"] },
-        "primaryEnv": "GEMINI_API_KEY",
-        "install":
-          [
-            {
-              "id": "uv-brew",
-              "kind": "brew",
-              "formula": "uv",
-              "bins": ["uv"],
-              "label": "Install uv (brew)",
-            },
-          ],
-      },
-  }
+  openclaw:
+    emoji: "🍌"
+    primaryEnv: "GEMINI_API_KEY"
+    requires:
+      bins: ["uv"]
+      env: ["GEMINI_API_KEY"]
+    install:
+      - id: "uv-brew"
+        kind: "brew"
+        formula: "uv"
+        bins: ["uv"]
+        label: "Install uv (brew)"
 ---
 
 # Nano Banana Pro (Gemini 3 Pro Image)

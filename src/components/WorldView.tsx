@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback, useMemo } from 'react'
+import { useEffect, useRef, useCallback, useMemo, useState } from 'react'
 import { motion } from 'framer-motion'
 import { useStore } from '@/store'
 import { GameCanvas } from '@/rendering/GameCanvas'
@@ -34,9 +34,28 @@ export function WorldView() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const engineRef = useRef<GameCanvas | null>(null)
   const isDragging = useRef(false)
+  const dragMoved = useRef(false)
   const lastMouse = useRef({ x: 0, y: 0 })
   const canvasPaletteRef = useRef(canvasPalette)
   
+  // Smallville 房间模式状态
+  const [isInSmallvilleRoom, setIsInSmallvilleRoom] = useState(false)
+
+  // 定时轮询 smallville 房间状态（由 ViewManager 驱动）
+  useEffect(() => {
+    if (worldTheme !== 'smallville') {
+      setIsInSmallvilleRoom(false)
+      return
+    }
+    const id = setInterval(() => {
+      const engine = engineRef.current
+      if (engine) {
+        setIsInSmallvilleRoom(engine.isInSmallvilleRoom())
+      }
+    }, 200)
+    return () => clearInterval(id)
+  }, [worldTheme])
+
   // 保持 ref 同步
   canvasPaletteRef.current = canvasPalette
 
@@ -122,27 +141,47 @@ export function WorldView() {
     return () => cancelAnimationFrame(animId)
   }, [tickConstructionAnimations])
 
+  // Smallville 房间模式 ESC 退出
+  useEffect(() => {
+    if (!isInSmallvilleRoom) return
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        engineRef.current?.exitSmallvilleRoom()
+        setIsInSmallvilleRoom(false)
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [isInSmallvilleRoom])
+
   // ---- 鼠标交互 ----
 
   const handleWheel = useCallback((e: React.WheelEvent) => {
+    // 房间模式下禁用缩放
+    if (isInSmallvilleRoom) return
     e.preventDefault()
     const factor = e.deltaY > 0 ? 1 / 1.1 : 1.1
     setZoom(camera.zoom * factor)
-  }, [camera.zoom, setZoom])
+  }, [camera.zoom, setZoom, isInSmallvilleRoom])
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    // 房间模式下禁用拖拽
+    if (isInSmallvilleRoom) return
     if (e.button === 0) {
       isDragging.current = true
+      dragMoved.current = false
       lastMouse.current = { x: e.clientX, y: e.clientY }
     }
-  }, [])
+  }, [isInSmallvilleRoom])
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
-    // 鼠标位置追踪已移除（核心渲染已禁用）
-
+    if (isInSmallvilleRoom) return
     if (!isDragging.current) return
     const dx = (e.clientX - lastMouse.current.x) / camera.zoom
     const dy = (e.clientY - lastMouse.current.y) / camera.zoom
+    if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
+      dragMoved.current = true
+    }
     panCamera(dx, dy)
     lastMouse.current = { x: e.clientX, y: e.clientY }
   }, [camera.zoom, panCamera])
@@ -153,8 +192,20 @@ export function WorldView() {
 
   const handleClick = useCallback((e: React.MouseEvent) => {
     // 如果刚拖拽过，不触发点击
+    if (dragMoved.current) return
+    
     const engine = engineRef.current
     if (!engine) return
+
+    // Smallville 房间模式下点击：退出房间
+    if (worldTheme === 'smallville' && engine.isInSmallvilleRoom()) {
+      return  // 由返回按钮处理
+    }
+
+    // Smallville 过渡动画中忽略点击
+    if (worldTheme === 'smallville' && engine.isSmallvilleTransitioning()) {
+      return
+    }
 
     const rect = canvasRef.current?.getBoundingClientRect()
     if (!rect) return
@@ -179,14 +230,20 @@ export function WorldView() {
 
     selectNexus(nearest)
     
-    // 如果点击了 Nexus，打开详情面板
+    // 如果点击了 Nexus
     if (nearest) {
-      openNexusPanel(nearest)
+      if (worldTheme === 'smallville') {
+        // Smallville：进入房间视图
+        engine.enterSmallvilleRoom(nearest)
+      } else {
+        // 其他主题：打开详情面板
+        openNexusPanel(nearest)
+      }
     } else {
       // 没有点中行星，触发能量波纹
       engineRef.current?.triggerRipple(screenX, screenY)
     }
-  }, [camera, nexuses, selectNexus, openNexusPanel])
+  }, [camera, nexuses, selectNexus, openNexusPanel, worldTheme])
 
   return (
     <div className="absolute inset-0 overflow-hidden bg-skin-bg-primary">
@@ -194,7 +251,7 @@ export function WorldView() {
       <div 
         className="absolute inset-0 z-0 pointer-events-none opacity-[0.06]"
         style={{
-          backgroundImage: worldTheme === 'minimalist'
+          backgroundImage: worldTheme === 'minimalist' || worldTheme === 'pixeltown'
             ? `linear-gradient(rgba(0,0,0,0.03) 1px, transparent 1px),
                linear-gradient(90deg, rgba(0,0,0,0.03) 1px, transparent 1px)`
             : `linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px),
@@ -232,11 +289,30 @@ export function WorldView() {
       <div 
         className="absolute inset-0 z-20 pointer-events-none"
         style={{
-          background: worldTheme === 'minimalist'
+          background: worldTheme === 'minimalist' || worldTheme === 'pixeltown'
             ? 'radial-gradient(ellipse at center, transparent 50%, rgba(230,228,225,0.4) 85%, rgba(220,218,215,0.7) 100%)'
+            : worldTheme === 'smallville'
+            ? 'radial-gradient(ellipse at center, transparent 40%, rgba(10,20,10,0.5) 100%)'
             : 'radial-gradient(ellipse at center, transparent 30%, rgba(2,6,23,0.6) 100%)'
         }}
       />
+
+      {/* Smallville 房间模式返回按钮 */}
+      {isInSmallvilleRoom && (
+        <button
+          className="absolute top-4 left-4 z-30 flex items-center gap-1.5 px-3 py-1.5 rounded-md
+                     bg-black/60 hover:bg-black/80 text-white/80 hover:text-white
+                     text-xs font-mono backdrop-blur-sm border border-white/10
+                     transition-all duration-200 cursor-pointer"
+          onClick={() => {
+            engineRef.current?.exitSmallvilleRoom()
+            setIsInSmallvilleRoom(false)
+          }}
+        >
+          <span>&larr;</span>
+          <span>返回城镇</span>
+        </button>
+      )}
 
       {/* Layer 3: 加载占位 */}
       {nexuses.size === 0 && (
@@ -245,7 +321,7 @@ export function WorldView() {
             <div className="absolute inset-0 rounded-full border-2 border-gray-300/20 animate-ping" />
             <div className="absolute inset-0 rounded-full border-2 border-t-gray-400/40 border-r-transparent border-b-transparent border-l-transparent animate-spin" />
           </div>
-          <p className={`font-mono text-xs tracking-widest uppercase ${worldTheme === 'minimalist' ? 'text-gray-400/50' : 'text-white/20'}`}>
+          <p className={`font-mono text-xs tracking-widest uppercase ${worldTheme === 'minimalist' || worldTheme === 'pixeltown' ? 'text-gray-400/50' : 'text-white/20'}`}>
             正在构建世界...
           </p>
         </div>

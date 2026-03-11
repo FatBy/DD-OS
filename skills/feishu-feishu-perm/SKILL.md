@@ -1,7 +1,12 @@
 ---
 name: feishu-perm
-description: |
-  Feishu permission management for documents and files. Activate when user mentions sharing, permissions, collaborators.
+description: "Feishu permission management for documents and files. Activate when user mentions sharing, permissions, collaborators."
+version: "1.0.0"
+author: "DD-OS"
+metadata:
+  openclaw:
+    emoji: "🔧"
+    primaryEnv: "shell"
 ---
 
 # Feishu Permission Tool

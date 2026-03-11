@@ -236,6 +236,71 @@ class LocalServerService {
       return false
     }
   }
+
+  // ============================================
+  // 对话持久化 API (每对话独立文件存储)
+  // ============================================
+
+  /**
+   * 获取所有对话元数据列表
+   */
+  async getConversationMetaList(): Promise<import('@/types').ConversationMeta[]> {
+    const meta = await this.getData<import('@/types').ConversationMeta[]>('conversations_meta')
+    return meta || []
+  }
+
+  /**
+   * 获取单个对话完整数据（含 messages）
+   */
+  async getConversation(id: string): Promise<import('@/types').Conversation | null> {
+    return this.getData<import('@/types').Conversation>(`conv_${id}`)
+  }
+
+  /**
+   * 保存单个对话（完整数据写入 conv_{id}，同时更新元数据列表）
+   */
+  async saveConversation(conv: import('@/types').Conversation): Promise<boolean> {
+    // 写入完整对话数据
+    const saved = await this.setData(`conv_${conv.id}`, conv)
+    if (!saved) return false
+
+    // 更新元数据列表
+    const metaList = await this.getConversationMetaList()
+    const meta: import('@/types').ConversationMeta = {
+      id: conv.id,
+      type: conv.type,
+      title: conv.title,
+      nexusId: conv.nexusId,
+      messageCount: conv.messages.length,
+      createdAt: conv.createdAt,
+      updatedAt: conv.updatedAt,
+      pinned: conv.pinned,
+      autoTitled: conv.autoTitled,
+    }
+
+    const idx = metaList.findIndex(m => m.id === conv.id)
+    if (idx >= 0) {
+      metaList[idx] = meta
+    } else {
+      metaList.push(meta)
+    }
+    await this.setData('conversations_meta', metaList)
+    return true
+  }
+
+  /**
+   * 删除对话（删除文件 + 从元数据列表移除）
+   */
+  async deleteConversation(id: string): Promise<boolean> {
+    // 删除对话数据文件
+    await this.deleteData(`conv_${id}`)
+
+    // 从元数据列表移除
+    const metaList = await this.getConversationMetaList()
+    const filtered = metaList.filter(m => m.id !== id)
+    await this.setData('conversations_meta', filtered)
+    return true
+  }
 }
 
 // 导出单例

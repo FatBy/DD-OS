@@ -1,0 +1,22 @@
+{
+  "id": "gene-1773222186088-0",
+  "category": "repair",
+  "signals_match": [
+    "gateway",
+    "raw required"
+  ],
+  "strategy": [
+    "Error encountered: raw required",
+    "Parameter changes: action: \"config.patch\" -> \"config.schema.lookup\"; patch: \"{\\\"models\\\": {\\\"providers\\\": {\\\"openrouter\\\": {\\\"baseUrl\\\":... -> null; note: \"配置 OpenRouter 提供者以访问 stepfun/step-3.5-flash:free 模型，并设为默认模型... -> null; path: null -> \"models.providers.*\"",
+    "Recovery result: {\"content\":[{\"type\":\"text\",\"text\":\"{\\n  \\\"ok\\\": true,\\n  \\\"result\\\": {\\n    \\\"path\\\": \\\"models.providers.*\\\",\\n    \\\"schema\\\": {\\n      \\\"type\\\": \\\"object\\\",\\n      \\\"additionalProperties\\\": false\\n  "
+  ],
+  "source": {
+    "traceId": "trace-0",
+    "createdAt": 1773222186088
+  },
+  "metadata": {
+    "confidence": 0.4,
+    "useCount": 0,
+    "successCount": 0
+  }
+}

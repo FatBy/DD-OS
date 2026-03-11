@@ -6,6 +6,7 @@ import {
 } from 'lucide-react'
 import { useStore } from '@/store'
 import { cn } from '@/utils/cn'
+import { formatTime } from '@/utils/formatTime'
 import type { Conversation, ConversationType } from '@/types'
 
 interface ConversationSidebarProps {
@@ -221,8 +222,9 @@ export function ConversationSidebar({ className }: ConversationSidebarProps) {
             const isActive = conv.id === activeConversationId
             const isEditing = editingId === conv.id
             const nexus = getNexusInfo(conv.nexusId)
-            const lastMsg = conv.messages[conv.messages.length - 1]
-            const preview = lastMsg?.content.slice(0, 40) || '(空会话)'
+            const lastMsg = conv.messagesLoaded !== false && conv.messages.length > 0 
+              ? conv.messages[conv.messages.length - 1] : null
+            const preview = lastMsg?.content.slice(0, 40) || (conv.messagesLoaded === false ? '...' : '(空会话)')
             
             return (
               <div
@@ -337,21 +339,4 @@ export function ConversationSidebar({ className }: ConversationSidebarProps) {
       </div>
     </div>
   )
-}
-
-// 格式化时间
-function formatTime(timestamp: number): string {
-  const date = new Date(timestamp)
-  const now = new Date()
-  const diffMs = now.getTime() - timestamp
-  const diffMins = Math.floor(diffMs / 60000)
-  const diffHours = Math.floor(diffMs / 3600000)
-  const diffDays = Math.floor(diffMs / 86400000)
-  
-  if (diffMins < 1) return '刚刚'
-  if (diffMins < 60) return `${diffMins}分钟前`
-  if (diffHours < 24) return `${diffHours}小时前`
-  if (diffDays < 7) return `${diffDays}天前`
-  
-  return date.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
 }

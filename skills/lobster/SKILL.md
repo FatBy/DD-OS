@@ -1,3 +1,14 @@
+---
+name: lobster
+description: "Lobster executes multi-step workflows with approval checkpoints. Use it when:"
+version: "1.0.0"
+author: "DD-OS"
+metadata:
+  openclaw:
+    emoji: "🦞"
+    primaryEnv: "shell"
+---
+
 # Lobster
 
 Lobster executes multi-step workflows with approval checkpoints. Use it when:

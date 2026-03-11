@@ -1,22 +1,26 @@
 ---
 name: code-review
-description: Comprehensive code review focusing on quality, security, and best practices
-version: 1.0.0
-author: DD-OS Team
-tags: [review, code, quality, security, best-practices]
+description: "Comprehensive code review focusing on quality, security, and best practices"
+version: "1.0.0"
+author: "DD-OS Team"
+metadata:
+  openclaw:
+    emoji: "🔧"
+    primaryEnv: "shell"
+tags: ["review", "code", "quality", "security", "best-practices"]
 inputs:
   target:
-    type: string
+    type: "string"
     required: false
-    description: File, directory, or git diff to review
+    description: "File, directory, or git diff to review"
   focus:
-    type: array
+    type: "array"
     required: false
-    description: Review focus areas (security, performance, style, logic)
+    description: "Review focus areas (security, performance, style, logic)"
   strict:
-    type: boolean
+    type: "boolean"
     required: false
-    description: Enable strict mode for more thorough review
+    description: "Enable strict mode for more thorough review"
 ---
 
 # Code Review

@@ -1,33 +1,26 @@
 ---
 name: spotify-player
-description: Terminal Spotify playback/search via spogo (preferred) or spotify_player.
+description: "Terminal Spotify playback/search via spogo (preferred) or spotify_player."
+version: "1.0.0"
+author: "DD-OS"
 homepage: https://www.spotify.com
 metadata:
-  {
-    "openclaw":
-      {
-        "emoji": "🎵",
-        "requires": { "anyBins": ["spogo", "spotify_player"] },
-        "install":
-          [
-            {
-              "id": "brew",
-              "kind": "brew",
-              "formula": "spogo",
-              "tap": "steipete/tap",
-              "bins": ["spogo"],
-              "label": "Install spogo (brew)",
-            },
-            {
-              "id": "brew",
-              "kind": "brew",
-              "formula": "spotify_player",
-              "bins": ["spotify_player"],
-              "label": "Install spotify_player (brew)",
-            },
-          ],
-      },
-  }
+  openclaw:
+    emoji: "🎵"
+    primaryEnv: "shell"
+    requires:
+      anyBins: ["spogo", "spotify_player"]
+    install:
+      - id: "brew"
+        kind: "brew"
+        formula: "spogo"
+        bins: ["spogo"]
+        label: "Install spogo (brew)"
+      - id: "brew"
+        kind: "brew"
+        formula: "spotify_player"
+        bins: ["spotify_player"]
+        label: "Install spotify_player (brew)"
 ---
 
 # spogo / spotify_player

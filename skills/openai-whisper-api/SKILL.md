@@ -1,16 +1,16 @@
 ---
 name: openai-whisper-api
-description: Transcribe audio via OpenAI Audio Transcriptions API (Whisper).
+description: "Transcribe audio via OpenAI Audio Transcriptions API (Whisper)."
+version: "1.0.0"
+author: "DD-OS"
 homepage: https://platform.openai.com/docs/guides/speech-to-text
 metadata:
-  {
-    "openclaw":
-      {
-        "emoji": "☁️",
-        "requires": { "bins": ["curl"], "env": ["OPENAI_API_KEY"] },
-        "primaryEnv": "OPENAI_API_KEY",
-      },
-  }
+  openclaw:
+    emoji: "☁️"
+    primaryEnv: "OPENAI_API_KEY"
+    requires:
+      bins: ["curl"]
+      env: ["OPENAI_API_KEY"]
 ---
 
 # OpenAI Whisper API (curl)

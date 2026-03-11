@@ -1,5 +1,5 @@
 import type { StateCreator } from 'zustand'
-import type { Device, PresenceSnapshot, HealthSnapshot, SoulDimension, AgentIdentity, SoulIdentity, SoulTruth, SoulBoundary } from '@/types'
+import type { Device, PresenceSnapshot, HealthSnapshot, SoulDimension, AgentIdentity, SoulIdentity, SoulTruth, SoulBoundary, MBTIResult } from '@/types'
 import { healthToSoulDimensions } from '@/utils/dataMapper'
 import type { ParsedSoul } from '@/utils/soulParser'
 
@@ -24,6 +24,10 @@ export interface DevicesSlice {
   soulPrompts: { identity: string; constraints: string; goals: string }
   soulDirty: boolean
   
+  // MBTI 灵魂形象
+  soulMBTI: MBTIResult | null
+  soulMBTILoading: boolean
+  
   // Actions
   setPresenceSnapshot: (snapshot: PresenceSnapshot) => void
   updateDevice: (id: string, updates: Partial<Device>) => void
@@ -40,9 +44,10 @@ export interface DevicesSlice {
   // 兼容旧接口
   updateSoulFromState: (identity: AgentIdentity | null) => void
   setSoulDirty: (dirty: boolean) => void
+  detectSoulMBTI: () => Promise<void>
 }
 
-export const createDevicesSlice: StateCreator<DevicesSlice> = (set, _get) => ({
+export const createDevicesSlice: StateCreator<DevicesSlice> = (set, get) => ({
   devices: {},
   operators: [],
   nodes: [],
@@ -57,6 +62,8 @@ export const createDevicesSlice: StateCreator<DevicesSlice> = (set, _get) => ({
   soulDimensions: [],
   soulPrompts: { identity: '', constraints: '', goals: '' },
   soulDirty: false,
+  soulMBTI: null,
+  soulMBTILoading: false,
 
   setPresenceSnapshot: (snapshot) => set((state) => {
     // 只更新 presence 相关数据和维度，不覆盖已解析的 soul 内容
@@ -107,35 +114,40 @@ export const createDevicesSlice: StateCreator<DevicesSlice> = (set, _get) => ({
   setDevicesLoading: (loading) => set({ devicesLoading: loading }),
   
   // 从解析后的 SOUL.md 设置灵魂数据
-  setSoulFromParsed: (parsed, agentIdentity) => set((state) => {
-    const identity: SoulIdentity = {
-      name: agentIdentity?.name || 'DD-OS Agent',
-      essence: parsed.subtitle || parsed.title || 'AI Assistant',
-      vibe: parsed.vibeStatement ? parsed.vibeStatement.slice(0, 100) : '',
-      symbol: agentIdentity?.emoji || '🤖',
-    }
-    
-    // 生成 prompts (兼容旧版)
-    const prompts = {
-      identity: agentIdentity 
-        ? `I'm ${agentIdentity.name || 'DD-OS Agent'}, ID: ${agentIdentity.agentId}. ${agentIdentity.emoji || '🤖'}`
-        : 'Connected, waiting for agent identity...',
-      constraints: state.health
-        ? `Status: ${state.health.status}\nUptime: ${Math.floor(state.health.uptime / 3600000)}h\nVersion: ${state.health.version || 'unknown'}`
-        : 'Loading system status...',
-      goals: `Operators: ${state.operators.length}\nNodes: ${state.nodes.length}`,
-    }
-    
-    return {
-      soulRawContent: parsed.rawContent,
-      soulIdentity: identity,
-      soulCoreTruths: parsed.coreTruths,
-      soulBoundaries: parsed.boundaries,
-      soulVibeStatement: parsed.vibeStatement,
-      soulContinuityNote: parsed.continuityNote,
-      soulPrompts: prompts,
-    }
-  }),
+  setSoulFromParsed: (parsed, agentIdentity) => {
+    set((state) => {
+      const identity: SoulIdentity = {
+        name: agentIdentity?.name || 'DD-OS Agent',
+        essence: parsed.subtitle || parsed.title || 'AI Assistant',
+        vibe: parsed.vibeStatement ? parsed.vibeStatement.slice(0, 100) : '',
+        symbol: agentIdentity?.emoji || '🤖',
+      }
+      
+      // 生成 prompts (兼容旧版)
+      const prompts = {
+        identity: agentIdentity 
+          ? `I'm ${agentIdentity.name || 'DD-OS Agent'}, ID: ${agentIdentity.agentId}. ${agentIdentity.emoji || '🤖'}`
+          : 'Connected, waiting for agent identity...',
+        constraints: state.health
+          ? `Status: ${state.health.status}\nUptime: ${Math.floor(state.health.uptime / 3600000)}h\nVersion: ${state.health.version || 'unknown'}`
+          : 'Loading system status...',
+        goals: `Operators: ${state.operators.length}\nNodes: ${state.nodes.length}`,
+      }
+      
+      return {
+        soulRawContent: parsed.rawContent,
+        soulIdentity: identity,
+        soulCoreTruths: parsed.coreTruths,
+        soulBoundaries: parsed.boundaries,
+        soulVibeStatement: parsed.vibeStatement,
+        soulContinuityNote: parsed.continuityNote,
+        soulPrompts: prompts,
+      }
+    })
+    // Soul 数据更新后: 先标记需要重新检测，再触发
+    set({ soulMBTILoading: false })
+    setTimeout(() => get().detectSoulMBTI(), 0)
+  },
   
   // 更新灵魂维度 (基于 health, presence)
   updateSoulDimensions: (identity) => set((state) => {
@@ -184,4 +196,26 @@ export const createDevicesSlice: StateCreator<DevicesSlice> = (set, _get) => ({
   }),
   
   setSoulDirty: (dirty) => set({ soulDirty: dirty }),
+  
+  detectSoulMBTI: async () => {
+    const state = get()
+    if (state.soulMBTILoading) return
+    set({ soulMBTILoading: true })
+    try {
+      const { detectMBTI } = await import('@/services/mbtiAnalyzer')
+      const result = await detectMBTI(
+        state.soulCoreTruths,
+        state.soulBoundaries,
+        state.soulVibeStatement,
+        state.soulRawContent,
+        // LLM 后台分析完成后回调更新 store
+        (llmResult) => {
+          set({ soulMBTI: llmResult })
+        },
+      )
+      set({ soulMBTI: result, soulMBTILoading: false })
+    } catch {
+      set({ soulMBTILoading: false })
+    }
+  },
 })

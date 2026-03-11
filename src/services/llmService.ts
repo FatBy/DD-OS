@@ -86,6 +86,15 @@ const STORAGE_KEYS = {
 // 配置管理
 // ============================================
 
+/** 获取本地后端服务器 URL (用于 LLM 代理) */
+function getLocalServerUrl(): string {
+  const isDevMode = import.meta.env?.DEV ?? false
+  const isTauriMode = typeof window !== 'undefined' && '__TAURI__' in window
+  if (isDevMode) return 'http://localhost:3001'
+  if (isTauriMode) return 'http://127.0.0.1:3001'
+  return ''  // 生产模式: 相对路径 (Python 托管同域)
+}
+
 export function getLLMConfig(): LLMConfig {
   return {
     apiKey: localStorage.getItem(STORAGE_KEYS.API_KEY) || '',
@@ -239,10 +248,20 @@ export async function chat(
     body.tool_choice = 'auto'
   }
 
-  const res = await fetch(buildUrl(cfg.baseUrl), {
+  // 通过本地后端代理转发 (解决 CORS)
+  const localServer = getLocalServerUrl()
+  const proxyUrl = `${localServer}/api/llm/proxy`
+  const targetUrl = buildUrl(cfg.baseUrl)
+
+  const res = await fetch(proxyUrl, {
     method: 'POST',
-    headers: buildHeaders(cfg.apiKey),
-    body: JSON.stringify(body),
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      url: targetUrl,
+      apiKey: cfg.apiKey,
+      body,
+      stream: false,
+    }),
   })
 
   if (!res.ok) {
@@ -291,10 +310,20 @@ export async function streamChat(
     body.tool_choice = 'auto'
   }
 
-  const res = await fetch(buildUrl(cfg.baseUrl), {
+  // 通过本地后端代理转发 LLM 请求 (解决 CORS: 部分 API 如 Moonshot 的 preflight 不返回 CORS 头)
+  const localServer = getLocalServerUrl()
+  const proxyUrl = `${localServer}/api/llm/proxy`
+  const targetUrl = buildUrl(cfg.baseUrl)
+
+  const res = await fetch(proxyUrl, {
     method: 'POST',
-    headers: buildHeaders(cfg.apiKey),
-    body: JSON.stringify(body),
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      url: targetUrl,
+      apiKey: cfg.apiKey,
+      body,
+      stream: true,
+    }),
     signal,
   })
 

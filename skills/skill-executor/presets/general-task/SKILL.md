@@ -1,22 +1,12 @@
 ---
 name: general-task
-description: Generic task execution agent for flexible multi-step workflows
-version: 1.0.0
-author: DD-OS Team
-tags: [agent, task, workflow, automation, general]
-inputs:
-  task:
-    type: string
-    required: true
-    description: Description of the task to accomplish
-  context:
-    type: string
-    required: false
-    description: Additional context or constraints
-  tools:
-    type: array
-    required: false
-    description: Preferred tools to use (default: auto-select)
+description: "A flexible agent for executing arbitrary multi-step tasks. This agent analyzes the task, plans an execution strategy, and carries it out using available tools."
+version: "1.0.0"
+author: "DD-OS"
+metadata:
+  openclaw:
+    emoji: "🔧"
+    primaryEnv: "shell"
 ---
 
 # General Task Agent

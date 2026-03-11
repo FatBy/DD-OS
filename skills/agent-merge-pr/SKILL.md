@@ -1,6 +1,12 @@
 ---
 name: merge-pr
-description: Script-first deterministic squash merge with strict required-check gating, head-SHA pinning, and reliable attribution/commenting.
+description: "Script-first deterministic squash merge with strict required-check gating, head-SHA pinning, and reliable attribution/commenting."
+version: "1.0.0"
+author: "DD-OS"
+metadata:
+  openclaw:
+    emoji: "🔧"
+    primaryEnv: "shell"
 ---
 
 # Merge PR

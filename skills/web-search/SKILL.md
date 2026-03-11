@@ -1,3 +1,14 @@
+---
+name: web-search
+description: "Use the webSearch tool to find information online."
+version: "1.0.0"
+author: "DD-OS"
+metadata:
+  openclaw:
+    emoji: "🌐"
+    primaryEnv: "shell"
+---
+
 # Web Search Skill
 
 Use the webSearch tool to find information online.

@@ -1,7 +1,12 @@
 ---
 name: feishu-drive
-description: |
-  Feishu cloud storage file management. Activate when user mentions cloud space, folders, drive.
+description: "Feishu cloud storage file management. Activate when user mentions cloud space, folders, drive."
+version: "1.0.0"
+author: "DD-OS"
+metadata:
+  openclaw:
+    emoji: "🔧"
+    primaryEnv: "shell"
 ---
 
 # Feishu Drive Tool

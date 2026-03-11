@@ -3,6 +3,8 @@ node_modules/
 
 # Build output
 dist/
+build/
+release/
 
 # IDE
 .vscode/
@@ -28,3 +30,14 @@ nul
 __pycache__/
 *.pyc
 *.pyo
+.venv/
+
+# Tauri build artifacts
+src-tauri/target/
+src-tauri/binaries/
+src-tauri/gen/
+
+# Misc
+*.pptx
+vibe_images/
+.specs/

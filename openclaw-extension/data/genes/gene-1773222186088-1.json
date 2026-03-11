@@ -1,0 +1,23 @@
+{
+  "id": "gene-1773222186088-1",
+  "category": "repair",
+  "signals_match": [
+    "gateway",
+    "invalid",
+    "invalid config"
+  ],
+  "strategy": [
+    "Error encountered: invalid config",
+    "Parameter changes: action: \"config.apply\" -> \"config.schema.lookup\"; raw: \"{\\n  \\\"meta\\\": {\\n    \\\"lastTouchedVersion\\\": \\\"2026.3.7\\\",... -> null; note: \"配置 OpenRouter 提供者以访问 stepfun/step-3.5-flash:free 模型，更新默认模型设... -> null; path: null -> \"models.providers.*\"",
+    "Recovery result: {\"content\":[{\"type\":\"text\",\"text\":\"{\\n  \\\"ok\\\": true,\\n  \\\"result\\\": {\\n    \\\"path\\\": \\\"models.providers.*\\\",\\n    \\\"schema\\\": {\\n      \\\"type\\\": \\\"object\\\",\\n      \\\"additionalProperties\\\": false\\n  "
+  ],
+  "source": {
+    "traceId": "trace-0",
+    "createdAt": 1773222186088
+  },
+  "metadata": {
+    "confidence": 0.4,
+    "useCount": 0,
+    "successCount": 0
+  }
+}

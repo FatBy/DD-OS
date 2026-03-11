@@ -393,6 +393,98 @@ export interface OpenClawSkill {
   inputs?: Record<string, any> // 输入参数 schema
   dangerLevel?: string         // safe | high | critical
   keywords?: string[]          // 语义触发关键词
+  // OpenClaw 生态字段
+  emoji?: string
+  author?: string
+  primaryEnv?: 'shell' | 'node' | 'python' | 'go' | 'rust' | 'browser'
+  requires?: {
+    bins?: string[]
+    env?: string[]
+    config?: string[]
+    anyBins?: string[]
+  }
+  install?: OpenClawInstallSpec[]
+  tags?: string[]
+  clawHub?: {
+    slug?: string
+    version?: string
+    publishedAt?: string
+    source?: 'local' | 'clawhub'
+  }
+}
+
+// OpenClaw 安装规格 (brew/apt/node/go/uv/download)
+export interface OpenClawInstallSpec {
+  id: string
+  kind: 'brew' | 'apt' | 'node' | 'go' | 'uv' | 'download'
+  formula?: string        // brew
+  package?: string        // apt
+  module?: string         // node/go/uv
+  url?: string            // download
+  bins?: string[]
+  label?: string
+}
+
+// ============================================
+// ClawHub 市场类型
+// ============================================
+
+export interface ClawHubSearchResult {
+  skills: ClawHubSkillSummary[]
+  total: number
+  page: number
+  pageSize: number
+}
+
+export interface ClawHubSkillSummary {
+  slug: string
+  name: string
+  description: string
+  emoji?: string
+  author: string
+  version: string
+  tags: string[]
+  downloads: number
+  updatedAt: string
+}
+
+export interface ClawHubSkillDetail extends ClawHubSkillSummary {
+  readme: string
+  requires?: { bins?: string[]; env?: string[]; anyBins?: string[] }
+  install?: OpenClawInstallSpec[]
+  fileList: string[]
+}
+
+export interface SkillPublishPayload {
+  name: string
+  slug: string
+  description: string
+  version: string
+  skillArchive: Blob
+  tags?: string[]
+}
+
+export interface ClawHubPublishResult {
+  success: boolean
+  slug: string
+  version: string
+  url: string
+}
+
+export interface ClawHubUser {
+  username: string
+  email: string
+  avatar?: string
+}
+
+export interface ClawHubSuggestion {
+  id: string
+  type: 'skill-discovery'
+  query: string
+  matches: ClawHubSkillSummary[]
+  triggerTool: string
+  triggerTask: string
+  dismissed?: boolean
 }
 
 export interface SkillsSnapshot {
@@ -547,6 +639,20 @@ export interface Conversation {
   updatedAt: number
   pinned?: boolean
   autoTitled?: boolean      // 标记是否已自动生成标题
+  messagesLoaded?: boolean  // 标记消息是否已从后端懒加载
+  openClawSessionKey?: string  // OpenClaw Gateway 会话 key (同一对话复用，保持上下文连贯)
+}
+
+export interface ConversationMeta {
+  id: string
+  type: ConversationType
+  title: string
+  nexusId?: string
+  messageCount: number
+  createdAt: number
+  updatedAt: number
+  pinned?: boolean
+  autoTitled?: boolean
 }
 
 export interface AISummary {
@@ -678,8 +784,12 @@ export interface GridPosition {
 export interface NexusEntity {
   id: string
   position: GridPosition
-  level: number             // 1-4
+  /** @deprecated V2: 使用 scoring.score + getScoreTier() 替代 */
+  level: number
+  /** @deprecated V2: 使用 scoring 替代 */
   xp: number
+  // V2: 评分系统
+  scoring?: NexusScoring
   visualDNA: VisualDNA
   label?: string            // LLM-generated name
   constructionProgress: number // 0-1 (1 = fully built)
@@ -706,6 +816,11 @@ export interface NexusEntity {
   strategy?: string               // 动态调整策略 (失败时的重试方案)
   // 元数据
   updatedAt?: number              // 最后更新时间
+  source?: string                 // 来源标识 (e.g., 'openclaw:agent-id')
+  agentIdentity?: {               // OpenClaw Agent identity
+    name?: string
+    emoji?: string
+  }
 }
 
 // Nexus 经验记录
@@ -828,6 +943,25 @@ export interface AbilitySnapshot {
 }
 
 // ============================================
+// MBTI 灵魂形象类型
+// ============================================
+
+export type MBTIType = 'intj' | 'intp' | 'entj' | 'entp'
+  | 'infj' | 'infp' | 'enfj' | 'enfp'
+  | 'istj' | 'isfj' | 'estj' | 'esfj'
+  | 'istp' | 'isfp' | 'estp' | 'esfp'
+
+export interface MBTIResult {
+  type: MBTIType
+  animal: string       // "octopus", "cat", etc.
+  animalZh: string     // "章鱼", "猫", etc.
+  group: string        // "分析家", "外交官", etc.
+  trait: string        // 一句话特质描述
+  confidence: number   // 0-1
+  source: 'rule' | 'llm'
+}
+
+// ============================================
 // Gene Pool 自愈基因库类型
 // ============================================
 
@@ -910,3 +1044,782 @@ export interface Capsule {
   nexusId?: string
   timestamp: number
 }
+
+// ============================================
+// V2: Agent 事件状态机
+// ============================================
+
+// Agent 执行阶段
+export type AgentPhase =
+  | 'idle'               // 空闲
+  | 'planning'           // 任务规划
+  | 'executing'          // 工具执行中
+  | 'reflecting'         // Reflexion 反思中
+  | 'compacting'         // 上下文压缩中
+  | 'waiting_approval'   // 等待用户审批
+  | 'recovering'         // 错误恢复中（模型切换/重试）
+  | 'done'               // 正常完成
+  | 'error'              // 异常终止
+  | 'aborted'            // 用户终止
+
+// 工具调用摘要 (已完成的工具执行记录)
+export interface ToolCallSummary {
+  callId: string
+  toolName: string
+  args: Record<string, unknown>
+  status: 'success' | 'error'
+  result?: string                   // 成功时的结果（截断）
+  error?: string                    // 失败时的错误信息
+  durationMs: number
+  isMutating: boolean               // 是否修改类操作
+  timestamp: number
+}
+
+// 工具执行结果 (按 callId 索引)
+export interface ToolResult {
+  callId: string
+  toolName: string
+  success: boolean
+  output: string
+  durationMs: number
+  timestamp: number
+}
+
+// 故障原因分类
+export type FailoverReason =
+  | 'auth'               // API Key 无效或过期
+  | 'rate_limit'         // 速率限制
+  | 'context_overflow'   // 上下文超出模型窗口
+  | 'timeout'            // 请求超时
+  | 'model_error'        // 模型返回错误
+  | 'network'            // 网络连接失败
+  | 'billing'            // 账户余额不足
+
+// Agent 运行状态 (有状态事件转换器核心)
+export interface AgentRunState {
+  // ── 生命周期 ──
+  runId: string
+  seq: number                       // 单调递增事件序号
+  phase: AgentPhase
+  aborted: boolean
+  timedOut: boolean
+
+  // ── 消息流 ──
+  assistantTexts: string[]
+  deltaBuffer: string
+  blockState: {
+    thinking: boolean
+    codeBlock: boolean
+  }
+  assistantMessageIndex: number
+  lastStreamedText: string | undefined
+  suppressLateChunks: boolean
+
+  // ── 推理流 ──
+  reasoningMode: 'off' | 'on' | 'stream'
+  reasoningBuffer: string
+  reasoningStreamOpen: boolean
+
+  // ── 工具执行 ──
+  currentTool: {
+    name: string
+    callId: string
+    startTime: number
+    args: Record<string, unknown>
+  } | null
+  toolHistory: ToolCallSummary[]
+  toolResultById: Map<string, ToolResult>
+  lastToolError: {
+    toolName: string
+    error: string
+    isMutating: boolean
+  } | undefined
+
+  // ── 上下文压缩 ──
+  compactionInFlight: boolean
+  compactionCount: number
+  tokensBefore: number
+  tokensAfter: number
+
+  // ── 错误恢复 ──
+  failoverReason: FailoverReason | null
+  attemptIndex: number
+  modelChain: string[]
+  currentModel: string
+
+  // ── Nexus 上下文 ──
+  activeNexusId: string | null
+  nexusSopInjected: boolean
+  nexusScore: number
+  planProgress: {
+    total: number
+    completed: number
+    currentStep: string
+  } | null
+
+  // ── Critic/Reflexion ──
+  reflexionCount: number
+  criticPending: boolean
+  approvalPending: boolean
+  approvalRequest: ApprovalRequest | null
+
+  // ── 子智能体追踪 ──
+  activeChildren: string[]
+  childrenCompleted: number
+  childrenFailed: number
+
+  // ── Token 预算 ──
+  tokenBudget: number
+  tokenUsed: number
+  tokenPercentage: number
+}
+
+// AgentRunState 工厂函数参数
+export function createInitialRunState(runId: string, model: string, nexusId?: string): AgentRunState {
+  return {
+    runId,
+    seq: 0,
+    phase: 'idle',
+    aborted: false,
+    timedOut: false,
+    assistantTexts: [],
+    deltaBuffer: '',
+    blockState: { thinking: false, codeBlock: false },
+    assistantMessageIndex: 0,
+    lastStreamedText: undefined,
+    suppressLateChunks: false,
+    reasoningMode: 'off',
+    reasoningBuffer: '',
+    reasoningStreamOpen: false,
+    currentTool: null,
+    toolHistory: [],
+    toolResultById: new Map(),
+    lastToolError: undefined,
+    compactionInFlight: false,
+    compactionCount: 0,
+    tokensBefore: 0,
+    tokensAfter: 0,
+    failoverReason: null,
+    attemptIndex: 0,
+    modelChain: [model],
+    currentModel: model,
+    activeNexusId: nexusId ?? null,
+    nexusSopInjected: false,
+    nexusScore: 50,
+    planProgress: null,
+    reflexionCount: 0,
+    criticPending: false,
+    approvalPending: false,
+    approvalRequest: null,
+    activeChildren: [],
+    childrenCompleted: 0,
+    childrenFailed: 0,
+    tokenBudget: 0,
+    tokenUsed: 0,
+    tokenPercentage: 0,
+  }
+}
+
+// ============================================
+// V2: Agent 事件系统
+// ============================================
+
+// 事件流分类
+export type AgentEventStream =
+  | 'lifecycle'     // 生命周期
+  | 'assistant'     // 助手消息流
+  | 'tool'          // 工具执行
+  | 'context'       // 上下文管理
+  | 'recovery'      // 错误恢复
+  | 'reflexion'     // 反思/Critic
+  | 'approval'      // 审批
+  | 'plan'          // 计划追踪
+  | 'child'         // 子智能体
+
+// 事件信封 (所有事件的通用包装)
+export interface AgentEventEnvelope {
+  runId: string
+  seq: number
+  ts: number
+  stream: AgentEventStream
+  type: string
+  data: Record<string, unknown>
+  sessionId?: string
+  nexusId?: string
+}
+
+// ── lifecycle 事件 payload ──
+export interface RunStartData {
+  runId: string
+  nexusId: string | null
+  model: string
+  nexusScore: number
+  tokenBudget: number
+}
+
+export interface PhaseChangeData {
+  from: AgentPhase
+  to: AgentPhase
+  reason?: string
+}
+
+export interface RunEndData {
+  success: boolean
+  turns: number
+  tokensUsed: number
+  toolsCalled: number
+  reflexionCount: number
+  compactionCount: number
+  durationMs: number
+  scoreChange: number
+  childrenSpawned: number
+  childrenCompleted: number
+}
+
+// ── tool 事件 payload ──
+export interface ToolStartData {
+  toolName: string
+  callId: string
+  args: Record<string, unknown>
+  isMutating: boolean
+}
+
+export interface ToolEndData {
+  callId: string
+  toolName: string
+  success: boolean
+  result: string
+  durationMs: number
+  dimensionScoreChange?: number
+}
+
+export interface ToolErrorData {
+  callId: string
+  toolName: string
+  error: string
+  isMutating: boolean
+}
+
+// ── context 事件 payload ──
+export interface CompactionStartData {
+  tokensBefore: number
+  trigger: 'overflow' | 'budget' | 'proactive'
+}
+
+export interface CompactionEndData {
+  tokensAfter: number
+  tokensBefore: number
+  success: boolean
+  summary?: string
+}
+
+export interface TokenWarningData {
+  used: number
+  budget: number
+  percentage: number
+}
+
+// ── recovery 事件 payload ──
+export interface FailoverStartData {
+  reason: FailoverReason
+  fromModel: string
+  toModel: string
+  attemptIndex: number
+}
+
+export interface RetryData {
+  attemptIndex: number
+  backoffMs: number
+  reason: FailoverReason
+}
+
+// ── reflexion 事件 payload ──
+export interface ReflexionStartData {
+  failedTool: string
+  error: string
+  reflexionIndex: number
+  nexusScore: number
+}
+
+export interface ReflexionEndData {
+  insight: string
+  strategy: string
+  reflexionIndex: number
+}
+
+// ── approval 事件 payload ──
+export interface ApprovalRequiredData {
+  requestId: string
+  command: string
+  toolName: string
+  risk: 'high' | 'critical'
+  reason: string
+}
+
+export interface ApprovalResolvedData {
+  requestId: string
+  approved: boolean
+  resolvedBy: 'user' | 'auto'
+}
+
+// ── plan 事件 payload ──
+export interface StepStartData {
+  stepIndex: number
+  totalSteps: number
+  description: string
+  dependsOn: string[]
+}
+
+export interface StepCompleteData {
+  stepIndex: number
+  success: boolean
+  result?: string
+  error?: string
+  durationMs: number
+}
+
+// ── child 事件 payload ──
+export interface ChildSpawnedData {
+  childRunId: string
+  childSessionId: string
+  nexusId: string
+  task: string
+  depth: number
+  model: string
+}
+
+export interface ChildProgressData {
+  childRunId: string
+  phase: AgentPhase
+  turns: number
+  currentTool?: string
+}
+
+export interface ChildCompletedData {
+  childRunId: string
+  nexusId: string
+  success: boolean
+  result?: string
+  error?: string
+  durationMs: number
+  scoreChange: number
+  genesHarvested: number
+}
+
+// ============================================
+// V2: Nexus 评分系统 (替代 XP/Level)
+// ============================================
+
+// 分数等级
+export type ScoreTier = 'Expert' | 'Capable' | 'Learning' | 'Weak'
+
+// 工具维度分数
+export interface ToolDimensionScore {
+  toolName: string
+  score: number                     // 0-100
+  calls: number
+  successes: number
+  failures: number
+  avgDurationMs: number
+  lastUsedAt: number
+}
+
+// 最近执行记录
+export interface RecentRunEntry {
+  runId: string
+  task: string                      // 截断 80 字
+  success: boolean
+  scoreChange: number               // +5, -8 等
+  turns: number
+  toolsCalled: string[]
+  durationMs: number
+  timestamp: number
+  genesHarvested?: number
+}
+
+// Nexus 评分
+export interface NexusScoring {
+  score: number                     // 0-100, 初始 50
+  streak: number                    // 正=连胜, 负=连败
+  totalRuns: number
+  successCount: number
+  failureCount: number
+  successRate: number               // 0-1
+  dimensions: Record<string, ToolDimensionScore>
+  recentRuns: RecentRunEntry[]      // 最多 20 条
+  lastUpdated: number
+}
+
+// 计分规则常量
+export const SCORING_RULES = {
+  SUCCESS_BASE: 5,
+  SUCCESS_STREAK_BONUS: 1,
+  SUCCESS_STREAK_MAX_BONUS: 5,
+  SUCCESS_COMPLEXITY_BONUS: 3,
+  SCORE_MAX: 100,
+  FAILURE_BASE: -8,
+  FAILURE_STREAK_PENALTY: -2,
+  FAILURE_STREAK_MAX_PENALTY: -10,
+  SCORE_MIN: 0,
+  TOOL_SUCCESS_DELTA: 2,
+  TOOL_FAILURE_DELTA: -3,
+  EXPERT_THRESHOLD: 80,
+  CAPABLE_THRESHOLD: 60,
+  LEARNING_THRESHOLD: 40,
+  INITIAL_SCORE: 50,
+  MAX_RECENT_RUNS: 20,
+} as const
+
+// 分数等级计算
+export function getScoreTier(score: number): ScoreTier {
+  if (score >= SCORING_RULES.EXPERT_THRESHOLD) return 'Expert'
+  if (score >= SCORING_RULES.CAPABLE_THRESHOLD) return 'Capable'
+  if (score >= SCORING_RULES.LEARNING_THRESHOLD) return 'Learning'
+  return 'Weak'
+}
+
+// 分数等级颜色
+export const SCORE_TIER_COLORS: Record<ScoreTier, string> = {
+  Expert:   '#22c55e',
+  Capable:  '#3b82f6',
+  Learning: '#f59e0b',
+  Weak:     '#ef4444',
+}
+
+// 分数驱动行为配置
+export interface ScoreDrivenBehavior {
+  criticFrequency: 'all_mutating' | 'standard' | 'reduced'
+  reflexionDepth: 'deep' | 'standard' | 'shallow'
+  sopBudgetRatio: number
+  memoryBudgetRatio: number
+  geneInjection: boolean
+  fewShotInjection: boolean
+  autoApproveThreshold: 'high' | 'critical' | 'none'
+}
+
+export const SCORE_BEHAVIORS: Record<ScoreTier, ScoreDrivenBehavior> = {
+  Expert: {
+    criticFrequency: 'reduced',
+    reflexionDepth: 'shallow',
+    sopBudgetRatio: 0.08,
+    memoryBudgetRatio: 0.10,
+    geneInjection: false,
+    fewShotInjection: false,
+    autoApproveThreshold: 'high',
+  },
+  Capable: {
+    criticFrequency: 'standard',
+    reflexionDepth: 'standard',
+    sopBudgetRatio: 0.15,
+    memoryBudgetRatio: 0.20,
+    geneInjection: true,
+    fewShotInjection: false,
+    autoApproveThreshold: 'none',
+  },
+  Learning: {
+    criticFrequency: 'standard',
+    reflexionDepth: 'deep',
+    sopBudgetRatio: 0.15,
+    memoryBudgetRatio: 0.25,
+    geneInjection: true,
+    fewShotInjection: false,
+    autoApproveThreshold: 'none',
+  },
+  Weak: {
+    criticFrequency: 'all_mutating',
+    reflexionDepth: 'deep',
+    sopBudgetRatio: 0.20,
+    memoryBudgetRatio: 0.25,
+    geneInjection: true,
+    fewShotInjection: true,
+    autoApproveThreshold: 'none',
+  },
+}
+
+// 创建初始评分
+export function createInitialScoring(): NexusScoring {
+  return {
+    score: SCORING_RULES.INITIAL_SCORE,
+    streak: 0,
+    totalRuns: 0,
+    successCount: 0,
+    failureCount: 0,
+    successRate: 0,
+    dimensions: {},
+    recentRuns: [],
+    lastUpdated: Date.now(),
+  }
+}
+
+// ============================================
+// V2: NexusContextEngine 接口
+// ============================================
+
+// assemble 参数和结果
+export interface AssembleParams {
+  sessionId: string
+  messages: ChatMessage[]
+  tokenBudget: number
+  taskDescription?: string
+}
+
+export interface AssembleResult {
+  messages: ChatMessage[]
+  estimatedTokens: number
+  systemPromptAddition?: string
+  budgetBreakdown: {
+    system: number
+    sop: number
+    memory: number
+    genes: number
+    skills: number
+    history: number
+  }
+}
+
+// compact 参数和结果
+export interface CompactParams {
+  sessionId: string
+  tokenBudget: number
+  trigger: 'overflow' | 'budget' | 'proactive'
+  currentTokenCount: number
+}
+
+export interface CompactResult {
+  ok: boolean
+  compacted: boolean
+  tokensBefore: number
+  tokensAfter?: number
+  summary?: string
+  reason?: string
+}
+
+// ingest 参数和结果
+export interface IngestParams {
+  sessionId: string
+  message: ChatMessage
+}
+
+export interface IngestResult {
+  ingested: boolean
+}
+
+// afterTurn 参数
+export interface AfterTurnParams {
+  sessionId: string
+  messages: ChatMessage[]
+  prePromptMessageCount: number
+  tokenBudget: number
+  toolResults: ToolCallSummary[]
+  runState: AgentRunState
+}
+
+// bootstrap 参数和结果
+export interface BootstrapParams {
+  sessionId: string
+}
+
+export interface BootstrapResult {
+  bootstrapped: boolean
+  importedMessages?: number
+  reason?: string
+}
+
+// prepareChildSpawn 参数和结果
+export interface PrepareChildSpawnParams {
+  parentSessionId: string
+  childSessionId: string
+  childNexusId: string
+  inheritContext: boolean
+}
+
+export interface ChildSpawnPreparation {
+  contextSummary?: string
+  sharedGenes?: Gene[]
+  rollback: () => Promise<void>
+}
+
+// onChildEnded 参数
+export interface OnChildEndedParams {
+  childSessionId: string
+  childNexusId: string
+  reason: 'completed' | 'error' | 'timeout' | 'killed'
+  outcome?: {
+    success: boolean
+    result?: string
+    error?: string
+    tokensUsed?: number
+    toolsCalled?: string[]
+    scoreChange?: number
+    genesHarvested?: Gene[]
+  }
+}
+
+// NexusContextEngine 接口
+export interface NexusContextEngine {
+  readonly info: {
+    id: string
+    nexusId: string
+    name: string
+  }
+
+  // 必需方法
+  assemble(params: AssembleParams): AssembleResult
+  compact(params: CompactParams): Promise<CompactResult>
+  ingest(params: IngestParams): IngestResult
+
+  // 可选方法
+  afterTurn?(params: AfterTurnParams): Promise<void>
+  bootstrap?(params: BootstrapParams): Promise<BootstrapResult>
+  prepareChildSpawn?(params: PrepareChildSpawnParams): Promise<ChildSpawnPreparation>
+  onChildEnded?(params: OnChildEndedParams): Promise<void>
+  dispose?(): Promise<void>
+}
+
+// ============================================
+// V2: 子智能体系统
+// ============================================
+
+// 子智能体生成参数
+export interface SpawnChildParams {
+  task: string
+  nexusId?: string
+  model?: string
+  mode: 'run' | 'session'
+  cleanup: 'delete' | 'keep'
+  timeout?: number
+  inheritContext?: boolean
+  shareGenes?: boolean
+  priority?: 'high' | 'normal' | 'background'
+}
+
+// 子智能体运行记录
+export interface ChildRunRecord {
+  runId: string
+  childSessionId: string
+  parentSessionId: string
+  nexusId: string
+  nexusLabel: string
+  task: string
+  status: 'pending' | 'running' | 'completed' | 'error' | 'timeout' | 'killed'
+  outcome?: ChildOutcome
+  depth: number
+  model: string
+  createdAt: number
+  startedAt?: number
+  endedAt?: number
+  turns: number
+  toolsCalled: string[]
+  currentPhase: AgentPhase
+}
+
+// 子智能体执行结果
+export interface ChildOutcome {
+  success: boolean
+  result?: string
+  error?: string
+  tokensUsed: number
+  durationMs: number
+  scoreChange: number
+  genesHarvested: number
+}
+
+// 子智能体生成结果
+export interface SpawnChildResult {
+  status: 'accepted' | 'forbidden' | 'error'
+  childSessionId?: string
+  runId?: string
+  error?: string
+  nexusId?: string
+}
+
+// 子智能体限制常量
+export const CHILD_LIMITS = {
+  maxSpawnDepth: 2,
+  maxChildrenPerSession: 5,
+  defaultTimeoutSeconds: 300,
+} as const
+
+// ============================================
+// V2: MemoryStore 搜索结果
+// ============================================
+
+export interface MemorySearchResult {
+  id: string
+  path: string
+  startLine: number
+  endLine: number
+  score: number                     // 0-1
+  snippet: string
+  source: string                    // 'memory' | 'exec_trace' | 'gene' | 'nexus_xp' | 'session'
+  nexusId?: string
+}
+
+// 搜索算法配置
+export const SEARCH_CONFIG = {
+  FTS_WEIGHT: 0.3,
+  VECTOR_WEIGHT: 0.7,
+  TEMPORAL_DECAY_HALF_LIFE_DAYS: 30,
+  MMR_LAMBDA: 0.7,
+  SNIPPET_MAX_CHARS: 700,
+  DEFAULT_MAX_RESULTS: 10,
+  DEFAULT_MIN_SCORE: 0.3,
+} as const
+
+// ============================================
+// V2: 会话持久化
+// ============================================
+
+export interface SessionMeta {
+  id: string
+  title: string
+  type: 'general' | 'nexus'
+  nexusId?: string
+  messageCount: number
+  createdAt: number
+  updatedAt: number
+  lastMessagePreview?: string
+  hasCheckpoint: boolean
+}
+
+// ============================================
+// V2: 错误恢复配置
+// ============================================
+
+export const FAILOVER_STRATEGIES: Record<FailoverReason, string[]> = {
+  auth:              ['rotate_api_key', 'prompt_user'],
+  rate_limit:        ['exponential_backoff', 'switch_model'],
+  context_overflow:  ['compact_context', 'truncate_tool_results'],
+  timeout:           ['retry_with_backoff', 'switch_model'],
+  model_error:       ['switch_model', 'simplify_prompt'],
+  network:           ['retry_with_backoff', 'prompt_user'],
+  billing:           ['switch_model', 'prompt_user'],
+}
+
+export const BACKOFF_CONFIG = {
+  initialMs: 250,
+  maxMs: 1500,
+  factor: 2,
+  maxAttempts: 3,
+} as const
+
+// ============================================
+// V2: AgentEventBus 接口
+// ============================================
+
+export interface AgentEventBus {
+  emit(event: Omit<AgentEventEnvelope, 'seq' | 'ts'>): void
+  subscribe(listener: (event: AgentEventEnvelope) => void): () => void
+  subscribeStream(stream: AgentEventStream, listener: (event: AgentEventEnvelope) => void): () => void
+  getState(): AgentRunState
+  getEvents(runId: string): AgentEventEnvelope[]
+  reset(): void
+}
+
+// 终止操作粒度
+export type AbortTarget =
+  | { level: 'run' }
+  | { level: 'tool'; callId: string }
+  | { level: 'child'; childRunId: string }
+  | { level: 'step'; stepIndex: number }
+  | { level: 'compact' }
