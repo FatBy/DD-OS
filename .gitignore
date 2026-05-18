@@ -49,6 +49,9 @@ library_processor/
 # Local embedding models (bge-large-zh-v1.5, ~650MB)
 models/
 
+# Vendor binaries (Tesseract portable 等随包分发的二进制, 打包时手动放入)
+vendor/
+
 # Tauri build artifacts
 src-tauri/target/
 src-tauri/binaries/
