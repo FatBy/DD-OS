@@ -3612,3 +3612,360 @@ export interface DeliberationState {
   /** 如果管线出错, 记录错误信息 */
   error?: string
 }
+
+// ============================================
+// SOP Evolution v2 (2026-05-18)
+// 基于 dun-sop-design.md v2 — evidence-aware validation +
+// section-anchored patch + shadow + slice-aware fitness。
+// 不引入 phase 状态机。
+// ============================================
+
+// ---- SOP 文档结构 ----
+
+/** SOP frontmatter 中可识别的 obligation 证据类型 (v2 扩展为 6 种) */
+export type SopEvidenceType =
+  | 'tool_call'
+  | 'artifact'
+  | 'semantic'
+  | 'data_provenance'
+  | 'reasoning_trace'
+  | 'evidence_completeness'
+
+export type SopMetricType = 'structural' | 'semantic' | 'quantitative'
+
+export interface SopMetricDef {
+  name: string
+  description: string
+  type: SopMetricType
+  threshold?: string
+}
+
+export interface SopObligationDef {
+  id: string
+  description: string
+  evidenceType: SopEvidenceType
+  evidenceMatcher: string
+}
+
+// ---- SOPEpisode ----
+
+export interface SopTraceStats {
+  toolCallCount: number
+  distinctTools: string[]
+  toolFailures: number
+  artifactCount: number
+  reasoningMarkerCount: number
+}
+
+export interface SopOutputFingerprint {
+  contentHash: string
+  hallucinationFlags: string[]
+  structuralSignature: string
+}
+
+export interface SopTokenUsage {
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+}
+
+export type SopTraceEventKind =
+  | 'tool_call'
+  | 'tool_result'
+  | 'reasoning_marker'
+  | 'artifact_produced'
+
+export interface SopTraceEvent {
+  ts: string
+  kind: SopTraceEventKind
+  payload: Record<string, unknown>
+}
+
+export interface SopUserSignalImplicit {
+  followUpCount: number
+  abandoned: boolean
+  timeToNextMessageMs: number | null
+  explicitRedirect: boolean
+}
+
+export interface SopUserSignalExplicit {
+  rating: 'thumbs_up' | 'thumbs_down'
+  comment?: string
+  timestamp: string
+}
+
+export interface SopUserSignal {
+  implicit: SopUserSignalImplicit
+  explicit?: SopUserSignalExplicit
+}
+
+export type SopDirectiveMode = 'strict' | 'advisory' | 'off'
+
+export interface SopPromptSnapshot {
+  fullPromptHash: string
+  sopSectionInjected: string
+  sopInjectionTruncated: boolean
+  truncationLayer?: 'dun_manager_8000' | 'localclaw_partition' | null
+  contextSizeChars: number
+  directiveMode: SopDirectiveMode
+}
+
+export interface SopEpisode {
+  episodeId: string
+  timestamp: string
+  sessionId: string
+
+  goal: string
+  goalSlice?: string
+
+  sopId: string
+  sopVersion: string
+  isShadow: boolean
+  shadowId?: string
+
+  promptSnapshot: SopPromptSnapshot
+
+  trace: SopTraceEvent[]
+  output: string
+  durationMs: number
+  modelId: string
+
+  tokenUsage: SopTokenUsage
+  traceStats: SopTraceStats
+  outputFingerprint: SopOutputFingerprint
+
+  validation?: SopValidatorOutput
+  userSignal?: SopUserSignal
+}
+
+// ---- ValidatorOutput ----
+
+export type SopPillarFailureCategory =
+  | 'missed_goal'
+  | 'low_quality'
+  | 'missing_evidence'
+  | 'hallucination'
+  | 'obligations_section_missing'
+
+export interface SopPillarResult {
+  passed: boolean
+  confidence: number
+  notes: string
+  failureCategory?: SopPillarFailureCategory
+}
+
+export interface SopObligationCheck {
+  obligationId: string
+  description: string
+  evidenceType: SopEvidenceType
+  found: boolean
+  evidenceRef?: string
+  judgeNote?: string
+  judgeModel?: string
+}
+
+export interface SopValidatorDiagnostics {
+  layerResults: {
+    layer1Rule: { passed: boolean; failedChecks: string[]; durationMs: number }
+    layer2Judge?: { passed: boolean; lowConfidenceChecks: string[]; durationMs: number }
+    layer3Calibration?: { adjustment: number; reason: string }
+  }
+  shortCircuited: boolean
+  totalValidationCost: {
+    llmCalls: number
+    tokens: number
+    durationMs: number
+  }
+  hallucinationFlagsRaised: string[]
+}
+
+export interface SopValidatorHumanOverride {
+  overriddenAt: string
+  correctedPassed: boolean
+  correctedBy: 'user_explicit' | 'user_implicit_pattern'
+  reason?: string
+}
+
+export interface SopValidatorOutput {
+  episodeId: string
+  validatedAt: string
+  validatorVersion: string
+  validatorModel: string | 'rule-only'
+
+  passed: boolean
+  confidence: number
+  miscalibrated?: boolean
+
+  pillars: {
+    goal: SopPillarResult
+    quality: SopPillarResult
+    evidence: SopPillarResult
+  }
+
+  obligationChecks: SopObligationCheck[]
+  diagnostics: SopValidatorDiagnostics
+  reasoning: string
+  humanOverride?: SopValidatorHumanOverride
+}
+
+// ---- SOPPatch ----
+
+export type SopPatchOperation = 'replace' | 'insert_after' | 'delete'
+
+export type SopPatchStatus =
+  | 'proposed'
+  | 'shadow_active'
+  | 'promoted'
+  | 'rejected'
+  | 'superseded'
+
+export interface SopPatchStatusEvent {
+  status: SopPatchStatus
+  at: string
+  reason: string
+  by: 'auto' | 'user'
+}
+
+export interface SopPatchEvaluationResult {
+  promotedAt: string
+  postPromotionWindow: { from: string; to: string }
+  expectedImprovement: string[]
+  actualImprovement: {
+    obligationFulfillmentDelta: number
+    validatorPassRateDelta: number
+    userPositiveRateDelta: number
+    unexpectedRegressions: string[]
+  }
+  verdict: 'as_expected' | 'exceeded' | 'underperformed' | 'regressed'
+  shouldRollback: boolean
+  reviewNote?: string
+}
+
+export interface SopPatch {
+  patchId: string
+  proposedAt: string
+
+  sourceEpisodes: string[]
+  sourceWindow: { from: string; to: string }
+
+  targetSopId: string
+  targetBaseVersion: string
+
+  sectionAnchor: string
+  operation: SopPatchOperation
+  newContent?: string
+
+  problemPattern: string
+  rationale: string
+  expectedImprovement: string[]
+
+  confidence: number
+  generatorModel: string
+  generatorVersion: string
+
+  status: SopPatchStatus
+  statusHistory: SopPatchStatusEvent[]
+
+  evaluationResult?: SopPatchEvaluationResult
+}
+
+// ---- ShadowSOP ----
+
+export type SopShadowStatus =
+  | 'active'
+  | 'waiting_for_signal'
+  | 'under_review'
+  | 'promoted'
+  | 'rejected'
+  | 'expired'
+
+export interface SopFitnessMetric {
+  episodeCount: number
+  validatorPassRate: number
+  avgValidatorConfidence: number
+  userPositiveRate: number
+  obligationFulfillmentRate: number
+  meanDurationMs: number
+}
+
+export interface SopSliceComparisonDelta {
+  metric: string
+  baseVal: number
+  shadowVal: number
+  pValue?: number
+  significant: boolean
+}
+
+export type SopSliceVerdict = 'shadow_wins' | 'base_wins' | 'no_signal' | 'mixed'
+
+export interface SopSliceComparison {
+  slice: string
+  baseFitness: SopFitnessMetric
+  shadowFitness: SopFitnessMetric
+  delta: SopSliceComparisonDelta[]
+  verdict: SopSliceVerdict
+  episodeCount: number
+  significanceLevel: number
+}
+
+export interface SopShadowRouting {
+  sliceFilter?: string[]
+  trafficShare: number
+  minEpisodesBeforeDecision: number
+  maxAgeDays: number
+}
+
+export interface SopShadowPromotionDecision {
+  decidedAt: string
+  decision: 'promote' | 'reject'
+  decidedBy: 'auto' | 'user'
+  rationale: string
+  sliceComparison: SopSliceComparison[]
+}
+
+export interface SopShadow {
+  shadowId: string
+  baseSopId: string
+  baseVersion: string
+  appliedPatches: string[]
+  content: string
+  contentHash: string
+
+  createdAt: string
+  status: SopShadowStatus
+
+  routing: SopShadowRouting
+
+  episodesRun: string[]
+  fitness: {
+    overall: SopFitnessMetric
+    bySlice: Record<string, SopFitnessMetric>
+  }
+
+  promotionDecision?: SopShadowPromotionDecision
+}
+
+// ---- SOP Authoring Validation ----
+
+export type SopAuthoringIssueLevel = 'error' | 'warning'
+
+export interface SopAuthoringIssue {
+  level: SopAuthoringIssueLevel
+  code: string
+  message: string
+  location?: string
+}
+
+export interface SopAuthoringResult {
+  ok: boolean
+  errors: SopAuthoringIssue[]
+  warnings: SopAuthoringIssue[]
+  parsed?: {
+    sopId?: string
+    version?: string
+    sopType?: string
+    metrics: SopMetricDef[]
+    obligations: SopObligationDef[]
+    sectionsFound: string[]
+  }
+}
