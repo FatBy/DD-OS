@@ -4,16 +4,20 @@
  * 设计宪法:
  * - Tab 1: 赛博青色神经元网络 (SkillTreeView)
  * - Tab 2: 技工学院 (SkillsHouseView) — DD-OS 风格的技能看板
+ * - Tab 3: 工作台 (SkillIDE) — 对话式 Skill 编辑器（Phase 0 接入，详见三合一方案）
  * - 右上角: 安装/创建操作按钮
  */
 
 import { useMemo, useState } from 'react'
-import { Loader2, Wrench } from 'lucide-react'
+import { Loader2, Wrench, Code2 } from 'lucide-react'
 import { useStore } from '@/store'
 import { SkillTreeView } from '@/components/blueprint/SkillTreeView'
 import { SkillsHouseView } from './skillsHouse/SkillsHouseView'
+import { SkillIDE } from './skillsHouse/ide/SkillIDE'
 
 // ── SkillHouse 主组件 ──────────────────────
+
+type SkillHouseTab = 'neuron' | 'academy' | 'ide'
 
 export function SkillHouse() {
   const storeSkills = useStore((s) => s.skills)
@@ -21,7 +25,7 @@ export function SkillHouse() {
   const connectionStatus = useStore((s) => s.connectionStatus)
 
   const isConnected = connectionStatus === 'connected'
-  const [activeTab, setActiveTab] = useState<'neuron' | 'academy'>('neuron')
+  const [activeTab, setActiveTab] = useState<SkillHouseTab>('neuron')
 
   const activeSkills = useMemo(
     () => storeSkills.filter((s) => s.unlocked || s.status === 'active'),
@@ -39,13 +43,19 @@ export function SkillHouse() {
   return (
     <div className="relative w-full h-full overflow-hidden bg-[#fefaf6]">
       {/* ── Layer 0: 主内容层 ── */}
-      {activeTab === 'neuron' ? (
+      {activeTab === 'neuron' && (
         <div className="absolute inset-0 overflow-y-auto">
           <SkillTreeView />
         </div>
-      ) : (
+      )}
+      {activeTab === 'academy' && (
         <div className="absolute inset-0">
           <SkillsHouseView />
+        </div>
+      )}
+      {activeTab === 'ide' && (
+        <div className="absolute inset-0">
+          <SkillIDE />
         </div>
       )}
 
@@ -72,6 +82,17 @@ export function SkillHouse() {
           >
             <Wrench className="w-3 h-3" />
             技工学院
+          </button>
+          <button
+            onClick={() => setActiveTab('ide')}
+            className={`flex items-center gap-1 px-3 py-1 text-xs font-bold rounded-md transition-colors ${
+              activeTab === 'ide'
+                ? 'bg-cyan-50 text-cyan-600 border border-cyan-200'
+                : 'text-stone-400 hover:text-stone-600 border border-transparent'
+            }`}
+          >
+            <Code2 className="w-3 h-3" />
+            工作台
           </button>
         </div>
       </div>

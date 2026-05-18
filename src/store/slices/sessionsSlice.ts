@@ -17,6 +17,17 @@ let _lastPersistTime = Date.now()
 let _pendingStepUpdates: Map<string, { taskId: string; stepId: string; updates: Partial<ExecutionStep> }> = new Map()
 let _stepUpdateRafId = 0
 
+// HMR 清理 - 防止热更新时 RAF 定时器泄漏
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    if (_stepUpdateRafId) {
+      cancelAnimationFrame(_stepUpdateRafId)
+      _stepUpdateRafId = 0
+    }
+    _pendingStepUpdates.clear()
+  })
+}
+
 // 优化建议动作
 export interface OptimizationAction {
   target: string        // 目标 Dun/SKILL ID，如 'skill-scout', 'dev-assistant'
@@ -153,6 +164,11 @@ export interface SessionsSlice {
   // 静默分析
   generateSilentAnalysis: () => Promise<void>
   shouldRefreshAnalysis: () => boolean
+
+  // 文档查看跨组件通信
+  pendingDocumentOpen: { filePath: string; title?: string } | null
+  requestOpenDocument: (filePath: string, title?: string) => void
+  clearPendingDocument: () => void
 }
 
 export const createSessionsSlice: StateCreator<SessionsSlice> = (set, get) => ({
@@ -165,6 +181,7 @@ export const createSessionsSlice: StateCreator<SessionsSlice> = (set, get) => ({
   // 检查是否有中断的任务
   hasInterruptedTasks: initialTaskHistory.some(t => t.status === 'executing'),
   silentAnalysis: initialSilentAnalysis,
+  pendingDocumentOpen: null,
 
   setSessions: (sessions) => set({ 
     sessions, 
@@ -591,4 +608,8 @@ optimizations 规则：
       })
     }
   },
+
+  // 文档查看跨组件通信
+  requestOpenDocument: (filePath, title) => set({ pendingDocumentOpen: { filePath, title } }),
+  clearPendingDocument: () => set({ pendingDocumentOpen: null }),
 })
