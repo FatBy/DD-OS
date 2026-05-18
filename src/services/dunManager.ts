@@ -699,28 +699,44 @@ export class DunManagerService {
       ctx += `---\n\n`
     }
 
-    // SOP 作为参考资料注入（Session 级别，仅注入一次）
-    // 不再强制要求模型按 Phase 顺序执行，而是让模型根据任务需要自主参考
+    // ===== v2: Strict SOP Directive =====
+    // SOP 是执行契约,不是参考资料。phase 列表保留用于结构化展示,
+    // 但措辞改为 strict — 强调遵循 metrics / obligations 而非"灵活参考"。
     const phases = this.parseSOP(sopContent)
 
+    ctx += `### 📋 SOP 执行契约 (Strict)\n\n`
+    const sopVersion = dun?.version || 'unversioned'
+    ctx += `本次执行的 SOP 是 **${dun?.label || dunId}@${sopVersion}**。这是你与用户的执行契约,不是参考资料。\n\n`
+    ctx += `你必须:\n`
+    ctx += `1. 在执行流程中体现 SOP 的关键步骤\n`
+    ctx += `2. 满足"质量标准 (metrics)"中列出的所有条件\n`
+    ctx += `3. 完成"obligations"中标注的所有动作,并在过程中留下证据(工具调用 / 引用 / 产出物)\n\n`
+
     if (phases.length > 0) {
-      ctx += `### 📋 SOP 参考流程\n\n`
-      ctx += `以下是该 Dun 的标准操作流程，供你参考。请根据用户的具体任务灵活运用，不必强制按顺序执行。\n\n`
+      ctx += `**核心执行结构(供参考,具体动作以 obligations 为准):**\n\n`
       for (const phase of phases) {
-        ctx += `**Phase ${phase.index}: ${phase.name}**\n`
+        ctx += `- Phase ${phase.index}: ${phase.name}\n`
         for (const step of phase.steps) {
           ctx += `  ${step.index}. ${step.text}\n`
         }
-        ctx += `\n`
       }
-      ctx += `---\n\n`
+      ctx += `\n`
     }
+    ctx += `---\n\n`
 
-    // 注入 SOP 原文作为补充参考（限制在 8000 字符以内，减少上下文膨胀）
-    const maxChars = 8000
-    const trimmedSOP = sopContent.length > maxChars
-      ? sopContent.slice(0, maxChars) + '\n... [SOP 原文较长，已截断]'
-      : sopContent
+    // 注入 SOP 原文(8000 字符为 fail-loud 截断阈值)
+    // v2: 超长 SOP 不再静默截断,记录告警以供 observability。真正的
+    // "完整 SOP 不丢失"由独立 SOP context 分区(后续 PR)保证。
+    const MAX_SOP_INJECT_CHARS = 8000
+    let trimmedSOP: string
+    if (sopContent.length > MAX_SOP_INJECT_CHARS) {
+      trimmedSOP = sopContent.slice(0, MAX_SOP_INJECT_CHARS) + '\n... [SOP 原文超长已截断]'
+      console.warn(
+        `[DunManager/buildContext] SOP truncated at dun_manager_8000 layer — dunId=${dunId} originalChars=${sopContent.length} keptChars=${MAX_SOP_INJECT_CHARS}`,
+      )
+    } else {
+      trimmedSOP = sopContent
+    }
     ctx += trimmedSOP
 
     const experiences = await this.searchExperiences(dunId, userQuery)
