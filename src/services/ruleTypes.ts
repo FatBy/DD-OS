@@ -42,17 +42,45 @@ export interface AdaptationBounds {
   step: number
 }
 
+export type DiscoveredRuleLifecycle =
+  | 'candidate'
+  | 'distilled'
+  | 'observing'
+  | 'validated'
+  | 'retired'
+
+export interface RuleDistillation {
+  displayName: string
+  userExplanation: string
+  agentPrompt: string
+  risk: string
+  evidenceSummary: string
+  distilledAt: number
+  distilledBy: string
+}
+
 /** 数据驱动的发现规则 */
 export interface DiscoveredRule {
   id: string
   name: string
-  lifecycle: 'candidate' | 'validated' | 'retired'
+  /**
+   * V9 lifecycle:
+   * - candidate: 统计发现，未蒸馏，仅 UI 展示，不干预
+   * - distilled: 已蒸馏出可读解释和 agentPrompt，未启用，不干预
+   * - observing: 用户显式试用，参与干预但标记为实验
+   * - validated: 稳定有效，正式参与干预
+   * - retired: 停用
+   */
+  lifecycle: DiscoveredRuleLifecycle
 
   condition: RuleCondition
   action: {
     promptTemplate: string
     severity: 'warning' | 'info'
   }
+
+  /** LLM 蒸馏产物，distilled/observing/validated 阶段应存在 */
+  distillation?: RuleDistillation
 
   stats: RuleStatistics
   adaptationBounds?: AdaptationBounds

@@ -2,7 +2,15 @@ import type { StateCreator } from 'zustand'
 import type { ChatMessage, AISummary, LLMConfig, ViewType, ExecutionStatus, ApprovalRequest, MemoryEntry, JournalEntry, Conversation, ConversationMeta, ConversationType } from '@/types'
 import { getLLMConfig, saveLLMConfig, isLLMConfigured, streamChat, chat } from '@/services/llmService'
 import { buildSummaryMessages, buildChatMessages, parseExecutionCommands, stripExecutionBlocks, buildJournalPrompt, parseJournalResult } from '@/services/contextBuilder'
-import { localClawService } from '@/services/LocalClawService'
+// 动态加载 LocalClawService，避免启动时拉入整个依赖图
+let _localClawService: Awaited<typeof import('@/services/LocalClawService')>['localClawService'] | null = null
+async function getLocalClawService() {
+  if (!_localClawService) {
+    const mod = await import('@/services/LocalClawService')
+    _localClawService = mod.localClawService
+  }
+  return _localClawService
+}
 import { confidenceTracker } from '@/services/confidenceTracker'
 import { getCurrentLocale } from '@/i18n/core'
 import { localServerService } from '@/services/localServerService'
@@ -1059,7 +1067,7 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
         }))
         persistExecutionStatuses(get().executionStatuses)
 
-        // 2. 创建实时任务 (在 TaskHouse 显示，含执行步骤)
+        // 2. 创建实时任务 (含执行步骤)
         const fullState = get() as any
         
         // 🔧 修复：优先使用当前会话的 dunId，而非全局 activeDunId
@@ -1107,7 +1115,7 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
               ? `${message}\n\n[上下文参考]\n${hiddenContext}`
               : message
 
-            result = await localClawService.sendMessage(
+            result = await (await getLocalClawService()).sendMessage(
               llmMessage,
               // onUpdate: 仅更新流式内容指示
               (_content) => {
@@ -1129,10 +1137,11 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
 
           // 4. 完成 - 聊天面板显示最终结果（普通文本消息）
           const execDuration = Date.now() - execStartTime
-          const createdFiles = localClawService.lastCreatedFiles.length > 0
-            ? [...localClawService.lastCreatedFiles]
+          const clawSvc = await getLocalClawService()
+          const createdFiles = clawSvc.lastCreatedFiles.length > 0
+            ? [...clawSvc.lastCreatedFiles]
             : undefined
-          const traceId = localClawService.lastTraceId || undefined
+          const traceId = clawSvc.lastTraceId || undefined
           // 替换占位消息为最终结果（无 execution 卡片，附带创建的文件列表）
           get()._updateMessageInConv(originConvId, execId, { content: result, execution: undefined, createdFiles, traceId })
           set((s) => ({
@@ -1316,7 +1325,7 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
           get()._execConvMap.set(execId, originConvId)
           
           // 检查 Native 服务是否可用
-          const serverAvailable = await localClawService.checkStatus()
+          const serverAvailable = await (await getLocalClawService()).checkStatus()
           
           if (!serverAvailable) {
             // 服务不可用，显示任务建议
@@ -1358,7 +1367,7 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
           
           // 使用 LocalClawService ReAct 循环执行任务
           try {
-            const result = await localClawService.sendMessage(
+            const result = await (await getLocalClawService()).sendMessage(
               cmd.prompt,
               (content) => {
                 // 流式更新输出
@@ -1496,6 +1505,16 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
     // 终态时清理映射，防止内存泄漏
     if (updated.status === 'success' || updated.status === 'error') {
       get()._execConvMap.delete(id)
+    }
+
+    // 防御性清理: 映射表过大时清理最早的条目（防止异常终止导致的累积）
+    const execMap = get()._execConvMap
+    if (execMap.size > 100) {
+      const keysToRemove = Array.from(execMap.keys()).slice(0, execMap.size - 50)
+      for (const key of keysToRemove) {
+        execMap.delete(key)
+      }
+      console.warn(`[aiSlice] _execConvMap cleaned: removed ${keysToRemove.length} stale entries`)
     }
     
     // 持久化

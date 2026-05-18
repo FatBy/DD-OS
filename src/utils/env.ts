@@ -18,6 +18,21 @@ declare global {
         install: () => Promise<void>
         openReleases: () => Promise<void>
       }
+      plugins?: {
+        list: () => Promise<Array<{
+          id: string; name: string; version: string; description?: string;
+          status: string; errorMessage?: string; hasConfigSchema: boolean;
+        }>>
+        getProviders: () => Promise<Array<Record<string, unknown>>>
+        getConfig: (pluginId: string) => Promise<Record<string, unknown>>
+        setConfig: (pluginId: string, config: Record<string, unknown>) => Promise<{ ok: boolean }>
+        getSchema: (pluginId: string) => Promise<Record<string, unknown> | null>
+        checkUpdate: (pluginId: string) => Promise<{ hasUpdate: boolean; latestVersion?: string; currentVersion?: string }>
+        doUpdate: (pluginId: string) => Promise<{ ok: boolean; message?: string }>
+        emitHook: (hookName: string, data: Record<string, unknown>) => void
+        buildContext: (data: Record<string, unknown>) => Promise<Record<string, string>>
+        onBroadcast: (cb: (event: string, payload: unknown) => void) => () => void
+      }
     }
     __TAURI__?: unknown
   }

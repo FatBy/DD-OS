@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import json
+import sys
 import time
 import threading
 from pathlib import Path
 
-from server.state import _db_lock
+from server.db import ensure_current_vector_indexes_async, shutdown_hybrid_engine
+from server.state import _db_lock, _embedding_manager
 
 class DataMixin:
     """Data Persistence Mixin (Scoring, Confidence, Governor)"""
@@ -19,26 +21,46 @@ class DataMixin:
         row = db.execute("SELECT scoring_data FROM dun_scoring WHERE dun_id = ?", (dun_id,)).fetchone()
         if row:
             self.send_json(json.loads(row['scoring_data']))
-        else:
-            # 同时尝试从旧 fitness 文件迁移
-            dun_dir = self._resolve_dun_dir(dun_id)
-            if dun_dir:
-                fitness_file = dun_dir / 'sop-fitness.json'
-                if fitness_file.exists():
+            return
+
+        # 回退: 通过 _resolve_dun_dir 找到实际目录，用目录名再查一次
+        # 解决 dun_id 是中文 label 但 scoring 存在目录名下的情况
+        dun_dir = self._resolve_dun_dir(dun_id)
+        if dun_dir:
+            dir_name = dun_dir.name
+            if dir_name != dun_id:
+                row2 = db.execute("SELECT scoring_data FROM dun_scoring WHERE dun_id = ?", (dir_name,)).fetchone()
+                if row2:
+                    scoring_data = json.loads(row2['scoring_data'])
+                    # 同时把 scoring 复制到当前 dun_id 下，避免下次再回退
+                    now = int(time.time() * 1000)
                     try:
-                        with fitness_file.open('r', encoding='utf-8') as f:
-                            legacy_data = json.load(f)
-                        # 迁移到 SQLite
-                        now = int(time.time() * 1000)
                         with _db_lock:
                             db.execute("INSERT OR REPLACE INTO dun_scoring (dun_id, scoring_data, updated_at) VALUES (?,?,?)",
-                                       (dun_id, json.dumps(legacy_data, ensure_ascii=False), now))
+                                       (dun_id, row2['scoring_data'], now))
                             db.commit()
-                        self.send_json(legacy_data)
-                        return
                     except Exception:
                         pass
-            self.send_json(None)
+                    self.send_json(scoring_data)
+                    return
+
+            # 尝试从旧 fitness 文件迁移
+            fitness_file = dun_dir / 'sop-fitness.json'
+            if fitness_file.exists():
+                try:
+                    with fitness_file.open('r', encoding='utf-8') as f:
+                        legacy_data = json.load(f)
+                    now = int(time.time() * 1000)
+                    with _db_lock:
+                        db.execute("INSERT OR REPLACE INTO dun_scoring (dun_id, scoring_data, updated_at) VALUES (?,?,?)",
+                                   (dun_id, json.dumps(legacy_data, ensure_ascii=False), now))
+                        db.commit()
+                    self.send_json(legacy_data)
+                    return
+                except Exception:
+                    pass
+
+        self.send_json(None)
 
     def handle_scoring_put(self, dun_id: str, data: dict):
         """PUT /api/dun/{dunId}/scoring"""
@@ -133,11 +155,21 @@ class DataMixin:
     
     # 文件写入锁 (防止并发写入同一个 data/*.json 文件)
     _data_file_locks: dict = {}
+    _data_file_locks_guard = threading.Lock()
 
     @staticmethod
     def _get_data_lock(key: str):
-        """获取指定 key 的文件锁 (懒创建，setdefault 在 CPython GIL 保护下是原子操作)"""
-        return DataMixin._data_file_locks.setdefault(key, threading.Lock())
+        """获取指定 key 的文件锁 (线程安全)"""
+        with DataMixin._data_file_locks_guard:
+            # 防御性清理: 锁字典超过 500 条时淘汰一半旧条目
+            if len(DataMixin._data_file_locks) > 500:
+                keys = list(DataMixin._data_file_locks.keys())
+                for k in keys[:len(keys) // 2]:
+                    # 只淘汰当前未被持有的锁
+                    lock = DataMixin._data_file_locks.get(k)
+                    if lock and not lock.locked():
+                        del DataMixin._data_file_locks[k]
+            return DataMixin._data_file_locks.setdefault(key, threading.Lock())
 
     def handle_data_set(self, key: str, data: dict):
         """写入前端数据 (带文件锁防并发)"""
@@ -163,6 +195,17 @@ class DataMixin:
                     # 写入数据
                     file_path.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding='utf-8')
                     self.send_json({'key': key, 'saved': True})
+            if key == 'llm_config':
+                try:
+                    config_value = value if isinstance(value, dict) else None
+                    _embedding_manager.sync_with_llm_config(
+                        config_value,
+                        reason='llm_config update',
+                    )
+                    shutdown_hybrid_engine()
+                    ensure_current_vector_indexes_async(reason='llm_config update')
+                except Exception as sync_error:
+                    print(f'[Embedding] Failed to sync llm_config: {sync_error}', file=sys.stderr)
         except Exception as e:
             self.send_error_json(f'Failed to save data: {str(e)}', 500)
     

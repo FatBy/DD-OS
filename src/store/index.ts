@@ -16,6 +16,8 @@ import { createSoulAmendmentSlice, type SoulAmendmentSlice } from './slices/soul
 import { createLinkStationSlice, type LinkStationSlice } from './slices/linkStationSlice'
 import { createLibrarySlice, type LibrarySlice } from './slices/librarySlice'
 import { createWikiSlice, type WikiSlice } from './slices/wikiSlice'
+import { createStudyRoomSlice, type StudyRoomSlice } from './slices/studyRoomSlice'
+import { createSkillIDESlice, type SkillIDESlice } from './slices/skillIDESlice'
 
 // ============================================
 // 视图状态
@@ -28,7 +30,7 @@ interface ViewSlice {
 // ============================================
 // 合并后的 Store 类型
 // ============================================
-export type AppStore = ViewSlice & ConnectionSlice & SessionsSlice & ChannelsSlice & AgentSlice & DevicesSlice & AiSlice & WorldSlice & ObserverSlice & ThemeSlice & ClawHubSlice & SoulAmendmentSlice & LinkStationSlice & LibrarySlice & WikiSlice
+export type AppStore = ViewSlice & ConnectionSlice & SessionsSlice & ChannelsSlice & AgentSlice & DevicesSlice & AiSlice & WorldSlice & ObserverSlice & ThemeSlice & ClawHubSlice & SoulAmendmentSlice & LinkStationSlice & LibrarySlice & WikiSlice & StudyRoomSlice & SkillIDESlice
 
 // ============================================
 // 创建 Store
@@ -54,6 +56,8 @@ export const useStore = create<AppStore>()(
     ...createLinkStationSlice(...args),
     ...createLibrarySlice(...args),
     ...createWikiSlice(...args),
+    ...createStudyRoomSlice(...args),
+    ...createSkillIDESlice(...args),
   }))
 )
 

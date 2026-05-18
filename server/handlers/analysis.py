@@ -8,6 +8,7 @@ import base64
 from pathlib import Path
 from datetime import datetime, timedelta
 
+from server.constants import MAX_FILE_SIZE
 from server.state import _db_lock
 
 class AnalysisMixin:

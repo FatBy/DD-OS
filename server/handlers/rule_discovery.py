@@ -400,6 +400,8 @@ def run_discovery(
         rule: dict[str, Any] = {
             'id': rule_id,
             'name': f'{fid} {op} {round(threshold, 3)}',
+            # V9: candidate = 仅统计发现，未蒸馏，不参与运行时干预。
+            # 流转: candidate -> distilled -> observing -> validated / retired
             'lifecycle': 'candidate',
             'condition': {
                 'operator': 'AND',
@@ -455,7 +457,13 @@ class RuleDiscoveryMixin:
         if not path.exists():
             return []
         try:
-            return json.loads(path.read_text(encoding='utf-8'))
+            rules = json.loads(path.read_text(encoding='utf-8'))
+            if not isinstance(rules, list):
+                return []
+            migrated, changed = self._migrate_legacy_candidate_rules(rules)
+            if changed:
+                self._save_discovered_rules(migrated)
+            return migrated
         except Exception:
             return []
 
@@ -467,6 +475,214 @@ class RuleDiscoveryMixin:
             json.dumps(rules, ensure_ascii=False, indent=2),
             encoding='utf-8',
         )
+
+    def _migrate_legacy_candidate_rules(self, rules: list[dict]) -> tuple[list[dict], bool]:
+        """Promote historically strong candidate rules to observing with a legacy distillation.
+
+        This is a one-time compatibility bridge for rules that were already affecting
+        runtime before lifecycle gating existed. New candidate rules still stay UI-only.
+        """
+        tips: dict[str, str] = {}
+        tips_file = self.clawd_path / 'data' / 'rule_tips.json'
+        if tips_file.exists():
+            try:
+                loaded = json.loads(tips_file.read_text(encoding='utf-8'))
+                if isinstance(loaded, dict):
+                    tips = {str(k): str(v) for k, v in loaded.items() if v}
+            except Exception:
+                tips = {}
+
+        def as_float(value: Any, default: float = 0.0) -> float:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return default
+
+        changed = False
+        now_ms = int(time.time() * 1000)
+
+        for rule in rules:
+            if not isinstance(rule, dict):
+                continue
+            if rule.get('lifecycle') != 'candidate':
+                continue
+
+            distillation = rule.get('distillation') or {}
+            if isinstance(distillation, dict) and str(distillation.get('agentPrompt') or '').strip():
+                continue
+
+            stats = rule.get('stats') or {}
+            hit_count = int(as_float(stats.get('hitCount'), 0))
+            effect = as_float(stats.get('effectSizePP'), 0)
+            if hit_count < 30 or abs(effect) < 8:
+                continue
+
+            prompt_template = str((rule.get('action') or {}).get('promptTemplate') or '').strip()
+            if not prompt_template:
+                continue
+
+            rule_id = str(rule.get('id') or '')
+            display_name = str(rule.get('name') or rule_id or '历史观察规则')
+            user_tip = tips.get(rule_id) or (
+                f'这条规则由历史候选规则迁移而来：累计命中 {hit_count} 次，'
+                f'效果约 {effect:+.1f} 个百分点。它会先以实验观察方式试用，建议后续重新分析确认。'
+            )
+
+            rule['lifecycle'] = 'observing'
+            rule['distillation'] = {
+                'displayName': display_name,
+                'userExplanation': user_tip,
+                'agentPrompt': prompt_template,
+                'risk': '历史迁移规则，agentPrompt 仍来自旧模板，建议重新执行分析生成正式蒸馏产物。',
+                'evidenceSummary': f'历史命中 {hit_count} 次，效果 {effect:+.1f}pp，自动迁移为试用中。',
+                'distilledAt': now_ms,
+                'distilledBy': 'migration',
+            }
+            rule.setdefault('stats', {})['lastValidatedAt'] = now_ms
+            changed = True
+
+        return rules, changed
+
+    def _merge_rule_tip(self, rule_id: str, tip: str) -> None:
+        """将蒸馏后的用户解释同步到旧 rule_tips 缓存，兼容现有 UI。"""
+        data_dir = self.clawd_path / 'data'
+        data_dir.mkdir(exist_ok=True)
+        tips_file = data_dir / 'rule_tips.json'
+        existing = {}
+        if tips_file.exists():
+            try:
+                existing = json.loads(tips_file.read_text(encoding='utf-8'))
+            except Exception:
+                existing = {}
+        existing[rule_id] = tip
+        tips_file.write_text(
+            json.dumps(existing, ensure_ascii=False, indent=2),
+            encoding='utf-8',
+        )
+
+    def _rule_matches_features(self, rule: dict, features: dict | None) -> bool:
+        if not features:
+            return False
+        condition = rule.get('condition') or {}
+        clauses = condition.get('clauses') or []
+        operator = condition.get('operator', 'AND')
+
+        def match_clause(clause: dict) -> bool:
+            feature = clause.get('feature')
+            raw = features.get(feature)
+            if raw is None:
+                return False
+            val = 1 if raw is True else 0 if raw is False else raw
+            target = clause.get('value')
+            op = clause.get('op')
+            if target is None:
+                return False
+            if op == '>':
+                return val > target
+            if op == '<':
+                return val < target
+            if op == '>=':
+                return val >= target
+            if op == '<=':
+                return val <= target
+            return False
+
+        results = [match_clause(c) for c in clauses]
+        return all(results) if operator == 'AND' else any(results)
+
+    def _rule_matches_trace(self, rule: dict, trace: dict) -> bool:
+        return self._rule_matches_features(rule, _extract_trace_features(trace))
+
+    def _first_trigger_step(self, rule: dict, trace: dict) -> int | None:
+        seq = trace.get('baseSequence', '')
+        if not seq:
+            return None
+        bases = [b for b in seq.split('-') if b]
+        for i in range(1, len(bases) + 1):
+            partial = {'baseSequence': '-'.join(bases[:i])}
+            if self._rule_matches_features(rule, _extract_trace_features(partial)):
+                return i
+        return None
+
+    def _compact_trace_sample(self, rule: dict, trace: dict) -> dict:
+        seq = trace.get('baseSequence', '')
+        features = _extract_trace_features(trace) or {}
+        clause = (rule.get('condition') or {}).get('clauses', [{}])[0]
+        feature = clause.get('feature')
+        feature_value = features.get(feature) if feature else None
+
+        task = (
+            trace.get('task')
+            or trace.get('userPrompt')
+            or trace.get('prompt')
+            or trace.get('summary')
+            or trace.get('title')
+            or ''
+        )
+        if isinstance(task, str):
+            task = task.replace('\n', ' ').strip()[:80]
+        else:
+            task = ''
+
+        failure = (
+            trace.get('failureReason')
+            or trace.get('error')
+            or trace.get('finalError')
+            or trace.get('validationFailure')
+            or ''
+        )
+        if isinstance(failure, str):
+            failure = failure.replace('\n', ' ').strip()[:80]
+        else:
+            failure = ''
+
+        return {
+            'task': task or '未记录任务摘要',
+            'baseSequence': seq,
+            'triggerStep': self._first_trigger_step(rule, trace),
+            'feature': feature,
+            'featureValue': feature_value,
+            'success': bool(trace.get('success', False)),
+            'failureReason': failure,
+            'toolCount': len(trace.get('tools', []) or []),
+        }
+
+    def _build_distillation_samples(self, rule: dict, traces: list[dict]) -> dict:
+        hit_failures: list[dict] = []
+        hit_successes: list[dict] = []
+        successful_controls: list[dict] = []
+
+        for trace in traces:
+            matches = self._rule_matches_trace(rule, trace)
+            success = bool(trace.get('success', False))
+            if matches and not success and len(hit_failures) < 5:
+                hit_failures.append(self._compact_trace_sample(rule, trace))
+            elif matches and success and len(hit_successes) < 5:
+                hit_successes.append(self._compact_trace_sample(rule, trace))
+            elif not matches and success and len(successful_controls) < 5:
+                successful_controls.append(self._compact_trace_sample(rule, trace))
+
+            if len(hit_failures) >= 5 and len(hit_successes) >= 5 and len(successful_controls) >= 5:
+                break
+
+        return {
+            'hitFailures': hit_failures,
+            'hitSuccesses': hit_successes,
+            'successfulControls': successful_controls,
+        }
+
+    def _normalize_distillation(self, payload: dict) -> dict:
+        required = ['displayName', 'userExplanation', 'agentPrompt', 'risk', 'evidenceSummary']
+        distillation = {}
+        for key in required:
+            value = payload.get(key, '')
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f'Missing distillation field: {key}')
+            distillation[key] = value.strip()
+        distillation['distilledAt'] = int(payload.get('distilledAt') or time.time() * 1000)
+        distilled_by = payload.get('distilledBy') or 'frontend-llm'
+        distillation['distilledBy'] = str(distilled_by)
+        return distillation
 
     def handle_rule_discovery_run(self, data: dict):
         """POST /api/rule-discovery/run - 执行规则发现管线
@@ -530,11 +746,64 @@ class RuleDiscoveryMixin:
 
         Request body:
             { rules: [...] }
-            或 { action: 'validate' | 'retire', ruleId: string }
+            或 { action: 'distill_prepare' | 'save_distillation' | 'observe' | 'validate' | 'retire', ruleId: string }
         """
         action = data.get('action')
 
-        if action in ('validate', 'retire'):
+        if action == 'distill_prepare':
+            rule_id = data.get('ruleId', '')
+            rules = self._load_discovered_rules()
+            rule = next((r for r in rules if r.get('id') == rule_id), None)
+            if not rule:
+                self.send_error_json(f'Rule not found: {rule_id}', 404)
+                return
+
+            days = min(int(data.get('days', 90)), 180)
+            traces = self._load_all_traces(days=days)
+            samples = self._build_distillation_samples(rule, traces)
+            self.send_json({
+                'rule': rule,
+                'samples': samples,
+                'stats': {
+                    'tracesAnalyzed': len(traces),
+                    'hitFailures': len(samples['hitFailures']),
+                    'hitSuccesses': len(samples['hitSuccesses']),
+                    'successfulControls': len(samples['successfulControls']),
+                },
+            })
+            return
+
+        if action == 'save_distillation':
+            rule_id = data.get('ruleId', '')
+            rules = self._load_discovered_rules()
+            found = False
+            try:
+                distillation = self._normalize_distillation(data.get('distillation') or {})
+            except ValueError as e:
+                self.send_error_json(str(e), 400)
+                return
+
+            for r in rules:
+                if r.get('id') == rule_id:
+                    found = True
+                    r['distillation'] = distillation
+                    r['lifecycle'] = 'distilled'
+                    r.setdefault('stats', {})['lastValidatedAt'] = int(time.time() * 1000)
+                    break
+
+            if not found:
+                self.send_error_json(f'Rule not found: {rule_id}', 404)
+                return
+
+            self._save_discovered_rules(rules)
+            try:
+                self._merge_rule_tip(rule_id, distillation['userExplanation'])
+            except Exception:
+                pass
+            self.send_json({'saved': True, 'rules': rules})
+            return
+
+        if action in ('observe', 'validate', 'retire'):
             # 单规则生命周期操作
             rule_id = data.get('ruleId', '')
             rules = self._load_discovered_rules()
@@ -542,9 +811,17 @@ class RuleDiscoveryMixin:
             for r in rules:
                 if r.get('id') == rule_id:
                     found = True
-                    if action == 'validate':
+                    if action in ('observe', 'validate'):
+                        agent_prompt = ((r.get('distillation') or {}).get('agentPrompt') or '').strip()
+                        if not agent_prompt:
+                            self.send_error_json('Rule must be distilled before it can affect runtime behavior', 400)
+                            return
+                    if action == 'observe':
+                        r['lifecycle'] = 'observing'
+                        r.setdefault('stats', {})['lastValidatedAt'] = int(time.time() * 1000)
+                    elif action == 'validate':
                         r['lifecycle'] = 'validated'
-                        r['stats']['lastValidatedAt'] = int(time.time() * 1000)
+                        r.setdefault('stats', {})['lastValidatedAt'] = int(time.time() * 1000)
                         r['stats']['validationCount'] = r['stats'].get('validationCount', 0) + 1
                     elif action == 'retire':
                         r['lifecycle'] = 'retired'

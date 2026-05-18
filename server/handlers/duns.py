@@ -16,6 +16,20 @@ from server.utils import (
     count_experience_entries, parse_skill_frontmatter,
 )
 
+
+def _llm_binding_to_camel(raw: dict | None) -> dict | None:
+    """将 frontmatter 中的 llm_binding (snake_case) 转为前端 camelCase 格式"""
+    if not raw or not isinstance(raw, dict):
+        return None
+    result = {}
+    if 'provider_id' in raw:
+        result['providerId'] = raw['provider_id']
+    if 'model_id' in raw:
+        result['modelId'] = raw['model_id']
+    if 'temperature' in raw and raw['temperature'] is not None:
+        result['temperature'] = raw['temperature']
+    return result if result else None
+
 class DunsMixin:
     """Dun/Nexus Management Mixin"""
 
@@ -89,6 +103,8 @@ class DunsMixin:
                 'metrics': frontmatter.get('metrics', []),
                 'strategy': frontmatter.get('strategy', ''),
                 'skillsConfirmed': frontmatter.get('skills_confirmed', False),
+                # LLM Binding (per-Dun model override)
+                'llmBinding': _llm_binding_to_camel(frontmatter.get('llm_binding')),
             }
 
             # 附带 SQLite 中持久化的 scoring 数据
@@ -358,6 +374,8 @@ class DunsMixin:
             'objective': frontmatter.get('objective', ''),
             'metrics': frontmatter.get('metrics', []),
             'strategy': frontmatter.get('strategy', ''),
+            # LLM Binding (per-Dun model override)
+            'llmBinding': _llm_binding_to_camel(frontmatter.get('llm_binding')),
         }
         self.send_json(response)
 
@@ -388,19 +406,21 @@ class DunsMixin:
         direct = duns_dir / dun_name
         if (direct / 'DUN.md').exists() or (direct / 'NEXUS.md').exists():
             return direct
-        # 1.5) 目录存在但没有 DUN.md（影子目录，由前端写入数据时创建）
-        #      自动补建 DUN.md 并返回
+        # 2) 扫描直接子目录的 DUN.md / NEXUS.md，匹配 frontmatter 中的 name
+        #    必须在影子目录自愈 (Step 3) 之前执行，否则用中文 label 查找时
+        #    会错误地创建影子目录而非定位到已有的真实目录
+        for dun_md in list(duns_dir.glob('*/DUN.md')) + list(duns_dir.glob('*/NEXUS.md')):
+            fm = parse_dun_frontmatter(dun_md)
+            if fm.get('name') == dun_name:
+                return dun_md.parent
+        # 3) 目录存在但没有 DUN.md（影子目录，由前端写入数据时创建）
+        #    此时已确认没有任何真实目录的 frontmatter name 匹配，才自动补建
         if direct.is_dir():
             minimal_md = f"---\nname: {dun_name}\ndescription: Auto-healed shadow Dun\nversion: 1.0.0\nskill_dependencies: []\n---\n"
             (direct / 'DUN.md').write_text(minimal_md, encoding='utf-8')
             print(f'[Dun] Auto-healed shadow directory (no DUN.md): {dun_name}', file=sys.stderr)
             return direct
-        # 2) 扫描直接子目录的 DUN.md / NEXUS.md，匹配 frontmatter 中的 name
-        for dun_md in list(duns_dir.glob('*/DUN.md')) + list(duns_dir.glob('*/NEXUS.md')):
-            fm = parse_dun_frontmatter(dun_md)
-            if fm.get('name') == dun_name:
-                return dun_md.parent
-        # 3) 自动创建最小目录结构 (Observer 创建的 Dun)
+        # 4) 自动创建最小目录结构 (Observer 创建的 Dun)
         if auto_create:
             # 将 dun id 中不安全的路径字符替换
             safe_name = re.sub(r'[<>:"/\\|?*]', '_', dun_name)
@@ -473,6 +493,66 @@ class DunsMixin:
             'status': 'ok',
             'dunId': dun_name,
             **updates
+        })
+
+    def handle_dun_llm_binding_save(self, dun_name: str, data: dict):
+        """POST /duns/{name}/llm-binding - 设置/更新/删除 Dun 的 LLM 模型绑定"""
+        dun_dir = self._resolve_dun_dir(dun_name)
+        if not dun_dir:
+            self.send_error_json(f"Dun '{dun_name}' not found", 404)
+            return
+        dun_md = self._find_dun_md(dun_dir)
+        if not dun_md:
+            self.send_error_json(f"Dun '{dun_name}' not found", 404)
+            return
+
+        # 如果 data 为空/null，删除 llm_binding 字段
+        if not data or (not data.get('providerId') and not data.get('modelId')):
+            # 删除: 读取 frontmatter，移除 llm_binding，重写
+            from server.utils import _dun_frontmatter_lock
+            with _dun_frontmatter_lock:
+                frontmatter = parse_dun_frontmatter(dun_md)
+                if 'llm_binding' in frontmatter:
+                    del frontmatter['llm_binding']
+                    body = extract_dun_body(dun_md)
+                    from server.constants import HAS_YAML
+                    if HAS_YAML:
+                        import yaml
+                        fm_text = yaml.dump(frontmatter, default_flow_style=False, allow_unicode=True, sort_keys=False).rstrip('\n')
+                    else:
+                        fm_lines = []
+                        for key, val in frontmatter.items():
+                            if isinstance(val, list):
+                                fm_lines.append(f'{key}:')
+                                for item in val:
+                                    fm_lines.append(f'  - {item}')
+                            elif isinstance(val, dict):
+                                fm_lines.append(f'{key}:')
+                                for k, v in val.items():
+                                    fm_lines.append(f'  {k}: {v}')
+                            else:
+                                fm_lines.append(f'{key}: {val}')
+                        fm_text = '\n'.join(fm_lines)
+                    content = f'---\n{fm_text}\n---\n\n{body}'
+                    dun_md.write_text(content, encoding='utf-8')
+            self.send_json({'status': 'ok', 'dunId': dun_name, 'llmBinding': None})
+            return
+
+        # 构建 snake_case 的 llm_binding
+        llm_binding = {}
+        if data.get('providerId'):
+            llm_binding['provider_id'] = data['providerId']
+        if data.get('modelId'):
+            llm_binding['model_id'] = data['modelId']
+        if data.get('temperature') is not None:
+            llm_binding['temperature'] = float(data['temperature'])
+
+        update_dun_frontmatter(dun_md, {'llm_binding': llm_binding})
+
+        self.send_json({
+            'status': 'ok',
+            'dunId': dun_name,
+            'llmBinding': _llm_binding_to_camel(llm_binding),
         })
 
     def handle_add_experience(self, dun_name: str, data: dict):

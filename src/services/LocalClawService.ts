@@ -8,9 +8,11 @@
  * - 本地记忆持久化
  */
 
-import { chat, streamChat, isLLMConfigured, embed, cosineSimilarity, convertToolInfoToFunctions, getLLMConfig, saveLLMConfig, clearEmbedUnsupportedCache, searchChat, isChannelConfigured, generateImage, visionChat } from './llmService'
+import { chat, streamChat, isLLMConfigured, embed, cosineSimilarity, convertToolInfoToFunctions, resolveOriginalToolName, getLLMConfig, saveLLMConfig, clearEmbedUnsupportedCache, searchChat, isChannelConfigured, generateImage, visionChat } from './llmService'
+import { resolveRunLLMConfig, assertRunConfigValid, toPartialLLMConfig, LLMNotConfiguredError } from './runConfigResolver'
+import type { RunExecutionContext } from '@/types'
 import { backgroundQueue } from './backgroundQueue'
-import type { SimpleChatMessage, LLMStreamResult, VisionChatMessage } from './llmService'
+import type { SimpleChatMessage, LLMStreamResult, VisionChatMessage, ClaudeToolEvent } from './llmService'
 import type { ExecutionStatus, OpenClawSkill, MemoryEntry, ToolInfo, ExecTrace, ExecTraceToolCall, ApprovalRequest, ExecutionStep, DunEntity, DunScoring, TaskCheckpoint, GeneMatch, L1MemoryEntry } from '@/types'
 import { consolidatePostExecution } from './postExecutionConsolidator'
 import type { ConsolidationPayload } from './postExecutionConsolidator'
@@ -33,11 +35,14 @@ import { FILE_REGISTRY_CONFIG, SOUL_EVOLUTION_CONFIG } from '@/types'
 import { confidenceTracker } from './confidenceTracker'
 import { soulEvolutionService } from './soulEvolutionService'
 import { sopEvolutionService } from './sopEvolutionService'
-import { baseSequenceGovernor, deriveStrategies } from './baseSequenceGovernor'
+import { baseSequenceGovernor, deriveStrategies, isControlTrack } from './baseSequenceGovernor'
 import type { InterventionRecord } from './baseSequenceGovernor'
 import { baseLedgerService } from './baseLedgerService'
 import { transcriptaseEngine } from './transcriptaseEngine'
+import { gracefulAbortLanding } from './abortLanding'
+import { buildPluginContext } from './pluginBridge'
 import { childAgentManager } from './childAgentManager'
+import type { ChildReActParams, ChildReActResult } from './childAgentManager'
 import { transcriptaseGovernor } from './transcriptaseGovernor'
 import { parseIndex, rankIndexEntries } from './knowledgeCompiler'
 import { knowledgeIngestService } from './knowledgeIngestService'
@@ -151,7 +156,7 @@ import { getServerUrl } from '@/utils/env'
 const CONFIG = {
   // 开发模式使用 localhost:3001，生产模式使用相对路径（Python 托管）
   LOCAL_SERVER_URL: getServerUrl(),
-  MAX_REACT_TURNS: 999,    // 无限制：让任务持续执行直到完成
+  MAX_REACT_TURNS: 60,     // Layer 0 硬兜底：任何情况不超过 60 轮
   DEFAULT_TURNS: 999,      // 无限制
   SIMPLE_TURNS: 10,        // 简单任务仍有轻微限制避免死循环
   MAX_PLAN_STEPS: 20,      // 计划步骤增加到 20
@@ -186,16 +191,20 @@ const CONFIG = {
   // Reflexion 机制配置
   CRITIC_TOOLS: ['writeFile', 'runCmd', 'appendFile'], // 修改类工具需要 Critic 验证
   HIGH_RISK_TOOLS: ['runCmd'], // 高风险工具需要执行前检查
+  // 已知安全的 CLI 工具前缀列表
+  // 这些命令本身是安全的 LLM/Agent CLI，其参数内容不应触发危险检测
+  SAFE_CLI_PREFIXES: ['claude', 'codex', 'npx claude', 'npx codex'],
   // P1: Reflexion/Critic 提示分隔符（零宽空格标记，避免与工具结果内容混淆）
   HINT_SEPARATOR: '\n\n\u200B\u2500\u2500\u2500\u2500 SYSTEM_HINT \u2500\u2500\u2500\u2500\u200B\n',
   // P3: 危险命令模式 (触发用户审批) - 仅保留真正破坏性操作
+  // 使用 regex 字段进行精确匹配，避免 includes() 产生误报
   DANGER_PATTERNS: [
-    { pattern: 'rm -rf', level: 'critical' as const, reason: '递归强制删除' },
-    { pattern: 'del /f /s', level: 'critical' as const, reason: '递归强制删除' },
-    { pattern: 'format', level: 'critical' as const, reason: '格式化磁盘' },
-    { pattern: 'mkfs', level: 'critical' as const, reason: '创建文件系统' },
-    { pattern: 'dd if=/dev', level: 'critical' as const, reason: '低级磁盘写入' },
-    { pattern: 'reg delete HKLM', level: 'critical' as const, reason: '删除系统注册表' },
+    { regex: /\brm\s+-[^\s]*(?:rf|fr)/, level: 'critical' as const, reason: '递归强制删除' },
+    { regex: /\bdel\s+\/f\s+\/s/, level: 'critical' as const, reason: '递归强制删除' },
+    { regex: /(?:^|[\s;|&])format\s+[a-zA-Z]:/, level: 'critical' as const, reason: '格式化磁盘(Windows)' },
+    { regex: /\bmkfs\b/, level: 'critical' as const, reason: '创建文件系统' },
+    { regex: /\bdd\s+if=\/dev/, level: 'critical' as const, reason: '低级磁盘写入' },
+    { regex: /\breg\s+delete\s+hklm/i, level: 'critical' as const, reason: '删除系统注册表' },
   ],
 }
 
@@ -323,6 +332,10 @@ class LocalClawService {
   private _reconnectTimer: ReturnType<typeof setTimeout> | null = null
   /** 重连倒计时 timer */
   private _countdownTimer: ReturnType<typeof setInterval> | null = null
+  /** Deferred tool refresh timer */
+  private _deferredToolSyncTimer: ReturnType<typeof setTimeout> | null = null
+  /** 首次初始化延迟工具同步是否已执行（避免后续 fullInitialize 反复触发） */
+  private _initialToolsReloaded = false
   /** 当前重连次数 */
   private _reconnectAttempt = 0
   /** 连续心跳失败计数 */
@@ -353,6 +366,19 @@ class LocalClawService {
 
   // P0: 动态工具列表 (从 /tools 端点获取)
   private availableTools: ToolInfo[] = []
+  private _toolLoadPromise: Promise<void> | null = null
+
+  /** V10: 对当前可用工具列表做简单哈希，用于 trace 元数据 */
+  private computeToolSetHash(): string {
+    const toolNames = this.availableTools?.map(t => t.name).sort().join(',') || ''
+    let hash = 0
+    for (let i = 0; i < toolNames.length; i++) {
+      const char = toolNames.charCodeAt(i)
+      hash = ((hash << 5) - hash) + char
+      hash |= 0
+    }
+    return hash.toString(16)
+  }
 
   /** 上一轮 ReAct 执行涉及的 L1 记忆 ID 列表（用于隐式反馈信号） */
   private lastRunL1Ids: string[] = []
@@ -701,6 +727,9 @@ class LocalClawService {
     transcriptaseGovernor.initialize(this.serverUrl)
     transcriptaseEngine.setGovernor(transcriptaseGovernor)
 
+    // Phase 2: 注入子 Agent 执行器回调（解除 childAgentManager ↔ LocalClawService 循环依赖）
+    childAgentManager.setExecutor((params) => this.runChildReActLoop(params))
+
     // 接线提取出的服务
     dunManager.setIO({
       executeTool: (call: { name: string; args: Record<string, unknown> }) => this.executeTool(call),
@@ -962,6 +991,28 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
    * 仅 fetch /status，不加载任何业务数据
    */
   async checkConnection(): Promise<{ ok: boolean; data?: any }> {
+    return this.checkHealth()
+  }
+
+  private async checkHealth(): Promise<{ ok: boolean; data?: any }> {
+    try {
+      const t0 = performance.now()
+      const response = await fetch(`${this.serverUrl}/healthz`, {
+        method: 'GET',
+        signal: AbortSignal.timeout(2000),
+      })
+      if (!response.ok) {
+        return { ok: false }
+      }
+      const data = await response.json()
+      console.debug(`[Perf] /healthz ${(performance.now() - t0).toFixed(0)}ms`)
+      return { ok: true, data }
+    } catch {
+      return { ok: false }
+    }
+  }
+
+  private async fetchServerStatus(): Promise<{ ok: boolean; data?: any }> {
     try {
       const response = await fetch(`${this.serverUrl}/status`, {
         method: 'GET',
@@ -982,6 +1033,7 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
    * 加载 Soul / Skills / Memories / Tools / Dun 统计等全部业务数据
    */
   private async fullInitialize(serverData: any): Promise<void> {
+    performance.mark('fullInitialize-start')
     // 自动配置本地 embedding（如果后端支持 bge-large-zh-v1.5）
     if (serverData.embedding?.available) {
       const cfg = getLLMConfig()
@@ -1009,13 +1061,19 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
 
     // MCP 工具延迟同步：后端 MCP 服务器可能还在初始化中，
     // 3 秒后再刷新一次工具列表，确保 MCP 工具不会因启动时序而丢失。
-    setTimeout(async () => {
-      const prevCount = this.availableTools.length
-      await this.loadTools()
-      if (this.availableTools.length !== prevCount) {
-        console.log(`[LocalClaw] Deferred tool sync: ${prevCount} → ${this.availableTools.length} (+${this.availableTools.length - prevCount} tools)`)
-      }
-    }, 3000)
+    // 仅首次初始化时执行，后续重连不再触发。
+    if (!this._initialToolsReloaded) {
+      this.cancelDeferredToolSync()
+      this._deferredToolSyncTimer = setTimeout(async () => {
+        this._deferredToolSyncTimer = null
+        this._initialToolsReloaded = true
+        const prevCount = this.availableTools.length
+        await this.loadTools()
+        if (this.availableTools.length !== prevCount) {
+          console.log(`[LocalClaw] Deferred tool sync: ${prevCount} → ${this.availableTools.length} (+${this.availableTools.length - prevCount} tools)`)
+        }
+      }, 3000)
+    }
 
     // 加载能力缺失记忆
     await this.loadCapabilityGapHistory()
@@ -1027,6 +1085,8 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
     await dunManager.registerAllDunCapabilities()
 
     this._initialized = true
+    performance.mark('fullInitialize-end')
+    performance.measure('[Perf] fullInitialize', 'fullInitialize-start', 'fullInitialize-end')
   }
 
   // ════════════════════════════════════════════
@@ -1039,7 +1099,7 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
    */
   async connect(): Promise<boolean> {
     try {
-      const { ok, data } = await this.checkConnection()
+      const { ok, data } = await this.fetchServerStatus()
       if (!ok) {
         throw new Error('Server unreachable')
       }
@@ -1096,9 +1156,17 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
   /**
    * 断开连接 (完整清理所有服务状态)
    */
+  private cancelDeferredToolSync(): void {
+    if (this._deferredToolSyncTimer) {
+      clearTimeout(this._deferredToolSyncTimer)
+      this._deferredToolSyncTimer = null
+    }
+  }
+
   disconnect() {
     this.stopHeartbeat()
     this.cancelReconnect()
+    this.cancelDeferredToolSync()
     this.storeActions?.setConnectionStatus('disconnected')
     this.storeActions?.setConnectionError(null)
     this.storeActions?.setReconnectAttempt(0)
@@ -1374,6 +1442,17 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
    * P0: 加载动态工具列表
    */
   private async loadTools(): Promise<void> {
+    if (this._toolLoadPromise) return this._toolLoadPromise
+
+    this._toolLoadPromise = this.loadToolsOnce()
+    try {
+      await this._toolLoadPromise
+    } finally {
+      this._toolLoadPromise = null
+    }
+  }
+
+  private async loadToolsOnce(): Promise<void> {
     try {
       const response = await fetch(`${this.serverUrl}/tools`)
       if (response.ok) {
@@ -1626,6 +1705,38 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
       }
     }
 
+    // V10 / P2: Amendment 对齐 — 用户主动声明的偏好修正案
+    // 优先级高于 memory 层的环境观察（Amendment 反映用户明确的意图，应压过系统自动识别的事实）。
+    // 放在 identity 分区紧跟 SOUL，早于 memory 注入，避免过时 memory 条目污染用户偏好。
+    try {
+      const storeModule = await import('@/store')
+      const storeState = storeModule.useStore.getState()
+      const activeAmendments = storeState.amendments.filter(
+        (a) => a.status === 'approved' && a.weight >= SOUL_EVOLUTION_CONFIG.INJECTION_MIN_WEIGHT,
+      )
+      if (activeAmendments.length > 0) {
+        const sorted = [...activeAmendments].sort((a, b) => b.weight - a.weight)
+        let charBudget = SOUL_EVOLUTION_CONFIG.MAX_INJECTION_CHARS
+        const lines: string[] = []
+        for (const a of sorted) {
+          if (charBudget <= 0) break
+          const line = `- ${a.content} (权重: ${a.weight.toFixed(2)})`
+          lines.push(line)
+          charBudget -= line.length
+          if (!this.countedAmendmentIds.has(a.id)) {
+            storeState.incrementHitCount(a.id)
+            this.countedAmendmentIds.add(a.id)
+          }
+        }
+        pushContext(
+          `## 用户偏好修正案（最高优先级，压过下方 memory 中的历史观察）\n${lines.join('\n')}`,
+          'identity',
+        )
+      }
+    } catch {
+      // Amendment store 不可用时静默降级
+    }
+
     // ===== 分区 1: identity =====
     // 1.5 激活的 Dun SOP 注入 (Phase 4)
     const activeDunId = overrideDunId ?? this.getActiveDunId()
@@ -1654,13 +1765,13 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
         }
       }
 
-      // 总超时保护：getContextHints 内部有多个串行 readFile，整体限时 10s
+      // 总超时保护：getContextHints 内部已并行化，正常 3-4s，限时 6s
       const sopHints = await Promise.race([
         sopEvolutionService.getContextHints(activeDunId),
         new Promise<null>(resolve => setTimeout(() => {
-          console.warn('[LocalClaw/DynCtx] sopEvolutionService.getContextHints timed out (10s)')
+          console.warn('[LocalClaw/DynCtx] sopEvolutionService.getContextHints timed out (6s)')
           resolve(null)
-        }, 10000)),
+        }, 6000)),
       ])
       if (sopHints) {
         pushContext(sopHints, 'identity')
@@ -1809,6 +1920,8 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
           maxResults: dynamicMax,
           dunId: effectiveDunId,
           useMmr: true,
+          // V10: 上下文注入场景，触发 L1 被动晋升命中计数
+          purpose: 'context_injection',
         })
       }
 
@@ -1895,12 +2008,15 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
       const traceLines: string[] = []
 
       // 源 1: exec_trace (from memoryStore)
+      // V10: 仅搜索 exec_trace，不直接驱动 L1 命中计数（L1 主要由 memory source 驱动），
+      // 但仍标为 internal 以保持语义清晰
       const traceResults = await memoryStore.search({
         query: isContinuation && effectiveDunId ? '*' : userQuery,
         sources: ['exec_trace'],
         maxResults: 4,
         dunId: effectiveDunId,
         useMmr: true,
+        purpose: 'internal',
       })
       for (const r of traceResults) {
         traceLines.push(`- ${truncateAtSentence(r.snippet || r.content || '', 200)}`)
@@ -1987,32 +2103,7 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
       pushContext(dunCommunicationHint, 'misc')
     }
 
-    // Soul Evolution: 用户偏好修正案
-    try {
-      const storeModule = await import('@/store')
-      const storeState = storeModule.useStore.getState()
-      const activeAmendments = storeState.amendments.filter(
-        (a) => a.status === 'approved' && a.weight >= SOUL_EVOLUTION_CONFIG.INJECTION_MIN_WEIGHT,
-      )
-      if (activeAmendments.length > 0) {
-        const sorted = [...activeAmendments].sort((a, b) => b.weight - a.weight)
-        let charBudget = SOUL_EVOLUTION_CONFIG.MAX_INJECTION_CHARS
-        const lines: string[] = []
-        for (const a of sorted) {
-          if (charBudget <= 0) break
-          const line = `- ${a.content} (权重: ${a.weight.toFixed(2)})`
-          lines.push(line)
-          charBudget -= line.length
-          if (!this.countedAmendmentIds.has(a.id)) {
-            storeState.incrementHitCount(a.id)
-            this.countedAmendmentIds.add(a.id)
-          }
-        }
-        pushContext(`## 用户偏好观测\n以下是从历史行为中观测到的用户偏好，请适当参考:\n${lines.join('\n')}`, 'misc')
-      }
-    } catch {
-      // Soul amendment store 不可用时静默降级
-    }
+    // V10 / P2: Amendment 已提前到 identity 分区（SOUL 之后、memory 之前），此处不再重复注入
 
     // 组合上下文
     const now = new Date()
@@ -2087,6 +2178,15 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
 
     if (cached && (now - cached.timestamp) < this.CACHE_TTL) {
       return cached.content
+    }
+
+    // 淘汰过期缓存条目，防止无限增长
+    if (this.contextCache.size > 200) {
+      for (const [key, val] of this.contextCache) {
+        if (now - val.timestamp > this.CACHE_TTL) {
+          this.contextCache.delete(key)
+        }
+      }
     }
 
     const content = await this.readFile(path)
@@ -2233,10 +2333,6 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
     signal?: AbortSignal,
     conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>
   ): Promise<string> {
-    if (!isLLMConfigured()) {
-      throw new Error('LLM 未配置。请在设置中配置 API Key。')
-    }
-
     // 清空上次执行的文件创建记录
     this._lastCreatedFiles = []
     this._lastTraceId = null
@@ -2269,6 +2365,17 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
 
     // 确定最终使用的 dunId
     const finalDunId = dunId ?? this.getActiveDunId()
+
+    // 门禁：Dun 匹配后，统一走 resolver 校验 LLM 配置
+    try {
+      const chatConfig = resolveRunLLMConfig(finalDunId || undefined, 'chat')
+      assertRunConfigValid(chatConfig)
+    } catch (e) {
+      if (e instanceof LLMNotConfiguredError) {
+        throw new Error(e.message)
+      }
+      throw e
+    }
 
     try {
       const result = await this.runReActLoop(prompt, onUpdate, onStep, finalDunId, onCheckpoint, signal, conversationHistory)
@@ -2536,20 +2643,19 @@ ${failedStepsSummary ? `之前失败的步骤:\n${failedStepsSummary}\n请避免
     this.storeActions?.setAgentStatus('thinking')
     this._verificationCache.clear()
 
-    // 初始化当前模型（从 LLM 配置读取，作为 ErrorRecovery 模型切换的基准）
-    this._currentModel = getLLMConfig().model || 'unknown'
+    // Per-Run LLM 配置：构建 RunExecutionContext（Dun 匹配后的锁定快照）
+    const finalDunIdForCtx = dunId || this.getActiveDunId() || undefined
+    const runCtx: RunExecutionContext = {
+      runDunId: finalDunIdForCtx,
+      chatConfig: resolveRunLLMConfig(finalDunIdForCtx, 'chat'),
+      resolveUtility: (purpose) => resolveRunLLMConfig(undefined, purpose),
+    }
+
+    // 初始化当前模型（作为 ErrorRecovery 模型切换的基准）
+    this._currentModel = runCtx.chatConfig.model || 'unknown'
 
     // V5: 捕获 LLM Provider 标签（用于 trace 按 Provider 对比分析）
-    let llmProviderLabel = 'unknown'
-    try {
-      const { useStore } = await import('@/store')
-      const { providers, channelBindings } = useStore.getState().linkStation
-      const binding = channelBindings.chat
-      if (binding) {
-        const provider = providers.find(p => p.id === binding.providerId)
-        if (provider) llmProviderLabel = provider.label
-      }
-    } catch { /* store 未就绪时 fallback */ }
+    const llmProviderLabel = runCtx.chatConfig.providerLabel || 'unknown'
 
     // V2: 初始化 EventBus run
     const runId = `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -2572,6 +2678,15 @@ ${failedStepsSummary ? `之前失败的步骤:\n${failedStepsSummary}\n请避免
     const maxTurns = taskClassification.level === 'chat' ? CONFIG.SIMPLE_TURNS : CONFIG.DEFAULT_TURNS
     console.log(`[LocalClaw/FC] Task complexity: ${taskClassification.level}, maxTurns: ${maxTurns}`)
 
+    // V10 Task 3: Control Track 分组 — 确定性哈希分组，20% 进入 Control 组
+    const isControl = isControlTrack(userPrompt)
+    const prevSoftBehaviorEnabled = baseSequenceGovernor.isSoftBehaviorEnabled()
+    if (isControl) {
+      baseSequenceGovernor.setSoftBehaviorEnabled(false)
+    }
+    console.log(`[LocalClaw/FC] Control Track: ${isControl ? 'CONTROL (Soft disabled)' : 'EXPERIMENT'}`)
+
+    try {
     // V2: Phase 1 - 初始化 ContextEngine (可插拔的上下文管理器)
     const engineDunId = activeDunId || 'default'
     const contextEngine = contextEngineRegistry.getOrCreate(engineDunId, () =>
@@ -2591,12 +2706,17 @@ ${failedStepsSummary ? `之前失败的步骤:\n${failedStepsSummary}\n请避免
     // JIT: 动态构建上下文 (传入 dunId 注入 SOP)
     const dynamicContext = await this.buildDynamicContext(userPrompt, dunId)
 
+    // 插件 Hook: before_prompt_build — 允许插件注入额外上下文
+    const pluginCtx = await buildPluginContext({ userPrompt, dunId: dunId || '', runId })
+    const pluginPrepend = [pluginCtx.prependSystemContext, pluginCtx.prependContext]
+      .filter(Boolean).join('\n')
+
     // 构建精简系统提示词 (FC 模式无需工具文档)
     const soulSummary = this.soulContent ? this.extractSoulSummary(this.soulContent) : ''
     const locale = getCurrentLocale()
     let systemPrompt = getSystemPromptFC(locale)
       .replace('{soul_summary}', soulSummary || (locale === 'en' ? 'A friendly, professional AI assistant' : '一个友好、专业的 AI 助手'))
-      .replace('{context}', dynamicContext)
+      .replace('{context}', pluginPrepend ? pluginPrepend + '\n' + dynamicContext : dynamicContext)
 
     // V2: 估算系统提示 token 数并上报
     const systemTokens = estimateTokens(systemPrompt)
@@ -2649,8 +2769,16 @@ ${failedStepsSummary ? `之前失败的步骤:\n${failedStepsSummary}\n请避免
     // P2: 执行追踪收集
     const traceTools: ExecTraceToolCall[] = []
     const traceStartTime = Date.now()
-    const TOKEN_BUDGET = CONFIG.TOKEN_BUDGET
+    const TOKEN_BUDGET = runCtx.chatConfig.contextWindow
+      ? Math.floor(runCtx.chatConfig.contextWindow * 0.85)
+      : CONFIG.TOKEN_BUDGET
     const baseCtx = createBaseClassifierCtx()  // V2: 碱基分类器上下文
+
+    // Claude Code 工具事件追踪（函数级作用域，跨轮次累积）
+    const isClaudeCode = runCtx.chatConfig.apiFormat === 'claude-code'
+    const claudeToolTrace: Array<{name: string, args: Record<string, unknown>, status: 'success' | 'error', result?: string, latency: number, order: number, baseType: string}> = []
+    let claudeToolOrder = 0
+    const claudeToolStartTimes: Record<string, number> = {}
 
     // V2: 碱基序列独立数组（P 碱基 + 工具碱基统一记录）
     const baseSequenceEntries: import('@/types').BaseSequenceEntry[] = []
@@ -2668,6 +2796,8 @@ ${failedStepsSummary ? `之前失败的步骤:\n${failedStepsSummary}\n请避免
     baseLedgerService.createLedger(runId, activeDunId || 'default')
     baseLedgerService.setObjective(runId, userPrompt.slice(0, 200))
     let factsUpdateCounter = 0  // Facts 更新计数器（每 5 轮更新一次）
+    // Phase 1.5: 熔断前预警去重集合 —— 每个 patternId 只注入一次 system 提示，避免每轮重复打扰 LLM
+    const warnedPatternIds = new Set<string>()
     // Phase 3: Transcriptase spawn 决策记录（供 Governor 统计用）
     const transcriptaseSpawnRecords: import('@/types').TranscriptaseSpawnRecord[] = []
     let hadTranscriptaseSpawn = false
@@ -2686,8 +2816,8 @@ ${failedStepsSummary ? `之前失败的步骤:\n${failedStepsSummary}\n请避免
       
       // 主循环
       while (turnCount < currentMaxTurns) {
-        // 每轮刷新当前模型名（Provider 可能已切换）
-        this._currentModel = getLLMConfig().model || 'unknown'
+        // 当前模型名由 runCtx 锁定（不再每轮去读全局配置）
+        this._currentModel = runCtx.chatConfig.model || 'unknown'
 
         // 🛑 终止检查: 每轮开始前检查是否已被用户终止
         if (signal?.aborted) {
@@ -2725,7 +2855,7 @@ ${failedStepsSummary ? `之前失败的步骤:\n${failedStepsSummary}\n请避免
         }
 
         try {
-          // Fix2: 推送 thinking step，让 TaskHouse 实时显示"正在思考"
+          // Fix2: 推送 thinking step，实时显示"正在思考"
           onStep?.({
             id: `thinking-${Date.now()}`,
             type: 'thinking',
@@ -2752,16 +2882,20 @@ ${failedStepsSummary ? `之前失败的步骤:\n${failedStepsSummary}\n请避免
                 })
                 if (compactResult.compacted && compactResult.summary) {
                   // 压缩成功: 用摘要替换早期的非系统消息
-                  const systemMsg = messages[0] // 保留系统消息
-                  const recentMessages = messages.slice(-8) // 保留最近 8 条消息
-                  messages.length = 0
-                  messages.push(systemMsg)
-                  messages.push({
-                    role: 'user',
-                    content: `[上下文摘要] 以下是之前对话的压缩摘要:\n${compactResult.summary}`,
-                  })
-                  messages.push(...recentMessages)
-                  console.log(`[LocalClaw/FC] Context compacted: ${compactResult.tokensBefore} → ~${compactResult.tokensAfter} tokens`)
+                  const systemMsg = messages[0]
+                  if (systemMsg?.role === 'system') {
+                    const recentMessages = messages.slice(-8) // 保留最近 8 条消息
+                    messages.length = 0
+                    messages.push(systemMsg)
+                    messages.push({
+                      role: 'user',
+                      content: `[上下文摘要] 以下是之前对话的压缩摘要:\n${compactResult.summary}`,
+                    })
+                    messages.push(...recentMessages)
+                    console.log(`[LocalClaw/FC] Context compacted: ${compactResult.tokensBefore} → ~${compactResult.tokensAfter} tokens`)
+                  } else {
+                    console.warn('[LocalClaw/FC] Context compaction skipped: first message is not system')
+                  }
                 }
                 agentEventBus.compactionEnd(
                   turnContextTokens,
@@ -2779,17 +2913,62 @@ ${failedStepsSummary ? `之前失败的步骤:\n${failedStepsSummary}\n请避免
           // 硬性裁剪 fallback：压缩失败或消息数量过多时强制截断
           if (messages.length > 100) {
             const systemMsg = messages[0]
-            const recentMessages = messages.slice(-30)
-            messages.length = 0
-            messages.push(systemMsg, ...recentMessages)
-            console.warn(`[LocalClaw] Hard message trim: kept system + last 30 messages`)
+            if (systemMsg?.role === 'system') {
+              const recentMessages = messages.slice(-30)
+              messages.length = 0
+              messages.push(systemMsg, ...recentMessages)
+              console.warn(`[LocalClaw] Hard message trim: kept system + last 30 messages`)
+            }
           }
 
           // 调用 LLM (带 tools 参数)
           let streamedContent = ''
+          let claudeThinkingContent = '' // Claude Code 思考内容累积（每轮重置）
           agentEventBus.messageStart()
           // V2: LLM 调用计时开始
           const llmCallStart = Date.now()
+          // claude-code 模式不传 tools（Claude Code 自带工具生态）；也通过 supportsTools 判断
+          const toolsToSend = runCtx.chatConfig.supportsTools ? tools : undefined
+
+          // Claude Code 工具事件回调（收集到函数级 claudeToolTrace）
+          const onToolEvent = isClaudeCode ? (ev: ClaudeToolEvent) => {
+            if (ev.type === 'start' && ev.name) {
+              claudeToolOrder++
+              if (ev.id) claudeToolStartTimes[ev.id] = Date.now()
+              // 发送到事件总线（右侧面板）
+              agentEventBus.toolStart(ev.name, ev.id || `cc-${claudeToolOrder}`, ev.input || {}, false)
+              // 写入 executionStep（右侧面板实时展示）
+              onStep?.({
+                id: `cc-tool-${claudeToolOrder}`,
+                type: 'tool_call',
+                content: ev.name,
+                toolName: ev.name,
+                toolArgs: ev.input || {},
+                timestamp: Date.now(),
+              })
+              // 收集到 trace 数组
+              claudeToolTrace.push({ name: ev.name, args: ev.input || {}, status: 'success', result: undefined, latency: 0, order: claudeToolOrder, baseType: 'E' })
+            } else if (ev.type === 'end') {
+              const startTime = ev.id ? claudeToolStartTimes[ev.id] : 0
+              const latency = startTime ? Date.now() - startTime : 0
+              agentEventBus.toolEnd(ev.id || '', '', !ev.isError, ev.resultSummary || '', latency)
+              // 更新 trace 中对应的工具记录
+              const lastTool = claudeToolTrace[claudeToolTrace.length - 1]
+              if (lastTool) {
+                lastTool.latency = latency
+                if (ev.isError) lastTool.status = 'error'
+                if (ev.resultSummary) lastTool.result = ev.resultSummary
+              }
+              // 写入 tool_result step
+              onStep?.({
+                id: `cc-result-${claudeToolOrder}`,
+                type: 'tool_result',
+                content: ev.resultSummary || (ev.isError ? '❌ Error' : '✓'),
+                timestamp: Date.now(),
+                duration: latency,
+              })
+            }
+          } : undefined
           const result: LLMStreamResult = await streamChat(
             messages,
             (chunk) => {
@@ -2798,15 +2977,30 @@ ${failedStepsSummary ? `之前失败的步骤:\n${failedStepsSummary}\n请避免
               agentEventBus.textDelta(chunk, streamedContent)
             },
             signal, // 传入 AbortSignal，终止时中断 fetch
-            undefined, // config
-            tools,
+            toPartialLLMConfig(runCtx.chatConfig), // Per-Run LLM 配置
+            toolsToSend,
             (reasoningChunk) => {
               agentEventBus.thinkingDelta(reasoningChunk)
+              // Claude Code 模式：累积思考内容，streamChat 结束后一次性写入 ExecutionStep
+              if (isClaudeCode) {
+                claudeThinkingContent += reasoningChunk
+              }
             },
+            onToolEvent, // Claude Code 工具事件回调
           )
 
           // V2: 计算 LLM 响应耗时
           const llmResponseTime = Date.now() - llmCallStart
+
+          // Claude Code 模式：将累积的思考内容一次性写入 ExecutionStep（右侧面板展示）
+          if (isClaudeCode && claudeThinkingContent) {
+            onStep?.({
+              id: `cc-thinking-${turnCount}-${Date.now()}`,
+              type: 'thinking',
+              content: claudeThinkingContent.length > 3000 ? claudeThinkingContent.slice(0, 3000) + '...' : claudeThinkingContent,
+              timestamp: Date.now(),
+            })
+          }
 
           let { content, toolCalls, finishReason, reasoningContent, usage: turnUsage } = result
         agentEventBus.messageEnd(content || '')
@@ -2930,6 +3124,15 @@ ${failedStepsSummary ? `之前失败的步骤:\n${failedStepsSummary}\n请避免
               toolArgs = JSON.parse(tc.function.arguments || '{}')
             } catch {
               console.warn(`[LocalClaw/FC] Failed to parse args for ${toolName}:`, tc.function.arguments)
+              // 参数解析失败: 添加错误响应并跳过此工具，避免用空参数执行
+              messages.push({
+                role: 'tool',
+                tool_call_id: tc.id,
+                content: `工具参数解析失败: JSON 格式无效。原始参数: ${(tc.function.arguments || '').slice(0, 200)}`,
+                name: toolName,
+              })
+              agentEventBus.toolError(tc.id, toolName, '参数 JSON 解析失败', false)
+              continue
             }
 
             // 安全保护: 确保每个 tool_call 都有对应的 tool response
@@ -2940,8 +3143,20 @@ ${failedStepsSummary ? `之前失败的步骤:\n${failedStepsSummary}\n请避免
             if (CONFIG.HIGH_RISK_TOOLS.includes(toolName)) {
               const argsStr = JSON.stringify(toolArgs)
               const argsLower = argsStr.toLowerCase()
-              const matchedDanger = CONFIG.DANGER_PATTERNS.find(p =>
-                argsLower.includes(p.pattern.toLowerCase())
+
+              // 提取实际命令文本（runCmd 的参数通常是 { command: "..." }）
+              const cmdText = (toolArgs?.command || toolArgs?.cmd || '').toString().trim().toLowerCase()
+
+              // 白名单前缀豁免：如果命令以安全 CLI 工具开头，跳过危险检测
+              // 支持带完整路径的情况（如 C:\...\claude.cmd -p ...）
+              const cmdBasename = cmdText.replace(/^.*[\\/]/, '').replace(/\.(cmd|exe|bat)\b/i, '')
+              const isSafeCli = CONFIG.SAFE_CLI_PREFIXES.some(prefix =>
+                cmdText.startsWith(prefix + ' ') || cmdText === prefix ||
+                cmdBasename.startsWith(prefix + ' ') || cmdBasename === prefix
+              )
+
+              const matchedDanger = isSafeCli ? undefined : CONFIG.DANGER_PATTERNS.find(p =>
+                p.regex.test(argsLower)
               )
 
               if (matchedDanger) {
@@ -3030,7 +3245,7 @@ ${failedStepsSummary ? `之前失败的步骤:\n${failedStepsSummary}\n请避免
             agentEventBus.toolStart(toolName, tc.id, toolArgs, isMutatingTool)
 
             const toolStartTime = Date.now()
-            const toolResult = await this.executeTool({ name: toolName, args: toolArgs }, 0, signal)
+            const toolResult = await this.executeTool({ name: toolName, args: toolArgs }, 0, signal, runCtx)
             const toolLatency = Date.now() - toolStartTime
 
             // V2: 工具结束事件
@@ -3103,6 +3318,10 @@ ${failedStepsSummary ? `之前失败的步骤:\n${failedStepsSummary}\n请避免
               base: baseType,
               order: baseSequenceOrder++,
               toolOrder,
+              // V10 Task 1: 从工具参数提取文件路径作为 referencesArtifact
+              referencesArtifact: (['writeFile', 'readFile', 'appendFile'].includes(toolName) && toolArgs.filePath)
+                ? String(toolArgs.filePath)
+                : undefined,
             }
             baseSequenceEntries.push(baseEntry)
             // V8: 同步写入 Ledger
@@ -3542,24 +3761,30 @@ ${fcAcceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${d
             }
           }
 
-          // 🛑 abort 后跳出 while 循环（工具 for 循环内 break 后到达此处）
-          if (wasAborted) break
-
           // 🛡️ 最终安全校验: 确保所有 tool_call 都有对应的 tool 响应
-          // 防止任何遗漏路径导致 "tool_call_ids did not have response messages" 400 错误
+          // 必须在 abort break 之前执行，否则中止后未执行的工具缺少响应会导致 API 400 错误
           for (const tc of toolCalls) {
             const hasResp = messages.some(
               m => m.role === 'tool' && m.tool_call_id === tc.id
             )
             if (!hasResp) {
+              const reason = wasAborted
+                ? `[系统] 用户中止了操作，工具 ${tc.function.name} 未执行。`
+                : `[系统] 工具 ${tc.function.name} 的执行结果丢失，请重试或换用其他方法。`
               console.error(`[LocalClaw/FC] SAFETY: Missing tool response for ${tc.function.name} (${tc.id}), injecting fallback`)
               messages.push({
                 role: 'tool',
                 tool_call_id: tc.id,
-                content: `[系统] 工具 ${tc.function.name} 的执行结果丢失，请重试或换用其他方法。`,
+                content: reason,
                 name: tc.function.name,
               })
             }
+          }
+
+          // 🛑 abort 后跳出 while 循环（工具 for 循环内 break 后到达此处）
+          if (wasAborted) {
+            governorPromptInjection = '' // 清理未消费的干预，防止下次执行使用过时注入
+            break
           }
 
           // 🔄 延迟的重规划提示: 在所有 tool 响应之后再插入 user 消息
@@ -3623,6 +3848,28 @@ ${fcAcceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${d
           {
             const currentLedger = baseLedgerService.getLedger(runId)
             if (currentLedger) {
+              // Phase 1.5: 熔断前预警 — 在真正 abort 之前给 LLM 一次主动收敛的机会
+              // 每个 patternId 只注入一次，避免每轮重复；一旦注入 LLM 往往能在下一轮直接给出阶段性答复
+              const warning = transcriptaseEngine.evaluateWarning(currentLedger)
+              if (warning && !warnedPatternIds.has(warning.patternId)) {
+                warnedPatternIds.add(warning.patternId)
+                console.log(`[Transcriptase] WARNING (${warning.patternId}): ${warning.reasoning}`)
+                messages.push({
+                  role: 'system',
+                  content: [
+                    '⚠️ 系统预警：任务正在接近自动中止阈值。',
+                    warning.reasoning,
+                    '请立即停止探索新方案，基于当前已掌握的信息直接给出阶段性答复 —— 哪怕只是部分答案也比被强制中止强。',
+                  ].join('\n'),
+                })
+                this.storeActions?.addLog({
+                  id: `transcriptase-warn-${Date.now()}`,
+                  timestamp: Date.now(),
+                  level: 'info',
+                  message: `[Transcriptase] warn (${warning.patternId}): ${warning.reasoning}`,
+                })
+              }
+
               const activeChildCount = childAgentManager.getActiveCount()
               const tDecision = transcriptaseEngine.evaluate(currentLedger, activeChildCount)
 
@@ -3669,8 +3916,32 @@ ${fcAcceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${d
                   childTask: tDecision.childTask,
                 })
 
+                // Phase 1: abort 软着陆 — 三层降级保证用户一定拿到有价值的答案
+                // L1 完整收尾 → L2 最小上下文重试 → L3 纯本地兜底（详见 abortLanding.ts）
+                if (tDecision.type === 'abort') {
+                  console.log(`[Transcriptase] ABORT (graceful landing): ${tDecision.reasoning}`)
+
+                  const landing = await gracefulAbortLanding({
+                    messages,
+                    userPrompt,
+                    traceTools,
+                    ledger: baseLedgerService.snapshot(runId) ?? null,
+                    abortReason: tDecision.reasoning,
+                    triggeredPatternId: tDecision.triggeredPatternId,
+                    turnCount,
+                    signal,
+                  })
+
+                  console.log(`[Transcriptase] Landing completed at L${landing.landingLevel}` +
+                    (landing.debugErrors.length > 0 ? `, debug: ${landing.debugErrors.join('; ')}` : ''))
+
+                  finalResponse = landing.finalResponse
+                  completionPath = 'agent_abort'
+                  break
+                }
+
                 if (tDecision.type === 'spawn_child' && tDecision.childTask) {
-                  // 构建上下文信封并 spawn 子 Agent（异步，不 await）
+                  // Phase 2: 构建上下文信封 → spawn → executeChild → follow-up run
                   const ledgerSnapshot = baseLedgerService.snapshot(runId)
                   if (ledgerSnapshot) {
                     const envelope = transcriptaseEngine.buildContextEnvelope(
@@ -3679,7 +3950,9 @@ ${fcAcceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${d
                       runId,
                     )
                     const sessionId = `session-${runId}`
-                    childAgentManager.spawnWithEnvelope(
+
+                    // await spawn 保证 getActiveCount 立即更新
+                    const spawnResult = await childAgentManager.spawnWithEnvelope(
                       runId,
                       sessionId,
                       {
@@ -3691,15 +3964,49 @@ ${fcAcceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${d
                       },
                       envelope,
                       0,  // depth
-                    ).then(result => {
-                      if (result.status === 'accepted') {
-                        console.log(`[Transcriptase] Child spawned: ${result.runId}, task: "${tDecision.childTask?.slice(0, 60)}"`)
-                      } else {
-                        console.warn(`[Transcriptase] Spawn rejected: ${result.error}`)
-                      }
-                    }).catch(err => {
-                      console.error('[Transcriptase] Spawn failed:', err)
-                    })
+                    )
+
+                    if (spawnResult.status === 'accepted' && spawnResult.runId) {
+                      console.log(`[Transcriptase] Child spawned: ${spawnResult.runId}, task: "${tDecision.childTask?.slice(0, 60)}"`)
+
+                      // 异步启动子 Agent（返回 promise，不 await — 父循环继续）
+                      const childPromise = childAgentManager.executeChild(spawnResult.runId)
+                      const capturedChildTask = tDecision.childTask
+                      const capturedSpawnRecords = [...transcriptaseSpawnRecords]
+
+                      // 注册 follow-up: 子 Agent 完成时按 terminationReason 分支处理
+                      childPromise.then(outcome => {
+                        // v5 边缘情况: 用户主动 kill 不启动 follow-up run
+                        if (outcome.terminationReason === 'killed') {
+                          transcriptaseGovernor.resolveSpawnOutcome(runId, '', false)
+                          return
+                        }
+
+                        // timeout / error / completed: 正常触发 follow-up run
+                        this.startFollowUpRun({
+                          trigger: 'child_completed',
+                          childRunId: spawnResult.runId!,
+                          originalRunId: runId,
+                          outcome,
+                          deferredSpawnRecords: capturedSpawnRecords,
+                          systemMessage: outcome.terminationReason === 'timeout'
+                            ? `子 Agent 执行超时。已知进展:\n${outcome.result?.slice(0, 500) || '无输出'}\n请决定是否重试或换一种方式完成。`
+                            : `上一轮派发的子 Agent 已完成:\n任务: ${capturedChildTask}\n状态: ${outcome.success ? '成功' : '失败'}\n结果: ${outcome.result?.slice(0, 800) || '无输出'}\n请基于此结果继续完成用户的原始请求。`,
+                        }).catch(err => {
+                          console.error('[Transcriptase] Follow-up run failed:', err)
+                        })
+                      }).catch(err => {
+                        console.error('[Transcriptase] Child promise rejected:', err)
+                      })
+
+                      // 通知父 LLM: 子 Agent 已启动（不 break，父循环继续直到自然结束）
+                      messages.push({
+                        role: 'system',
+                        content: `子 Agent 已启动处理: ${tDecision.childTask}\n你可以继续处理其他方面的工作，或者总结当前进展后结束。子 Agent 完成后会自动触发后续处理。`,
+                      })
+                    } else {
+                      console.warn(`[Transcriptase] Spawn rejected: ${spawnResult.error}`)
+                    }
                   }
                 }
 
@@ -3805,7 +4112,7 @@ ${fcAcceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${d
             if (result.compacted && result.summary) {
               const systemMsg = messages[0]
               const safeCutIdx = findSafeCutIndex(messages, 8)
-              if (safeCutIdx > 0) {
+              if (safeCutIdx > 0 && systemMsg?.role === 'system') {
                 const recentMessages = messages.slice(safeCutIdx)
                 messages.length = 0
                 messages.push(systemMsg)
@@ -3923,13 +4230,13 @@ ${fcAcceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${d
             baseSequenceIndex: baseSequenceEntries.length,
           })
 
-          // 8. 重置 stale state
+          // 8. 重置 stale state（注意: 必须在 ledger 更新之后清空 traceTools）
+          // 9. V8: 强制更新 Ledger Facts（escalation 时全量更新）
+          baseLedgerService.updateFactsFromTools(runId, traceTools)
+
           traceTools.length = 0
           truncationRetries = 0
           governorPromptInjection = ''
-
-          // 9. V8: 强制更新 Ledger Facts（escalation 时全量更新）
-          baseLedgerService.updateFactsFromTools(runId, traceTools)
 
           this.storeActions?.addLog({
             id: `context-refresh-${Date.now()}`,
@@ -4028,7 +4335,7 @@ ${fcAcceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${d
 
     // P2: 保存执行追踪 (含 Observer 元数据)
     // 优先使用传入的 dunId (来自 Dun 会话)，fallback 到全局 activeDunId（复用函数顶部声明的 activeDunId）
-    if (traceTools.length > 0) {
+    if (traceTools.length > 0 || (isClaudeCode && claudeToolTrace.length > 0)) {
       const errorCount = traceTools.filter(t => t.status === 'error').length
       
       const trace: ExecTrace = {
@@ -4080,6 +4387,9 @@ ${fcAcceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${d
             return dun?.metrics && dun.metrics.length > 0
           })(),
           successReason,
+          // V10 Task 1: repair proxy 信号（实际值待后续 Task 检测写入，先默认 false）
+          manualEditAfterCompletion: false,
+          repairLabelSource: 'auto',
         },
         // V7: Context Refresh 事件记录
         contextRefreshEvents: contextRefreshEvents.length > 0 ? contextRefreshEvents : undefined,
@@ -4096,6 +4406,24 @@ ${fcAcceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${d
         transcriptaseDecisions: transcriptaseDecisionRecords.length > 0
           ? transcriptaseDecisionRecords
           : undefined,
+        // V10: Task 0.0 实验元数据
+        policyVersion: 'governor_v10.0',
+        promptVersion: 'fc_v3.2',
+        toolSetHash: this.computeToolSetHash(),
+        softBehaviorEnabled: baseSequenceGovernor.isSoftBehaviorEnabled(),
+        outcomeLabelSource: 'auto',
+        experimentPhase: 'baseline',
+        // V10 Task 1: 扩展字段
+        controlTrack: isControl,
+        dataOrigin: 'real_trace',
+        // V10 Task 3: Control Track Shadow 记录
+        controlTrackShadow: isControl ? (baseSequenceGovernor.getShadowRecord() ?? undefined) : undefined,
+      }
+
+      // Claude Code 模式：将收集到的工具事件合并到 trace
+      if (isClaudeCode && claudeToolTrace.length > 0) {
+        trace.tools = claudeToolTrace as any
+        trace.baseSequence = claudeToolTrace.map(t => t.baseType || 'E').join('-')
       }
 
       // 先保存 trace，成功后再更新 stats，保证两者一致
@@ -4119,9 +4447,12 @@ ${fcAcceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${d
         ).catch(err => console.warn('[Governor] recordTrace failed:', err))
 
         // Phase 3: TranscriptaseGovernor — spawn 效果统计（fire-and-forget）
-        // 回填 success 字段后提交给 Governor（无论是否激活都累加数据）
+        // v5 契约: 有 spawn 的 run 标记 childCompleted=false (子 Agent 尚未完成)
+        // follow-up run 完成时通过 resolveSpawnOutcome() 回填真正的 success
         for (const record of transcriptaseSpawnRecords) {
           record.success = runSuccess
+          record.childCompleted = false  // v5: 子 Agent 尚未完成
+          record.originalRunId = runId   // v5: 供 follow-up run 回溯
         }
         transcriptaseGovernor.recordOutcome(
           hadTranscriptaseSpawn,
@@ -4155,6 +4486,8 @@ ${fcAcceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${d
           scoring: {} as DunScoring, scoreChange: 0,
         }
         try {
+          // 确保评分缓存已从服务器加载，防止 getOrCreate 覆盖历史数据
+          await dunScoringService.ensureLoaded(activeDunId, this.serverUrl)
           precomputedScoring = dunScoringService.updateFromTrace(activeDunId, trace, finalResponse)
           finalScoreChange = precomputedScoring.scoreChange
           console.log(`[LocalClaw/FC] DunScoring precomputed: ${activeDunId} scoreChange=${precomputedScoring.scoreChange > 0 ? '+' : ''}${precomputedScoring.scoreChange}`)
@@ -4293,6 +4626,12 @@ ${fcAcceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${d
     })
 
     return finalResponse || '任务执行完成，但未生成总结。'
+    } finally {
+      // V10 Task 3: 无论是否异常，都恢复 Soft Behavior 状态
+      if (isControl) {
+        baseSequenceGovernor.setSoftBehaviorEnabled(prevSoftBehaviorEnabled)
+      }
+    }
   }
 
   // ============================================
@@ -4650,7 +4989,17 @@ ${dun.metrics.map((m, i) => `${i + 1}. ${m}`).join('\n')}
     }
 
     // 降级：基于工具调用结果判断
-    const allSuccess = traceTools.length > 0 && traceTools.every(t => t.status === 'success')
+    // 纯对话任务（无工具调用）视为已完成，避免错误触发升级
+    if (traceTools.length === 0) {
+      return {
+        completed: true,
+        completionRate: 100,
+        summary: '对话任务已完成',
+        completedSteps: [],
+        pendingSteps: [],
+      }
+    }
+    const allSuccess = traceTools.every(t => t.status === 'success')
     return {
       completed: allSuccess,
       completionRate: allSuccess ? 100 : (successCount / Math.max(traceTools.length, 1)) * 100,
@@ -4836,7 +5185,7 @@ ${dun.metrics.map((m, i) => `${i + 1}. ${m}`).join('\n')}
   // 🛠️ 工具执行
   // ============================================
 
-  async executeTool(tool: ToolCall, _retryCount = 0, signal?: AbortSignal): Promise<ToolResult> {
+  async executeTool(tool: ToolCall, _retryCount = 0, signal?: AbortSignal, runCtx?: RunExecutionContext): Promise<ToolResult> {
     // 🛑 abort 前置检查：若已被用户终止，直接返回
     if (signal?.aborted) {
       return { tool: tool.name, status: 'error', result: '任务已被用户终止' }
@@ -4886,7 +5235,7 @@ ${dun.metrics.map((m, i) => `${i + 1}. ${m}`).join('\n')}
       const onExternalAbort = () => controller.abort()
       signal?.addEventListener('abort', onExternalAbort, { once: true })
       try {
-        const result = await searchChat(messages, undefined)
+        const result = await searchChat(messages, runCtx ? toPartialLLMConfig(runCtx.resolveUtility('search')) : undefined)
         skillStatsService.recordResult('searchEnhancedQuery', true)
         return { tool: 'searchEnhancedQuery', status: 'success', result }
       } catch (error: any) {
@@ -4940,7 +5289,7 @@ ${dun.metrics.map((m, i) => `${i + 1}. ${m}`).join('\n')}
         ]
 
         // 3. 调用视觉 LLM
-        const result = await visionChat(visionMessages)
+        const result = await visionChat(visionMessages, runCtx ? toPartialLLMConfig(runCtx.resolveUtility('vision')) : undefined)
         skillStatsService.recordResult('imageUnderstand', true)
         return { tool: 'imageUnderstand', status: 'success', result }
       } catch (error: unknown) {
@@ -4973,17 +5322,19 @@ ${dun.metrics.map((m, i) => `${i + 1}. ${m}`).join('\n')}
       signal?.addEventListener('abort', onExternalAbort, { once: true })
 
       try {
-        // Dun 上下文路由：为特定工具注入 activeDunId
+        // Dun 上下文路由：为特定工具注入 activeDunId（优先使用 runCtx 锁定的 dunId，避免执行中切换 Dun 导致污染）
         const DUN_ROUTED_TOOLS = ['writeFile', 'appendFile', 'saveMemory', 'searchWiki']
-        const activeDunId = DUN_ROUTED_TOOLS.includes(tool.name) ? this.getActiveDunId() : null
+        const activeDunId = DUN_ROUTED_TOOLS.includes(tool.name) ? (runCtx?.runDunId ?? this.getActiveDunId()) : null
         const finalArgs = activeDunId 
           ? { ...tool.args, dunId: activeDunId }
           : tool.args
 
+        // 将 sanitized 工具名还原为后端注册的原始名称
+        const originalToolName = resolveOriginalToolName(tool.name)
         const response = await fetch(`${this.serverUrl}/api/tools/execute`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: tool.name, args: finalArgs }),
+          body: JSON.stringify({ name: originalToolName, args: finalArgs }),
           signal: linkedController.signal,
         })
 
@@ -5068,7 +5419,7 @@ ${dun.metrics.map((m, i) => `${i + 1}. ${m}`).join('\n')}
           const backoffMs = 1000 * Math.pow(2, _retryCount)
           console.log(`[LocalClaw] Tool ${tool.name} failed with retryable error, retry ${_retryCount + 1}/${MAX_TOOL_RETRIES} after ${backoffMs}ms`)
           await new Promise(resolve => setTimeout(resolve, backoffMs))
-          return this.executeTool(tool, _retryCount + 1, signal)
+          return this.executeTool(tool, _retryCount + 1, signal, runCtx)
         }
         
         return {
@@ -5165,6 +5516,116 @@ ${dun.metrics.map((m, i) => `${i + 1}. ${m}`).join('\n')}
     await this.loadTools()
     const conditional = this.getConditionalTools()
     console.log(`[LocalClaw] Tools refreshed: ${this.availableTools.length} backend + ${conditional.length} conditional (${conditional.map(t => t.name).join(', ')})`)
+  }
+
+  // ═══ Phase 2: 子 Agent 执行通路 ═══
+
+  /**
+   * Phase 2: 子 Agent 的 ReAct 执行循环（简化版）
+   *
+   * 由 childAgentManager.setExecutor() 注入的回调。
+   * 当前为 stub 实现：使用 chat() 做单轮 LLM 调用生成结果。
+   * 完整实现需要独立的 ReAct 循环（复用 runReActLoopFC 的工具执行能力），
+   * 但 Phase 2 聚焦于 promise 闭合 + follow-up run 通路验证，
+   * 完整子 Agent ReAct 循环在工具权限隔离 ready 后再接入。
+   */
+  private async runChildReActLoop(params: ChildReActParams): Promise<ChildReActResult> {
+    console.log(`[LocalClaw/ChildReAct] Starting child task: "${params.task.slice(0, 80)}"`)
+    console.log(`[LocalClaw/ChildReAct] maxTurns=${params.maxTurns}, tools=[${params.allowedTools.join(',')}]`)
+
+    try {
+      // Phase 2 stub: 单轮 LLM 调用（不走工具循环）
+      // 使用 childAgent utility 配置，避免硬用父 run 的主推理模型
+      const childConfig = resolveRunLLMConfig(undefined, 'childAgent')
+      const messages: SimpleChatMessage[] = [
+        { role: 'system', content: params.systemPrompt },
+        { role: 'user', content: params.task },
+      ]
+
+      const response = await chat(messages, toPartialLLMConfig(childConfig))
+
+      return {
+        success: true,
+        finalResponse: response,
+        tokensUsed: estimateTokens(response),
+        baseSequence: 'PE',  // stub: 假设 Plan -> Execute
+        childFacts: {
+          completedActions: [`child_completed: ${params.task.slice(0, 60)}`],
+        },
+      }
+    } catch (err) {
+      console.error('[LocalClaw/ChildReAct] Failed:', err)
+      return {
+        success: false,
+        finalResponse: String(err),
+        tokensUsed: 0,
+      }
+    }
+  }
+
+  /**
+   * Phase 2: 子 Agent 完成后触发的 follow-up run（方案 B）
+   *
+   * 父 run 正常结束后，子 Agent 异步完成时以原 sessionId 启动新 run，
+   * 将子 Agent 结果注入为 system message，让 LLM 基于结果继续处理。
+   *
+   * v5 修复: 不预先调用 mergeFactsOnly（此时 follow-up run 的 ledger 还不存在），
+   * 而是通过 initialFacts 参数传入，由 runReActLoopFC 内部在 createLedger 后合并。
+   */
+  private async startFollowUpRun(
+    context: {
+      trigger: string
+      childRunId: string
+      originalRunId: string
+      outcome: import('@/types').ChildOutcome
+      deferredSpawnRecords?: import('@/types').TranscriptaseSpawnRecord[]
+      systemMessage: string
+    },
+  ): Promise<void> {
+    console.log(`[LocalClaw/FollowUp] Starting follow-up run for child ${context.childRunId}`)
+
+    // Phase 2 stub: 子 Agent facts 提取后续通过 initialFacts 参数传入 runReActLoopFC
+    // 完整实现需要修改 runReActLoopFC 签名，当前阶段聚焦通路验证
+    // const childLedger = baseLedgerService.getLedger(context.childRunId)
+    // const childFacts = childLedger?.facts || context.outcome.childFacts || null
+
+    try {
+      // 触发新的 ReAct 循环
+      // 注意: 这里简化调用 — 直接使用 system message 作为 prompt
+      // 完整实现应携带 sessionId 以在同一会话中继续
+      await this.runReActLoopFC(
+        context.systemMessage,
+        undefined, // onUpdate
+        undefined, // onStep
+        undefined, // dunId
+        undefined, // onCheckpoint
+        undefined, // signal
+        undefined, // conversationHistory
+      )
+
+      // v5 契约: follow-up run 回填 spawn 效果
+      if (context.deferredSpawnRecords?.length) {
+        for (const deferredRecord of context.deferredSpawnRecords) {
+          transcriptaseGovernor.resolveSpawnOutcome(
+            deferredRecord.originalRunId || context.originalRunId,
+            context.childRunId,
+            context.outcome.success,
+          )
+        }
+      }
+    } catch (err) {
+      console.error('[LocalClaw/FollowUp] Follow-up run failed:', err)
+      // 即使 follow-up run 失败，也要回填 spawn 效果（标记为失败）
+      if (context.deferredSpawnRecords?.length) {
+        for (const deferredRecord of context.deferredSpawnRecords) {
+          transcriptaseGovernor.resolveSpawnOutcome(
+            deferredRecord.originalRunId || context.originalRunId,
+            '',
+            false,
+          )
+        }
+      }
+    }
   }
 
   /**

@@ -375,6 +375,10 @@ export interface OpenClawSkill {
   dangerLevel?: string         // safe | high | critical
   keywords?: string[]          // 语义触发关键词
   whenToUse?: string           // 何时使用提示（供 LLM 判断是否调用）
+  /** 自由分类标签 (用户/社区自定义, 与 tags 不同) */
+  category?: string
+  /** 从 SKILL.md 正文抽取的 Instructions 段落, 给 LLM 做 whenToUse 判定 */
+  instructions?: string
   // OpenClaw 生态字段
   emoji?: string
   author?: string
@@ -615,14 +619,16 @@ export interface LLMConfig {
   apiKey: string
   baseUrl: string
   model: string
-  // API 协议格式: 'auto' 自动检测 | 'openai' OpenAI 兼容 | 'anthropic' Anthropic 原生
-  apiFormat?: 'auto' | 'openai' | 'anthropic'
+  // API 协议格式: 'auto' 自动检测 | 'openai' OpenAI 兼容 | 'anthropic' Anthropic 原生 | 'claude-code' 本地 Claude Code
+  apiFormat?: ApiProtocol
   // 独立的 Embedding API 配置（可选）
   embedApiKey?: string
   embedBaseUrl?: string
   embedModel?: string
   /** 图片生成 API 契约（由 Provider 预设声明，generateImage 据此适配） */
   imageGenProfile?: ImageGenProfile
+  /** 采样温度 (skillProductionService 等场景里按调用方需要覆盖) */
+  temperature?: number
 }
 
 // ============================================
@@ -633,10 +639,10 @@ export interface LLMConfig {
 export type ModelChannelType = 'chat' | 'chatSecondary' | 'embed' | 'imageGen' | 'videoGen' | 'search'
 
 /** API 协议 */
-export type ApiProtocol = 'openai' | 'anthropic' | 'auto'
+export type ApiProtocol = 'openai' | 'anthropic' | 'claude-code' | 'auto'
 
 /** Provider 来源 */
-export type ProviderSource = 'manual' | 'env-scan'
+export type ProviderSource = 'manual' | 'env-scan' | 'plugin'
 
 /** Provider 区域 */
 export type ProviderRegion = 'domestic' | 'overseas' | 'local' | 'any'
@@ -683,6 +689,41 @@ export interface ChannelBindings {
   imageGen: ModelBinding | null
   videoGen: ModelBinding | null
   search: ModelBinding | null
+}
+
+// ===== Dun Per-Run LLM 配置 =====
+
+// Dun 的 LLM 绑定（存储层，不含密钥）
+export interface DunLLMBinding {
+  providerId: string       // 引用 LinkStation 中的 Provider
+  modelId: string          // 该 Provider 下的具体模型
+  temperature?: number     // 可选温度覆盖
+}
+
+// LLM 调用目的（预留细粒度扩展）
+export type LLMPurpose = 'chat' | 'critic' | 'search' | 'vision' | 'childAgent' | 'background'
+
+// 解析后的完整运行配置（不可变快照）
+export interface EffectiveRunConfig {
+  apiKey: string
+  baseUrl: string
+  model: string
+  apiFormat: ApiProtocol
+  temperature?: number     // undefined = 不传，保持 Provider 默认
+  contextWindow: number    // 模型上下文窗口（token）
+  supportsTools: boolean   // 是否支持 function calling
+  providerLabel: string    // 用于 trace/日志标记
+  purpose: LLMPurpose      // 记录本配置的解析目的
+  source: 'dun-binding' | 'global-channel' | 'global-chat' | 'fallback'
+  providerId?: string      // 方便 trace/debug 追踪
+  channel?: string         // 对应 LinkStation channel（如 chat/search/embed）
+}
+
+// Run 级执行上下文（避免散传参数）
+export interface RunExecutionContext {
+  runDunId: string | undefined   // 本次 run 锁定的 finalDunId（自动匹配后的）
+  chatConfig: EffectiveRunConfig // 主推理 + critic
+  resolveUtility: (purpose: LLMPurpose) => EffectiveRunConfig // 按真实 purpose 解析
 }
 
 /** 联络站 Sheet 标签 */
@@ -754,7 +795,11 @@ export const FALLBACK_CONFIG = {
 
 export interface ChatMessage {
   id: string
-  role: 'system' | 'user' | 'assistant'
+  /**
+   * 消息角色。`'thinking'` 是自习室扩展出来的专用角色, 用于在对话流里展示 Dun 的思考过程气泡;
+   * 通用聊天流程不应该产生 'thinking' 消息, 只在自习室 ReAct 循环里出现。
+   */
+  role: 'system' | 'user' | 'assistant' | 'thinking'
   content: string
   timestamp: number
   error?: boolean
@@ -765,6 +810,25 @@ export interface ChatMessage {
   traceId?: string
   /** 用户是否点赞该消息 */
   liked?: boolean
+  // ============================================
+  // 自习室 (StudyRoom) 扩展字段 (仅在 WriterChatPanel / studyReActLoop 使用)
+  // ============================================
+  /** 消息是否正在流式追加中 (流式输出未完成) */
+  streaming?: boolean
+  /** thinking 气泡顶部的阶段标签, 如 "采集证据"、"撰写中" */
+  thinkingLabel?: string
+  /** 用户附加的技能引用 (@skill-name) */
+  attachments?: WriterChatAttachment[]
+  /** 本条消息携带的意图澄清卡片 (role === 'assistant' && intent === 'unclear' 时有) */
+  intentClarification?: IntentClarification
+  /** 本条消息分类器给出的意图 (如果跑了 classifyWriterIntent) */
+  intent?: WriterMessageIntent
+  /** 讨论模式末尾附带的"应用此建议"卡片 */
+  suggestedEdit?: SuggestedEdit
+  /** 全文改写 / 段改模式末尾附带的变更摘要卡片 */
+  editSummary?: EditSummary
+  /** Tool Loop 里 LLM 想写入风格档案的候选建议, 用户确认后才落库 */
+  profileSuggestions?: ProfileSuggestion[]
 }
 
 // ============================================
@@ -904,6 +968,34 @@ export interface ExecTrace {
     childTask?: string
     baseIndex: number
   }>
+
+  // V10: 实验元数据（Task 0.0 最小日志补丁）
+  policyVersion?: string                    // Governor 策略版本，如 'governor_v2.1'
+  promptVersion?: string                    // system prompt 版本，如 'fc_v3.2'
+  toolSetHash?: string                      // 工具列表的 murmurhash
+  softBehaviorEnabled?: boolean             // Soft Behavior 是否启用
+  outcomeLabelSource?: 'auto' | 'human' | 'user_confirmed'  // repair 标签来源
+  experimentPhase?: 'baseline' | 'experiment' | 'post_experiment'  // 实验阶段
+
+  // V10 Task 1: 扩展字段
+  /** 是否为 control 组（Task 3 动态判定：按 taskContent hash 固定 20% 分组） */
+  controlTrack?: boolean
+  /** 数据来源标记 */
+  dataOrigin?: 'real_trace' | 'human_corrected' | 'augmented'
+
+  // V10 Task 3: Control Track Shadow 记录
+  /** Control 组 shadow 运行 Soft 规则的记录（仅 controlTrack=true 时填充） */
+  controlTrackShadow?: ControlTrackShadow
+}
+
+/** V10 Task 3: Control Track Shadow 记录——Control 组 shadow 运行 Soft 规则的结果 */
+export interface ControlTrackShadow {
+  /** Soft 规则是否会触发干预 */
+  wouldHaveSoftIntervened: boolean
+  /** 会触发的 Soft 规则名称 */
+  wouldHaveInterventionType?: string
+  /** 会触发干预的步骤索引 */
+  wouldHaveInterventionStep?: number
 }
 
 /** V6: 多维结果信号 — 保留原始信号，不压缩为单一置信度 */
@@ -926,6 +1018,28 @@ export interface OutcomeSignals {
   dunHasMetrics: boolean
   /** success 判定的具体原因（human-readable，用于调试和分析） */
   successReason: string
+
+  // V10 新增: repair 标签体系（tri-state，区分 proxy 信号和真值）
+  /** 结果综合判定 */
+  outcome?: 'success' | 'partial' | 'failure' | 'uncertain'
+  /** 自动检测：完成后 N 分钟内有编辑（proxy，必录） */
+  manualEditAfterCompletion?: boolean
+  /** 训练目标：null = 未确认 */
+  requiredManualRepair?: boolean | null
+  /** repair 标签来源 */
+  repairLabelSource?: 'auto' | 'human' | 'user_confirmed'
+  /** 检测窗口（默认 30 分钟） */
+  repairWindowMinutes?: number
+  /** repair 检测时间戳 */
+  repairDetectedAt?: number
+  /** V10: 细粒度信号 */
+  signals?: {
+    toolSuccess?: boolean
+    userAccepted?: boolean | null
+    testsPassed?: boolean | null
+    llmJudgeScore?: number | null
+    humanScore?: number | null
+  }
 }
 
 /** V4: 上下文注入元数据 — 记录每次 buildDynamicContext 的注入质量指标 */
@@ -966,6 +1080,14 @@ export interface ContextInjectionMeta {
 // V2: 碱基序列演进类型
 // ============================================
 
+/** V10: 碱基步骤意图来源 */
+export type IntentSource =
+  | 'agent_autonomous'
+  | 'governor_prompted'
+  | 'user_directed'
+  | 'system_required'
+  | 'child_inherited'
+
 /** 碱基序列独立条目（P 碱基 + 工具碱基统一记录） */
 export interface BaseSequenceEntry {
   /** 碱基类型 */
@@ -984,6 +1106,30 @@ export interface BaseSequenceEntry {
   ledgerIndex?: number
   /** Phase 3: P 碱基的检测来源（非 P 碱基无此字段） */
   pDetectionSource?: PBaseDetectionSource
+
+  // V10 新增: 元数据维度（Week 1 先只用 referencesArtifact）
+  /** 分类置信度 0-1 */
+  confidence?: number
+  /** 碱基分类来源 */
+  source?: 'rule' | 'tool' | 'meta' | 'human' | 'model'
+  /** 意图来源 */
+  intentSource?: IntentSource
+  /** 风险等级 */
+  risk?: 'low' | 'medium' | 'high'
+  /** 作用域 */
+  scope?: 'local' | 'global' | 'child-agent'
+  /** 人工校正标签 */
+  humanLabel?: 'E' | 'P' | 'V' | 'X'
+  /** 模型预测标签 */
+  modelLabel?: 'E' | 'P' | 'V' | 'X'
+
+  // V10 新增: 因果链
+  /** 操作的文件/资源路径 */
+  referencesArtifact?: string
+  /** 直接触发源事件 ID（最近 10 步窗口内） */
+  causedBy?: string[]
+  /** 因果来源标记 */
+  causalSource?: 'explicit' | 'inferred' | 'heuristic'
 }
 
 // ============================================
@@ -1175,6 +1321,7 @@ export interface DunEntity {
     model: string
     apiKey?: string         // 空则用全局 key
   }
+  llmBinding?: DunLLMBinding  // Per-Dun LLM 绑定（引用 LinkStation Provider）
   // Phase 4: File-based Dun (DUN.md)
   sopContent?: string             // DUN.md Markdown 正文 (Mission + SOP)
   triggers?: string[]             // 自动激活关键词
@@ -2217,6 +2364,8 @@ export interface ChildOutcome {
   childBaseSequence?: string
   /** V8: 子 Agent 发现的新 facts */
   childFacts?: Partial<LedgerFacts>
+  /** v5: 终止原因，保留 killed/timeout 语义不被 markCompleted 覆盖 */
+  terminationReason?: 'completed' | 'error' | 'killed' | 'timeout'
 }
 
 // 子智能体生成结果
@@ -2349,6 +2498,10 @@ export interface TranscriptaseSpawnRecord {
   success: boolean
   /** 子 Agent 是否完成并回传了 facts */
   childCompleted: boolean
+  /** v5: follow-up run 的 runId，用于跨 run 关联 */
+  followUpRunId?: string
+  /** v5: 原始 run 的 runId，follow-up run 用此字段回溯 spawn 记录 */
+  originalRunId?: string
 }
 
 /** Phase 3: Transcriptase Governor 分桶统计 */
@@ -2402,6 +2555,12 @@ export type PBaseDetectionSource =
   | 'reflexion'          // Reflexion 结构化反思（已有）
   | 'manual'             // 手动标注
 
+// V10: 记忆状态三态（对应 server/db.py memory.status 字段）
+// - active: 当前有效
+// - superseded: 被新条目取代（保留做审计追溯）
+// - conflicted: 与另一条目冲突，待解决
+export type MemoryStatus = 'active' | 'superseded' | 'conflicted'
+
 export interface MemorySearchResult {
   id: string
   score: number                     // 0-1
@@ -2413,7 +2572,30 @@ export interface MemorySearchResult {
   confidence?: number               // 后端返回的置信度 (0-1)
   tags?: string[]
   metadata?: Record<string, unknown>
+  category?: string                 // preference | project | discovery | uncategorized
+  // ---- V10: Supersede 血统字段（后端可选返回）----
+  status?: MemoryStatus             // 默认 active
+  supersededBy?: string             // 指向新条目的 id
+  supersedeReason?: string          // 取代原因
+  supersedeAt?: number              // 取代时间（ms）
 }
+
+// V10: Supersede API 请求参数
+export interface MemorySupersedeParams {
+  targetId: string                  // 被取代的记忆 id
+  newContent?: string               // 若提供则同步写入新记忆
+  newTags?: string[]
+  newCategory?: string
+  newConfidence?: number
+  source?: string                   // 新记忆 source，默认 'memory'
+  dunId?: string
+  reason: string                    // 取代原因（必填）
+  mode?: 'supersede' | 'conflict'   // 默认 supersede
+  metadata?: Record<string, unknown>
+}
+
+// V10: 写入闭环四态 action（postExecutionConsolidator LLM 输出）
+export type MemoryWriteAction = 'NEW' | 'SUPERSEDE' | 'CONFLICT' | 'SKIP'
 
 // 搜索算法配置
 export const SEARCH_CONFIG = {
@@ -2532,14 +2714,16 @@ export const L1_MEMORY_CONFIG = {
 // ============================================
 
 // 置信度信号
+// V10: 新增 'passive_hit' 类型，用于被动晋升（搜索命中累计）
 export interface ConfidenceSignal {
-  type: 'environment' | 'human_feedback' | 'system_failure' | 'decay'
+  type: 'environment' | 'human_feedback' | 'system_failure' | 'decay' | 'passive_hit'
   delta: number             // 分值变化量 (归一化到 0-1 范围)
   source: string            // 来源描述
   timestamp: number
 }
 
 // L1 记忆条目 (带置信度追踪)
+// V10: 加入 hitCount / lastHitAt 支持被动晋升通道
 export interface L1MemoryEntry {
   id: string
   dunId: string
@@ -2550,6 +2734,8 @@ export interface L1MemoryEntry {
   createdAt: number
   updatedAt: number
   lastDecayAt?: number      // 上次衰减时间戳（用于增量衰减计算）
+  hitCount?: number         // V10: 搜索命中次数（被动晋升依据）
+  lastHitAt?: number        // V10: 最近一次命中时间（ms）
 }
 
 // 置信度信号分值
@@ -2569,3 +2755,860 @@ export const L0_PROMOTION_CONFIG = {
   DECAY_HALF_LIFE_DAYS: 30,      // L0 记忆半衰期
   INITIAL_CONFIDENCE: 0.35,      // 新条目初始置信度
 } as const
+
+// V10: L1 被动晋升配置 — 针对长期有用但无主动信号的 L1 条目
+// 触发条件：存活 >= MIN_AGE_DAYS 且搜索命中 >= MIN_HIT_COUNT 且近 NO_NEGATIVE_WINDOW_DAYS 天无负面信号
+export const PASSIVE_PROMOTION_CONFIG = {
+  MIN_AGE_DAYS: 7,                    // 条目存活至少 7 天
+  MIN_HIT_COUNT: 3,                   // 被搜索命中至少 3 次
+  HIT_SIGNAL_DELTA: 0.10,             // 每次命中贡献的信号 delta（累加到 confidence）
+  NO_NEGATIVE_WINDOW_DAYS: 30,        // 近 30 天无负面信号
+  HIT_DEBOUNCE_MS: 5 * 60 * 1000,     // 5 分钟内同一 memoryId 的多次命中算一次（避免刷分）
+} as const
+
+// V10: 记忆搜索调用目的（purpose）
+// - context_injection: 由 buildDynamicContext 注入上下文时的搜索（会触发命中计数）
+// - user_query:        用户在 Memory House 或 UI 中主动查询（不计命中，避免 UI 刷屏刷分）
+// - dedup_check:       postExecutionConsolidator 的查重检索（不计命中）
+// - internal:          其他内部调用
+export type MemorySearchPurpose =
+  | 'context_injection'
+  | 'user_query'
+  | 'dedup_check'
+  | 'internal'
+
+// ============================================================================
+// StudyRoom (自习室) — 写作契约 / 证据 / 议程 / 会话运行时
+// ----------------------------------------------------------------------------
+// 这一整段类型是 `src/services/studyRoom/*`, `src/components/houses/studyRoom/*`
+// 和 `src/store/slices/studyRoomSlice.ts` 共享的核心数据结构. 之前它们分散在
+// 各个使用点内部或丢失, 统一收拢到这里维护.
+// ============================================================================
+
+// ---- 体裁 / 篇幅 / 语气枚举 (来自写作契约 brief) --------------------------
+
+export type GenreHint =
+  | 'report'      // 报告 / 分析
+  | 'essay'       // 随笔 / 议论
+  | 'letter'      // 书信
+  | 'memo'        // 备忘
+  | 'tutorial'    // 教程
+  | 'novel'       // 虚构
+  | 'custom'      // 自定义
+
+export type LengthHint = 'short' | 'medium' | 'long' | 'xlong' | 'auto'
+
+/** 语气标签是开放集合 — brief.tone 用户可自由输入, 这里只给出常见预设 */
+export type ToneHint = string
+
+// ---- 技能引用 -----------------------------------------------------------
+
+/** SkillRef — 写作契约里引用的技能元信息, 注入 prompt 时展示名称 + 优先级 */
+export interface SkillRef {
+  // 技能名 (和 skills 目录下每个子目录的 SKILL.md 的 name 对齐, 避免 JSDoc 含 `*` 误闭合)
+  name: string
+  /** 来源: 内置 / 用户自定义 / openclaw 市场 */
+  source: 'builtin' | 'user' | 'openclaw' | string
+  /** 优先级: 多技能冲突时数值大者优先. 用户手动 @ 的 = high, 自动推荐 = normal */
+  priority: 'high' | 'normal' | 'low' | string
+}
+
+// ---- 写作契约 (WritingBrief) ---------------------------------------------
+
+/**
+ * 写作契约 — 一次自习室会话的"写作需求"描述.
+ * 由 intake 阶段从用户原话 + LLM 分类器解析出, 后续所有 prompt 注入都以它为中心.
+ */
+export interface WritingBrief {
+  id: string
+  /** 用户原话, 不做改写 */
+  intent: string
+  /** 体裁 */
+  genre: GenreHint
+  /** 长度档位 */
+  length: LengthHint
+  /** 用户是否显式指定了长度 (true = 用户说过"写长一点"; false = 由 LLM 推断) */
+  lengthExplicit?: boolean
+  /** 语气标签, 多个标签取交集 */
+  tone: ToneHint[]
+  /** 受众画像 (自由文本) */
+  audience: string
+  /** 硬约束列表, 违反即失败 */
+  constraints: string[]
+  /** 用户 @ 或自动推荐的技能列表 */
+  skills: SkillRef[]
+  /** 用户在 TelescopePanel 钉住的实体 ID (Library 实体, 写作时必须引用) */
+  pinnedEntityIds?: string[]
+  /** 创建时间 */
+  createdAt: number
+  /** 指定的写作 Dun (如果用户挑了 Dun 来写) */
+  dunId?: string
+  /** 指定的文风指纹 id (session 级, 不跨 session) */
+  fingerprintId?: string | null
+}
+
+// ---- 证据 / 记忆片段 ------------------------------------------------------
+
+/**
+ * EvidenceItem — 证据池里的一条素材.
+ * 来自 3 个镜头: L (Library 权威知识) / W (WebSearch 网络) / S (Skills 文档) / M (Memory 记忆).
+ */
+export interface EvidenceItem {
+  id: string
+  /** 镜头来源. 决定 prompt 里的引用标记前缀 (如 [^L12]) */
+  lens: 'L' | 'W' | 'S' | 'M' | string
+  /** 证据标题 */
+  title: string
+  /** 证据摘要 (给 LLM 注入 prompt 用, 通常 200 字内) */
+  snippet: string
+  /** 原始 URL (W 镜头) / 文件路径 (S 镜头) / 实体 id (L 镜头) */
+  source?: string
+  /**
+   * 可选的引用元数据. 两种形态:
+   * - string: 简单的引用链接 (旧用法)
+   * - 对象: 指向具体 L/S/M/E 记录的结构化引用 (lensLibrary / lensSkills 填的形态)
+   */
+  ref?: string | {
+    kind: 'entity' | 'skill' | 'memory' | 'web' | string
+    entityId?: string
+    skillName?: string
+    memoryId?: string
+    url?: string
+    snapshotTldr?: string
+  }
+  /** 发布时间 / 创建时间, 用于可信度排序 */
+  publishedAt?: number
+  /** 自由标签, 辅助筛选 */
+  tags?: string[]
+}
+
+/** MemorySnippet — 从全局记忆召回的长期知识片段, 区别于证据池里的 M 镜头 */
+export interface MemorySnippet {
+  id: string
+  /** 来源描述, 如 "l0_memory" / "exec_trace" / "nexus_xp" */
+  source: string
+  /** 记忆内容 */
+  content: string
+  /** 相关性分数 (0-1), 用于排序 */
+  score?: number
+  /** 时间戳 */
+  createdAt?: number
+}
+
+// ---- 议程 (AgendaDoc) -----------------------------------------------------
+
+/**
+ * AgendaSection — 议程里的一节.
+ * 每一节由一次写作调用负责产出, 其他节不会被改动.
+ */
+export interface AgendaSection {
+  /** 节 id, 形如 "sec-01" (所有生成路径都会填, 一律视为必填) */
+  id: string
+  /** 节次序, 从 1 开始 */
+  order: number
+  /** 标题 */
+  heading: string
+  /** 本节要解决的问题 (写作 prompt 注入用) */
+  intent: string
+  /** 目标字数 (±10% 内算合格) */
+  targetLength: number
+  /** 本节允许引用的证据 id 列表 (EvidenceItem.id) */
+  evidencePocket: string[]
+  /** 本节建议适用的技能名 */
+  skillHints: string[]
+  /** 已生成的内容 (可选, draft 阶段后填) */
+  content?: string
+  /** 本节生成状态 (planned = 骨架规划好还没动笔) */
+  status?: 'planned' | 'pending' | 'drafting' | 'done' | 'failed'
+  /** 节内部版本号, 每次重写段落递增 */
+  revision?: number
+  /** 本节已完整产出的草稿 (draft 阶段的终态) */
+  draft?: string
+  /** 本节正在流式生成中的半成品 (composeDraft/rewriteSection 的增量累积) */
+  draftPartial?: string
+  /** 本节正文里解析出的脚注 (footnote) 列表 */
+  footnotes?: Footnote[]
+}
+
+/** 议程文档 — 整篇文章的骨架, 由 Conductor 一次性产出 */
+export interface AgendaDoc {
+  /** 关联的 brief id (一个 brief 对应一个 agenda) */
+  briefId?: string
+  title: string
+  subtitle?: string
+  /** 全文立意 (一句话) */
+  openingStance?: string
+  /** 全文收束 (一句话) */
+  closingCall?: string
+  /** 各节定义 */
+  sections: AgendaSection[]
+  /** 篇幅决策的自然语言解释 (v3 一次性写作模式下用) */
+  lengthRationale?: string
+  /** 创建时间 */
+  createdAt?: number
+  /** 议程版本号, 每次用户修改议程递增 */
+  revision?: number
+}
+
+// ---- 对话消息扩展 --------------------------------------------------------
+
+/** 自习室对话消息附件 */
+export interface WriterChatAttachment {
+  type: 'skill' | 'file'
+  name: string
+  mimeType?: string
+  size?: number
+  content?: string
+  error?: string
+}
+
+/**
+ * WriterMessageIntent — 用户消息被分类器分成的四类意图.
+ * - discuss: 只想讨论, 不动文章
+ * - edit:    想改已有文章
+ * - write:   想从头写一篇 (当前文章空)
+ * - unclear: 分类器置信度不足, 需要用户二次澄清
+ */
+export type WriterMessageIntent = 'discuss' | 'edit' | 'write' | 'unclear' | 'deliberate'
+
+/** 意图澄清卡片 — unclear 意图下 AI 回弹给用户的卡片数据 */
+export interface IntentClarification {
+  /** 用户的原始消息 (用户点按钮后需要重放这条消息) */
+  originalMessage: string
+  /** 分类器给出的理由 (可选展示给用户看) */
+  reason?: string
+  /** 分类器给出的置信度 (0-1) */
+  confidence?: number
+  /** 用户是否已经处理过这张澄清卡 (点了某个按钮后置 true, 避免重复渲染) */
+  resolved?: boolean
+}
+
+/**
+ * SuggestedEdit — 讨论模式结尾 AI 附带的"应用此建议"卡片.
+ * 用户点"应用"后, 前端会把 instruction 作为下一轮 edit 请求的输入.
+ */
+export interface SuggestedEdit {
+  /** 一句话总结这次建议 (UI 顶部显示) */
+  summary: string
+  /** 具体指令, 会被填回 composer 作为 edit intent */
+  instruction: string
+  /** 用户是否已经点了"应用" (避免重复应用) */
+  applied?: boolean
+}
+
+/**
+ * EditSummary — 改写 / 整篇重写结束时 AI 给出的变更摘要.
+ * 用于在对话流里显示"我做了哪些修改", 避免用户盯着 diff 猜.
+ */
+export interface EditSummary {
+  /** 一句话总结这次编辑 */
+  summary: string
+  /** 具体变更列表 */
+  changes: Array<{
+    /** 改在哪 (段落描述或 section id) */
+    where: string
+    /** 改了什么 */
+    what: string
+    /** 为什么改 (可选, 非核心) */
+    why?: string
+  }>
+  /** AI 选择不改的地方 (可选, 展示"我考虑过但没动"的透明度) */
+  skipped?: string[]
+  /** 字数变化 [修改前, 修改后], 由上层根据实际文本计算填入 */
+  wordCountDelta?: [number, number]
+}
+
+/**
+ * ProfileSuggestion — LLM 在 Tool Loop 里想写入"风格档案"的候选建议.
+ * 不再让 LLM 直接写档案, 而是产出这个对象, 用户点"接受"后才真正落库.
+ */
+export interface ProfileSuggestion {
+  id: string
+  /** 偏好 vs 避免 */
+  kind: 'preference' | 'avoid'
+  /** 内容 (人类可读的一句话) */
+  content: string
+  /** 风格类别 (可选, 由分类器给) — 与 writerProfile.PreferenceCategory 对齐 */
+  category?: 'style' | 'structure' | 'vocabulary' | 'citation' | 'topic'
+  /** UI 状态: pending 待处理 / accepted 已接受入档 / dismissed 用户忽略 */
+  status?: 'pending' | 'accepted' | 'dismissed'
+  /** LLM 给出的"建议这条入档的理由" (UI 二次确认时展示) */
+  reason?: string
+  /** 创建时间 */
+  createdAt?: number
+}
+
+/**
+ * WriterChatMessage — 自习室对话流里的消息.
+ * 结构上就是扩展了自习室字段的 ChatMessage, ChatMessage 的自习室扩展字段
+ * 已经在上面的 ChatMessage 里 opt-in, 这里只是起一个"强类型提示"作用.
+ */
+export type WriterChatMessage = ChatMessage
+
+// ---- 旧版 ChatTurn (兼容字段) -------------------------------------------
+
+/**
+ * ChatTurn — v1 时期的对话轮记录 (user+assistant 配对).
+ * v2 已经改用 WriterChatMessage 扁平数组, ChatTurn 仅 studyRoomSlice.addChatTurn
+ * 还保留作为兼容入口, 新代码不应该使用.
+ */
+export interface ChatTurn {
+  id: string
+  userMessage: string
+  assistantMessage: string
+  timestamp: number
+  /** 可选附件 (技能引用等) */
+  attachments?: WriterChatAttachment[]
+}
+
+// ---- 文档版本 (DocumentVersion) -----------------------------------------
+
+/** 版本触发来源: 用户手动保存 / Dun 写作完成 / 段改 / 整改 / 提炼后回写 */
+export type DocumentVersionTrigger =
+  | 'manual'
+  | 'dun_write'
+  | 'section_edit'
+  | 'full_rewrite'
+  | 'restore'
+  | 'distill'
+  | string
+
+/** 版本轻量元信息 — 用于版本列表渲染, 不带 document 正文 */
+export interface DocumentVersionMeta {
+  id: string
+  wordCount: number
+  createdAt: number
+  trigger: DocumentVersionTrigger
+  /**
+   * 变更摘要. 允许三种形态:
+   * - string: 一句话说明 (手动保存 / 自动触发时)
+   * - EditSummary: 结构化变更摘要 (改写 / 整改时)
+   * - null: 无摘要
+   */
+  summary: string | EditSummary | null
+  parentVersionId: string | null
+}
+
+/** 版本完整记录 — 含正文. 恢复 / diff 时才拉取 */
+export interface DocumentVersion extends DocumentVersionMeta {
+  document: string
+}
+
+// ---- 自习室会话运行时 (StudySessionRuntime) -----------------------------
+
+/**
+ * StudySessionRuntime — 单个自习室会话在内存里的完整运行时状态.
+ * 后端持久化的是它的一个 sanitized 子集.
+ */
+export interface StudySessionRuntime {
+  id: string
+  /** 写作契约 */
+  brief: WritingBrief
+  /** 当前正文 (最新版) */
+  document: string
+  /** 扁平对话流 (v2, 新代码用这个) */
+  chatMessages: WriterChatMessage[]
+  /** 证据池 (L/W/S/M 4 镜头累积) */
+  evidencePool: EvidenceItem[]
+  /** 议程 */
+  agenda: AgendaDoc | null
+  /** 旧版 ChatTurn 列表 (v1 兼容) */
+  chatHistory: ChatTurn[]
+  /** 会话状态 */
+  status: 'idle' | 'intake' | 'researching' | 'drafting' | 'revising' | 'done' | 'error' | string
+  /** 后端 revision 号 (乐观锁) */
+  revision: number
+  createdAt: number
+  updatedAt: number
+  /** 信任模式 — 开启后跳过 unclear 澄清, 直接按 LLM 置信度较低也继续 */
+  trustMode?: boolean
+  /** 版本历史 (轻量元信息, 正文按需拉) */
+  versions?: DocumentVersionMeta[]
+  /** 已加载的写作 Dun (不落后端, 只在内存 + localStorage) */
+  loadedDun?: import('./services/studyRoom/writingDun').LoadedDun | null
+  /** 长期记忆片段 (召回缓存) */
+  memorySnippets?: MemorySnippet[]
+  /** 当前聚焦的 section id (UI 状态) */
+  focusedSectionId?: string | null
+  /** 深度打磨管线状态 (MVP: 纯内存态, 刷新即丢) */
+  deliberation?: DeliberationState | null
+}
+
+// ============================================================================
+// StudyRoom — 文风指纹 (WriterFingerprint)
+// ----------------------------------------------------------------------------
+// 指纹采用 3 层结构: L0 行为规则 / L1 量化指标 + 画像 / L3 范文样本.
+// 存储: localStorage + 后端 /api/study/fingerprints/*.
+// ============================================================================
+
+// ---- 11 个枚举常量数组 + 对应的类型别名 --------------------------------
+
+export const ARGUMENT_PATTERNS = [
+  'deductive', 'inductive', 'analogical', 'counterfactual', 'abductive', 'authority',
+] as const
+export type ArgumentPatternType = typeof ARGUMENT_PATTERNS[number]
+
+export const EVIDENCE_PREFERENCES = [
+  'data', 'case', 'classic', 'personal', 'thoughtExperiment', 'commonSense',
+] as const
+export type EvidencePreferenceType = typeof EVIDENCE_PREFERENCES[number]
+
+export const COUNTER_ARG_HANDLINGS = [
+  'preemptive', 'ignore', 'acknowledge', 'confront',
+] as const
+export type CounterArgHandlingType = typeof COUNTER_ARG_HANDLINGS[number]
+
+export const ARGUMENT_DEPTHS = ['one-hop', 'two-hop', 'multi-hop'] as const
+export type ArgumentDepthType = typeof ARGUMENT_DEPTHS[number]
+
+export const CREDIBILITY_PERSONAS = [
+  'expert', 'oldFriend', 'witness', 'observer', 'prophet',
+] as const
+export type CredibilityPersonaType = typeof CREDIBILITY_PERSONAS[number]
+
+export const CERTAINTY_LEVELS = [
+  'assertive', 'confident', 'balanced', 'cautious', 'tentative',
+] as const
+export type CertaintyLevelType = typeof CERTAINTY_LEVELS[number]
+
+export const EMOTIONAL_TEMPERATURES = [
+  'cool', 'angry', 'warm', 'playful', 'sardonic', 'reverent',
+] as const
+export type EmotionalTemperatureType = typeof EMOTIONAL_TEMPERATURES[number]
+
+export const READER_DISTANCES = [
+  'lecturer', 'peer', 'friend', 'stranger', 'confessor',
+] as const
+export type ReaderDistanceType = typeof READER_DISTANCES[number]
+
+export const HOOK_PATTERNS = [
+  'scene', 'question', 'counterintuitive', 'quotation', 'data', 'personal', 'direct',
+] as const
+export type HookPatternType = typeof HOOK_PATTERNS[number]
+
+export const PACING_PATTERNS = [
+  'linear', 'spiral', 'dualTrack', 'peelingLayers', 'scatteredConverge',
+] as const
+export type PacingPatternType = typeof PACING_PATTERNS[number]
+
+export const CLOSING_PATTERNS = [
+  'aphorism', 'echo', 'question', 'callToAction', 'openEnding', 'selfDeprecation',
+] as const
+export type ClosingPatternType = typeof CLOSING_PATTERNS[number]
+
+// ---- 3 个字段形态 (对应 fingerprintSchema.ProfileFormShape) -------------
+
+/** 枚举单值字段, 如 "反方处理 = confront" */
+export interface EnumField<T extends string = string> {
+  /** 枚举值 */
+  type: T
+  /** 自由文本描述 (LLM 在 type 之外补充的语境说明) */
+  description: string
+}
+
+/** 枚举主+次字段, 如 "论证模式 = 主 deductive, 次 analogical" */
+export interface EnumPairField<T extends string = string> {
+  /** 主倾向 */
+  primary: T
+  /** 次倾向 (可能空) */
+  secondary?: T
+  /** 自由文本描述 */
+  description: string
+}
+
+/** Logos / Pathos / Ethos 三诉求配比 (百分比, 三者之和应接近 100) */
+export interface AppealBalanceField {
+  /** 逻辑 (事实/论证) */
+  logos: number
+  /** 情感 (动之以情) */
+  pathos: number
+  /** 人格 (诉诸可信度) */
+  ethos: number
+  /** 自由文本描述 */
+  description: string
+}
+
+// ---- WriterFingerprint 画像 (L2, 22 维) ---------------------------------
+
+/**
+ * 风格画像 22 个可选字段. 具体字段 key / 标签 / 所属层 / 形态
+ * 权威定义在 `src/services/studyRoom/fingerprintSchema.ts` 的 `PROFILE_FIELD_SPECS`.
+ * 单样本时 (sourceCount < 3) 意象/主题层字段会被跳过 (留空).
+ */
+export interface WriterFingerprintProfile {
+  // --- 旧字段 (向后兼容, 早期版本存档里可能还有) ---
+  /** 旧版"开篇风格"字段, 新版已并入 hookPattern */
+  opening?: string
+  /** 旧版"收束风格"字段, 新版已并入 closingPattern */
+  closing?: string
+  // --- 微观语言层 (string 描述型) ---
+  sentenceStyle?: string
+  rhetoric?: string
+  vocabulary?: string
+  paragraphing?: string
+  citation?: string
+  avoid?: string
+  // --- 话语 / 论证层 ---
+  argumentPattern?: EnumPairField<ArgumentPatternType>
+  evidencePreference?: EnumPairField<EvidencePreferenceType>
+  counterArgHandling?: EnumField<CounterArgHandlingType>
+  argumentDepth?: EnumField<ArgumentDepthType>
+  transitionStyle?: string
+  informationDensity?: string
+  // --- 说服力层 ---
+  appealBalance?: AppealBalanceField
+  emotionalTriggers?: string
+  credibilityBuilding?: EnumField<CredibilityPersonaType>
+  // --- 态度层 ---
+  certaintyLevel?: EnumField<CertaintyLevelType>
+  emotionalTemperature?: EnumField<EmotionalTemperatureType>
+  readerDistance?: EnumField<ReaderDistanceType>
+  // --- 意象 / 主题层 (多样本才能有) ---
+  frequentImagery?: string
+  metaphorDomain?: string
+  referencePreference?: string
+  // --- 宏观结构层 ---
+  hookPattern?: EnumField<HookPatternType>
+  pacingPattern?: EnumField<PacingPatternType>
+  turnPoints?: string
+  closingPattern?: EnumField<ClosingPatternType>
+}
+
+// ---- WriterFingerprint 量化指标 (L1) ------------------------------------
+
+/**
+ * L1 量化指标 — 由后端 `/distill-prepare` 从原文算出, 给 LLM 画像做锚.
+ * 全部字段都是可选的, 因为不同的源文档可能算不出某些指标.
+ */
+export interface WriterFingerprintMetrics {
+  /** 平均句长 (字) */
+  avgSentenceLen?: number
+  /** 平均段长 (字) */
+  avgParagraphLen?: number
+  /** 短句 (<15 字) 占比, 0-1 */
+  shortSentenceRate?: number
+  /** 长句 (>40 字) 占比, 0-1 */
+  longSentenceRate?: number
+  /** 书面 / 口语倾向, -1 (口语) ~ +1 (书面) */
+  formalityScore?: number
+  /** 成语密度, 个/千字 */
+  idiomDensity?: number
+  /** 设问 / 反问率, 个/千字 */
+  rhetoricRate?: number
+  /** 允许后端未来加字段, 不强制破坏客户端 */
+  [extra: string]: number | undefined
+}
+
+// ---- WriterFingerprint 范文样本 (L3) -------------------------------------
+
+/** 范文样本 — 从原文里抽出的代表性段落, 写作时可作为 few-shot 参考 */
+export interface WriterFingerprintSample {
+  /** 样本正文 */
+  text: string
+  /** 来源标题 (如 "《散步》") */
+  source?: string
+  /** 入选理由 (如 "最能体现画面感") */
+  reason?: string
+}
+
+// ---- WriterFingerprint 行为规则 (L0) -------------------------------------
+
+/**
+ * FingerprintBehaviorRule — L0 行为规则.
+ * 以 L1 画像 + 指标为锚点, 从原文提取出的"可执行"规则, 写作时作为硬约束注入.
+ *
+ * 【阶段 1 认知论升级: 维特根斯坦"共识是涌现的"】
+ * 一条规则的意义 = 它在不同使用场景下的交集.
+ * examples 字段从"旧版兼容字段"升格为"多源印证的主字段":
+ *   - 每条规则应挂 2-3 条来自原文不同位置的印证片段
+ *   - 只有多源印证才能证明这是"可复现的风格", 不是单次偶然
+ * example (单数) 保留作为向后兼容字段, 旧指纹数据仍可读.
+ *
+ * 【阶段 2 认知论升级: 维特根斯坦"语言游戏的语境分层"】
+ * when 字段的语境可以横跨三个层级, 都共用这一个容器, 无需新类型:
+ *   - 微观 (句子/段内): "当需要自嘲时" / "当引用反常识数据时"
+ *   - 中观 (段落/论证): "当面对可能抵触的读者时" / "当铺陈核心论题时"
+ *   - 宏观 (篇章/骨架): "当组织一整篇文章时" / "当决定开篇切入角度时"
+ */
+export interface FingerprintBehaviorRule {
+  /** 规则 id (可选, L0 提取器可能不给 id, 以 when+do 指纹去重) */
+  id?: string
+  /**
+   * 内部判断式触发条件 (而非外部位置).
+   * 好: "当读者可能抵触这个观点时" / "当想给一个论断减轻权威感时".
+   * 差: "开头第一段" / "段落过渡处" — 这是排版习惯, 不是风格.
+   */
+  when?: string
+  /** 作者具体怎么做 (在这个字段里请用引号标出标志性词汇或句式). */
+  do?: string
+  /** 作者明确不做什么 (与 do 形成辨识度对照). */
+  not?: string
+  /**
+   * 【阶段 1 主字段】多源印证 (≥ 2 条, 来自原文不同位置).
+   * 体现维特根斯坦"共识涌现"原则: 同一模式在多个使用场景下出现, 才算真规则.
+   * 若 LLM 只能找到 1 条印证, 该规则应被判定为"未被证明", 予以删除.
+   */
+  examples?: string[]
+  /**
+   * @deprecated 阶段 1 起请用 examples (复数). 单数字段保留用于向后兼容旧指纹数据.
+   * 渲染时: 优先 examples, 回退到 example.
+   */
+  example?: string
+  // ---- 以下为旧版兼容字段, 新路径不再写入 ----
+  /** 旧版"规则一句话描述" (等价于新 do) */
+  rule?: string
+  /** 分类: 句式 / 修辞 / 用词 / 结构 / 其他 */
+  category?: 'sentence' | 'rhetoric' | 'vocabulary' | 'structure' | 'other' | string
+  /** 旧版触发条件 (等价于新 when) */
+  trigger?: string
+  /** 旧版反例列表 */
+  antiExamples?: string[]
+  /** 优先级, 数值越大越硬 */
+  priority?: number
+}
+
+// ---- WriterFingerprint 提炼日志 ----------------------------------------
+
+/** 提炼过程的时间线日志条目 (用于 DistillDialog 展示) */
+export interface WriterFingerprintDistillLog {
+  /** 时间戳 (ms) */
+  time: number
+  /** 级别: info 常规 / success 里程碑 / warn 警告 / error 错误 / data 数据展示 */
+  level: 'info' | 'success' | 'warn' | 'error' | 'data'
+  /** 一句话标签 */
+  label: string
+  /** 详情 (可多行) */
+  detail?: string
+}
+
+// ---- WriterFingerprint 元信息 + 完整对象 -------------------------------
+
+/** 列表页只读元信息, 不带 profile/samples/metrics */
+export interface WriterFingerprintMeta {
+  id: string
+  /** 显示名 */
+  name: string
+  /** 用户描述 */
+  description?: string
+  /** 源文档数量 */
+  sourceCount?: number
+  /** 源文档总字数 */
+  sourceWordCount?: number
+  createdAt: number
+  updatedAt: number
+}
+
+/** 完整的文风指纹 — 含画像 / 指标 / 范文 / 行为规则 */
+export interface WriterFingerprint extends WriterFingerprintMeta {
+  /** L2 画像 */
+  profile: WriterFingerprintProfile
+  /** L1 量化指标 */
+  metrics: WriterFingerprintMetrics
+  /** L3 范文样本 */
+  samples: WriterFingerprintSample[]
+  /** L0 行为规则 (可选, 没配 L0 提取器时为 undefined) */
+  behaviorRules?: FingerprintBehaviorRule[]
+  /** 源文件路径 (如果是从文件提炼的) */
+  sourcePaths?: string[]
+  /** 提炼时的执行日志 (便于用户回溯) */
+  distillLogs?: WriterFingerprintDistillLog[]
+  /** 旧版单数字段名 (向后兼容, 等价于 distillLogs) */
+  distillLog?: WriterFingerprintDistillLog[]
+}
+
+// ============================================================================
+// StudyRoom — 意图 / 引用 / 镜头 / 篇幅复核 等补充类型
+// ----------------------------------------------------------------------------
+// 这些是被 intentDispatcher / citationParser / writingService 引用的结构,
+// 单独列在文件末尾是因为它们跨多个子模块, 放在各自定义处会引起循环依赖.
+// ============================================================================
+
+// ---- 证据镜头 (LensKind) -------------------------------------------------
+
+/**
+ * 证据池的镜头分类.
+ * - L: Library (本地权威知识库)
+ * - W: WebSearch (联网检索)
+ * - S: Skills (技能文档)
+ * - M: Memory (长期记忆)
+ * - E: Entity (实体, 历史版本兼容)
+ */
+export type LensKind = 'L' | 'W' | 'S' | 'M' | 'E'
+
+// ---- 引用 / 脚注 (InlineCitation / Footnote) ------------------------------
+
+/** 正文里出现的引用标记 (未解析前) */
+export interface InlineCitation {
+  /** 原始标记, 如 "[^L12]" */
+  marker: string
+  /** 对应的证据 id (可能是临时 label, 也可能是已解析的 EvidenceItem.id) */
+  evidenceId: string
+}
+
+/** 正文脚注 (引用标记已映射到具体证据) */
+export interface Footnote {
+  /** 原始标记, 如 "[^L12]" */
+  marker: string
+  /** 对应的 EvidenceItem.id */
+  evidenceId: string
+  /** 展示用的 label, 如 "L12" */
+  label: string
+}
+
+// ---- 篇幅复核度量 (SectionLengthMeasure) ---------------------------------
+
+/** 一节的篇幅实测 vs. 目标对比, 由 writingService.measureSectionLengths 产出 */
+export interface SectionLengthMeasure {
+  sectionId: string
+  heading: string
+  targetLength: number
+  actualLength: number
+  /** 偏差 = (actual - target) / target, 正数为超, 负数为欠 */
+  deviation: number
+}
+
+// ---- 意图 (WriterIntent / IntentCard) -------------------------------------
+
+/**
+ * WriterIntent — 用户消息在 intentDispatcher 里被解析出的结构化意图.
+ * 是 11 种 kind 的判别联合 (discriminated union).
+ */
+export type WriterIntent =
+  | { kind: 'draft_section'; sectionId: string; hint?: string }
+  | { kind: 'rewrite_section'; sectionId: string; instruction: string }
+  | { kind: 'revise_agenda'; instruction: string }
+  | { kind: 'supplement_evidence'; query: string; lenses?: LensKind[] }
+  | { kind: 'export_document' }
+  | { kind: 'focus_section'; sectionId: string }
+  | { kind: 'ask_question'; question: string }
+  | { kind: 'skill_mention'; skillName: string; priority?: 'primary' | 'secondary' }
+  | { kind: 'skill_remove'; skillName: string }
+  | { kind: 'unknown'; raw?: string }
+
+/**
+ * IntentCard — dispatchIntent 的返回值, 是给 UI 二次确认 / 自动执行判定用的包装.
+ */
+export interface IntentCard {
+  intent: WriterIntent
+  /** 一句话描述本次操作范围 (UI 顶部展示) */
+  scopeDescription: string
+  /** 计划步骤列表 (用户可预览) */
+  plannedActions: string[]
+  /** 分类器置信度 (0-1), >= 0.85 可走信任模式自动执行 */
+  confidence: number
+}
+
+// ============================================================================
+// StudyRoom — Deliberation Pipeline (深度打磨管线)
+// ----------------------------------------------------------------------------
+// 显式触发的 "诊断 → 红队 → 洞察 → 策略 → 重写" 管线.
+// 不自动跑, 用户点"深度打磨"时触发.
+// MVP 阶段数据挂在 Zustand session 内存态, 不做文件持久化.
+// ============================================================================
+
+// ---- Phase 1: 诊断报告 ---------------------------------------------------
+
+export interface DiagnosisLogicStep {
+  step: string
+  support: 'solid' | 'weak' | 'missing'
+  note: string
+}
+
+export interface DiagnosisGap {
+  location: string
+  type: '跳跃' | '循环' | '偷换' | '过度绝对'
+  why: string
+}
+
+export interface DiagnosisVulnerability {
+  claim: string
+  attack: string
+  severity: 'high' | 'medium' | 'low'
+}
+
+export interface DiagnosisReport {
+  thesis: string
+  thesisClarity: 'clear' | 'vague' | 'missing'
+  logicChain: DiagnosisLogicStep[]
+  gaps: DiagnosisGap[]
+  evidenceCoverage: { wellSupported: string[]; underSupported: string[] }
+  vulnerabilities: DiagnosisVulnerability[]
+  confidence: number
+  /** Phase 1a 的自由文本, 用于追溯和 debug */
+  rawThinking: string
+  timestamp: number
+}
+
+// ---- Phase 2: 红队报告 ---------------------------------------------------
+
+export type RedTeamPersona = 'expert' | 'adversary' | 'audience'
+
+export interface RedTeamChallenge {
+  id: string
+  question: string
+  whyLethal: string
+  fromPersonas: RedTeamPersona[]
+  severity: 'high' | 'medium' | 'low'
+}
+
+export interface RedTeamReport {
+  challenges: RedTeamChallenge[]
+  convergentPoints: string[]
+  /** 三份 persona 原文 (追溯 + debug) */
+  rawFeedback: { expert: string; adversary: string; audience: string }
+  timestamp: number
+}
+
+// ---- Phase 3: 洞察候选 ---------------------------------------------------
+
+export interface InsightCandidate {
+  id: string
+  insight: string
+  whyItMatters: string
+  whatChanges: { keep: string[]; rewrite: string[]; drop: string[] }
+  risk: string
+}
+
+export interface InsightProposal {
+  candidates: InsightCandidate[]
+  /** AI 承认自己判断不了、必须由用户回答的问题 */
+  alsoWorthAskingUser: string
+}
+
+// ---- Phase 4: 重写策略 ---------------------------------------------------
+
+export interface RewriteStrategy {
+  mode: 'incremental' | 'rebuild'
+  rationale: string
+  newThesis?: string
+  preservedChunks: string[]
+}
+
+// ---- Deliberation 运行时状态 (挂在 session 内存态) -------------------------
+
+export type DeliberationPhase =
+  | 'idle'
+  | 'diagnosing'
+  | 'redteaming'
+  | 'proposing_insights'
+  | 'waiting_user'
+  | 'deciding_strategy'
+  | 'rebuilding'
+  | 'done'
+
+export interface DeliberationUserChoice {
+  selectedIds: string[]
+  customNote: string
+}
+
+export interface DeliberationState {
+  phase: DeliberationPhase
+  diagnosis?: DiagnosisReport
+  redTeam?: RedTeamReport
+  proposal?: InsightProposal
+  userChoice?: DeliberationUserChoice
+  strategy?: RewriteStrategy
+  startedAt: number
+  /** 如果管线出错, 记录错误信息 */
+  error?: string
+}

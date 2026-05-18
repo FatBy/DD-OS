@@ -19,9 +19,7 @@ import { UpdateBanner } from '@/components/UpdateBanner'
 import { FirstLaunchSetup } from '@/components/FirstLaunchSetup'
 import { useStore } from '@/store'
 import { getHouseById } from '@/houses/registry'
-import { localClawService } from '@/services/LocalClawService'
-import { skillStatsService } from '@/services/skillStatsService'
-import { memoryStore } from '@/services/memoryStore'
+import * as connectionClient from '@/services/connectionClient'
 import { getLocalSoulData, getLocalSkills, getLocalMemories } from '@/utils/localDataProvider'
 import { simpleVisualDNA } from '@/store/slices/worldSlice'
 import { createInitialScoring } from '@/types'
@@ -146,6 +144,7 @@ function App() {
 
   // Initialize services on mount
   useEffect(() => {
+    performance.mark('app-init-start')
     let cancelRetry: (() => void) | null = null
 
     const storeActions = {
@@ -231,12 +230,15 @@ function App() {
     // 加载联络站持久化数据（含旧配置迁移）
     useStore.getState().loadLinkStation()
 
-    // 注入到 LocalClaw 服务 (Native 模式)
-    localClawService.injectStore(storeActions as any)
+    // 异步初始化: 通过瘦 facade 加载 LocalClawService（不阻塞首帧渲染）
+    let unsubConnected: (() => void) | null = null
+    const initAsync = async () => {
+      // 注入到 LocalClaw 服务 (Native 模式)
+      await connectionClient.injectStore(storeActions as any)
 
-    // 注册连接生命周期回调 — App 层负责加载业务数据
-    const unsubConnected = localClawService.onConnected(async (isReconnect) => {
-      if (!isReconnect) {
+      // 注册连接生命周期回调 — App 层负责加载业务数据
+      unsubConnected = await connectionClient.onConnected(async (isReconnect) => {
+        if (!isReconnect) {
         // 首次连接: 加载所有持久化数据
         try {
           await useStore.getState().loadConversationsFromServer()
@@ -247,24 +249,32 @@ function App() {
         } catch (e) {
           console.warn('[App] Failed to load persisted data:', e)
         }
-        // 重新加载启动时可能失败的数据
+        // 后端就绪后重新加载联络站（从后端获取最新 MCP 状态）
+        // 注：linkStationSlice 内置去重机制保证与行231的同步调用不会并发冲突
         useStore.getState().loadLinkStation()
         soulEvolutionService.init().catch(() => {})
       }
       // 重连时不重新加载全部数据，避免覆盖用户本地操作
-    })
+      })
 
-    // 注入 SkillStats → Store 响应式桥接
-    skillStatsService.injectStoreRefresh(() => {
-      useStore.getState().refreshSkillSnapshot()
-    })
+      // 注入 SkillStats → Store 响应式桥接（动态加载，不阻塞首屏）
+      const { skillStatsService } = await import('@/services/skillStatsService')
+      skillStatsService.injectStoreRefresh(() => {
+        useStore.getState().refreshSkillSnapshot()
+      })
 
-    // 注册 memoryStore 写回调 → store 缓存增量更新
-    memoryStore.onWrite((entries) => {
-      useStore.getState().appendMemoryCacheEntries(entries)
-    })
+      // 注册 memoryStore 写回调 → store 缓存增量更新（动态加载）
+      const { memoryStore } = await import('@/services/memoryStore')
+      memoryStore.onWrite((entries) => {
+        useStore.getState().appendMemoryCacheEntries(entries)
+      })
 
-    
+      // 自动连接到本地服务器 (指数退避, 首次启动宽容重试)
+      performance.mark('autoConnect-start')
+      cancelRetry = await connectionClient.autoConnect(true)
+    }
+    initAsync()
+
     // LLM 配置自动恢复：先尝试从后端恢复，再检查localStorage
     const tryRestoreLLMConfig = async () => {
       // 如果 LinkStation 已有有效配置，跳过后端恢复
@@ -330,13 +340,13 @@ function App() {
     // 立即从 localStorage 恢复缓存数据 (无需等待服务器)
     restoreLocalCacheToStore(storeActions)
 
-    // 自动连接到本地服务器 (指数退避, 首次启动宽容重试)
-    cancelRetry = localClawService.autoConnect(true)
-
     // Issue #8: 初始化 soulEvolutionService（加载修正案、启动衰减定时器）
     soulEvolutionService.init().catch((err) => {
       console.warn('[App] soulEvolutionService.init failed:', err)
     })
+
+    performance.mark('app-init-end')
+    performance.measure('[Perf] App.init total', 'app-init-start', 'app-init-end')
 
     // Issue #8: 订阅 run_end 事件 → 驱动灵魂演化
     const unsubSoulEvolution = agentEventBus.subscribe((event) => {
@@ -359,8 +369,8 @@ function App() {
     // Cleanup on unmount
     return () => {
       if (cancelRetry) cancelRetry()
-      unsubConnected()
-      localClawService.disconnect()
+      if (unsubConnected) unsubConnected()
+      connectionClient.disconnect()
       unsubSoulEvolution()
       soulEvolutionService.destroy()
     }

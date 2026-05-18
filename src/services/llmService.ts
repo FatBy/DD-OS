@@ -53,6 +53,16 @@ export interface LLMStreamResult {
   usage?: { prompt_tokens: number; completion_tokens: number }
 }
 
+/** Claude Code 代理发送的工具事件（x_event） */
+export interface ClaudeToolEvent {
+  type: 'start' | 'end'
+  name?: string
+  id?: string
+  input?: Record<string, unknown>
+  isError?: boolean
+  resultSummary?: string
+}
+
 // ============================================
 // 消息类型
 // ============================================
@@ -147,7 +157,10 @@ export function getLLMConfig(): LLMConfig {
   // 优先从 linkStationSlice 读取
   if (storeConfigReader) {
     const storeConfig = storeConfigReader()
-    if (storeConfig && storeConfig.apiKey && storeConfig.baseUrl && storeConfig.model) {
+    // Claude Code 模式只需要 model；其他模式需要 apiKey + baseUrl + model
+    const isClaudeCodeValid = storeConfig?.apiFormat === 'claude-code' && !!storeConfig.model
+    const isStandardValid = !!(storeConfig && storeConfig.apiKey && storeConfig.baseUrl && storeConfig.model)
+    if (isClaudeCodeValid || isStandardValid) {
       const embedConfig = storeEmbedReader?.()
       return {
         ...storeConfig,
@@ -205,6 +218,10 @@ export function saveLLMConfig(config: Partial<LLMConfig>) {
 
 export function isLLMConfigured(): boolean {
   const config = getLLMConfig()
+  // Claude Code 模式：只需要 model（使用本机 CLI 登录态，无需 apiKey/baseUrl）
+  if (config.apiFormat === 'claude-code') {
+    return !!config.model
+  }
   return !!(config.apiKey && config.baseUrl && config.model)
 }
 
@@ -301,7 +318,10 @@ function buildHeaders(apiKey: string): Record<string, string> {
 // ============================================
 
 /** 根据配置解析实际使用的 API 协议格式 */
-export function resolveApiFormat(config: LLMConfig): 'openai' | 'anthropic' {
+export function resolveApiFormat(config: LLMConfig): 'openai' | 'anthropic' | 'claude-code' {
+  if (config.apiFormat === 'claude-code') {
+    return 'claude-code'
+  }
   if (config.apiFormat === 'openai' || config.apiFormat === 'anthropic') {
     return config.apiFormat
   }
@@ -536,11 +556,14 @@ export async function chat(
   tools?: Array<{ type: 'function'; function: FunctionDefinition }>,
 ): Promise<string> {
   const cfg = { ...getLLMConfig(), ...config }
-  if (!cfg.apiKey || !cfg.baseUrl || !cfg.model) {
-    throw new Error('LLM 未配置，请在设置中配置 API')
+  const format = resolveApiFormat(cfg as LLMConfig)
+  // Claude Code 模式不需要 apiKey/baseUrl
+  if (format !== 'claude-code') {
+    if (!cfg.apiKey || !cfg.baseUrl || !cfg.model) {
+      throw new Error('LLM 未配置，请在设置中配置 API')
+    }
   }
 
-  const format = resolveApiFormat(cfg as LLMConfig)
   const localServer = getLocalServerUrl()
   const proxyUrl = `${localServer}/api/llm/proxy`
 
@@ -548,7 +571,19 @@ export async function chat(
   let headers: Record<string, string>
   let requestBody: Record<string, unknown>
 
-  if (format === 'anthropic') {
+  if (format === 'claude-code') {
+    // --- Claude Code 模式：委托 streamChat 收集完整响应 ---
+    // claude-code 后端端点只支持流式，通过 streamChat 聚合
+    let fullContent = ''
+    const result = await streamChat(
+      messages,
+      (chunk) => { fullContent += chunk },
+      undefined,
+      config,
+      tools,
+    )
+    return result.content || fullContent
+  } else if (format === 'anthropic') {
     // --- Anthropic 格式 ---
     targetUrl = buildAnthropicUrl(cfg.baseUrl)
     headers = buildAnthropicHeaders(cfg.apiKey)
@@ -565,6 +600,7 @@ export async function chat(
       messages: converted.messages,
       ...(converted.tools ? { tools: converted.tools } : {}),
       ...(converted.tool_choice ? { tool_choice: converted.tool_choice } : {}),
+      ...(cfg.temperature !== undefined ? { temperature: cfg.temperature } : {}),
     }
   } else {
     // --- OpenAI 格式 (原有逻辑) ---
@@ -581,9 +617,17 @@ export async function chat(
       })),
       stream: false,
     }
+    if (cfg.temperature !== undefined) {
+      body.temperature = cfg.temperature
+    }
     if (tools && tools.length > 0) {
       body.tools = tools
       body.tool_choice = 'auto'
+      // Qwen3.6/3.5 系列默认开启思考模式，但思考模式不支持强制工具调用
+      // 当有 tools 时显式关闭思考模式以保证 Function Calling 正常工作
+      if (/qwen3/i.test(cfg.model)) {
+        body.enable_thinking = false
+      }
     }
     requestBody = body
   }
@@ -714,11 +758,14 @@ export async function visionChat(
   config?: Partial<LLMConfig>,
 ): Promise<string> {
   const cfg = { ...getLLMConfig(), ...config }
-  if (!cfg.apiKey || !cfg.baseUrl || !cfg.model) {
-    throw new Error('LLM 未配置，请在设置中配置 API')
+  const format = resolveApiFormat(cfg as LLMConfig)
+  // Claude Code 模式不需要 apiKey/baseUrl
+  if (format !== 'claude-code') {
+    if (!cfg.apiKey || !cfg.baseUrl || !cfg.model) {
+      throw new Error('LLM 未配置，请在设置中配置 API')
+    }
   }
 
-  const format = resolveApiFormat(cfg as LLMConfig)
   const localServer = getLocalServerUrl()
   const proxyUrl = `${localServer}/api/llm/proxy`
 
@@ -726,7 +773,24 @@ export async function visionChat(
   let headers: Record<string, string>
   let requestBody: Record<string, unknown>
 
-  if (format === 'anthropic') {
+  if (format === 'claude-code') {
+    // --- Claude Code 模式：委托 streamChat 收集完整响应 ---
+    // visionChat 在 claude-code 模式下将图片描述转换为文本消息
+    const textMessages: SimpleChatMessage[] = messages.map(m => ({
+      role: m.role,
+      content: Array.isArray(m.content)
+        ? m.content.filter((p): p is { type: 'text'; text: string } => p.type === 'text').map(p => p.text).join('\n')
+        : (m.content as string),
+    }))
+    let fullContent = ''
+    const result = await streamChat(
+      textMessages,
+      (chunk) => { fullContent += chunk },
+      undefined,
+      config,
+    )
+    return result.content || fullContent
+  } else if (format === 'anthropic') {
     // --- Anthropic 格式 ---
     targetUrl = buildAnthropicUrl(cfg.baseUrl)
     headers = buildAnthropicHeaders(cfg.apiKey)
@@ -835,13 +899,17 @@ export async function streamChat(
   config?: Partial<LLMConfig>,
   tools?: Array<{ type: 'function'; function: FunctionDefinition }>,
   onReasoningChunk?: (chunk: string) => void,
+  onToolEvent?: (event: ClaudeToolEvent) => void,
 ): Promise<LLMStreamResult> {
   const cfg = { ...getLLMConfig(), ...config }
-  if (!cfg.apiKey || !cfg.baseUrl || !cfg.model) {
-    throw new Error('LLM 未配置，请在设置中配置 API')
+  const format = resolveApiFormat(cfg as LLMConfig)
+  // Claude Code 模式不需要 apiKey/baseUrl
+  if (format !== 'claude-code') {
+    if (!cfg.apiKey || !cfg.baseUrl || !cfg.model) {
+      throw new Error('LLM 未配置，请在设置中配置 API')
+    }
   }
 
-  const format = resolveApiFormat(cfg as LLMConfig)
   const localServer = getLocalServerUrl()
   const proxyUrl = `${localServer}/api/llm/proxy`
 
@@ -849,7 +917,18 @@ export async function streamChat(
   let headers: Record<string, string>
   let requestBody: Record<string, unknown>
 
-  if (format === 'anthropic') {
+  if (format === 'claude-code') {
+    // --- Claude Code CLI 格式 ---
+    targetUrl = `${localServer}/api/llm/claude-code`
+    headers = {}
+    requestBody = {
+      messages,
+      workdir: '',
+      permissionMode: 'bypassPermissions',
+      systemPrompt: '',
+      model: cfg.model || 'claude-opus-4-7',
+    }
+  } else if (format === 'anthropic') {
     // --- Anthropic 格式 ---
     targetUrl = buildAnthropicUrl(cfg.baseUrl)
     headers = buildAnthropicHeaders(cfg.apiKey)
@@ -866,6 +945,7 @@ export async function streamChat(
       messages: converted.messages,
       ...(converted.tools ? { tools: converted.tools } : {}),
       ...(converted.tool_choice ? { tool_choice: converted.tool_choice } : {}),
+      ...(cfg.temperature !== undefined ? { temperature: cfg.temperature } : {}),
     }
   } else {
     // --- OpenAI 格式 (原有逻辑) ---
@@ -886,25 +966,44 @@ export async function streamChat(
       // Layer 1 Token 采集: 请求流式模式返回 usage 数据
       stream_options: { include_usage: true },
     }
+    if (cfg.temperature !== undefined) {
+      body.temperature = cfg.temperature
+    }
     if (tools && tools.length > 0) {
       body.tools = tools
       body.tool_choice = 'auto'
+      // Qwen3.6/3.5 系列默认开启思考模式，但思考模式不支持强制工具调用
+      // 当有 tools 时显式关闭思考模式以保证 Function Calling 正常工作
+      if (/qwen3/i.test(cfg.model)) {
+        body.enable_thinking = false
+      }
     }
     requestBody = body
   }
 
-  const res = await fetch(proxyUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      url: targetUrl,
-      headers,
-      apiKey: cfg.apiKey,
-      body: requestBody,
-      stream: true,
-    }),
-    signal,
-  })
+  let res: Response
+  if (format === 'claude-code') {
+    // Claude Code 直接请求后端端点，不走 proxy
+    res = await fetch(targetUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody),
+      signal,
+    })
+  } else {
+    res = await fetch(proxyUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        url: targetUrl,
+        headers,
+        apiKey: cfg.apiKey,
+        body: requestBody,
+        stream: true,
+      }),
+      signal,
+    })
+  }
 
   if (!res.ok) {
     const errText = await res.text().catch(() => res.statusText)
@@ -952,11 +1051,19 @@ export async function streamChat(
       // ==========================================
       // Anthropic content_block 到 toolCallAccumulator 的 index 映射
       // content_block_start 中 type=tool_use 的 index 对应 toolCallAccumulator 的 key
+      let chunkCount = 0
       while (true) {
         const { done, value } = await reader.read()
-        if (done) break
-
-        buffer += decoder.decode(value, { stream: true })
+        if (done) {
+          console.log(`[streamChat/Anthropic] Stream ended (done=true). Total chunks: ${chunkCount}, content length: ${fullContent.length}, finishReason: ${finishReason}, toolCalls: ${toolCallAccumulator.size}`)
+          break
+        }
+        chunkCount++
+        const rawChunk = decoder.decode(value, { stream: true })
+        if (chunkCount <= 3) {
+          console.log(`[streamChat/Anthropic] Chunk ${chunkCount} (${rawChunk.length} chars):`, rawChunk.slice(0, 500))
+        }
+        buffer += rawChunk
         const lines = buffer.split('\n')
         buffer = lines.pop() || ''
 
@@ -1049,6 +1156,16 @@ export async function streamChat(
           try {
             const parsed = JSON.parse(data)
 
+            // 自定义元事件（来自后端 Claude Code 代理）
+            if (parsed.x_event) {
+              if (parsed.x_event === 'tool_start') {
+                onToolEvent?.({ type: 'start', name: parsed.tool_name, id: parsed.tool_id, input: parsed.tool_input })
+              } else if (parsed.x_event === 'tool_end') {
+                onToolEvent?.({ type: 'end', id: parsed.tool_id, isError: parsed.is_error, resultSummary: parsed.result_summary })
+              }
+              continue  // 跳过后续 choices 处理
+            }
+
             // Layer 1 Token 采集 (OpenAI): usage 在最后一个 chunk 中
             // 必须在 choice 检查之前提取，因为最后一个 chunk 的 choices 为空数组
             if (parsed.usage) {
@@ -1107,13 +1224,78 @@ export async function streamChat(
  * 测试连接 — 支持所有模型类型（chat / image / video / embed）
  *
  * 策略（按优先级）：
- * 1. GET /v1/models — 标准 OpenAI 兼容接口
- * 2. chat completions — 适用于对话模型
- * 3. HEAD 请求 Base URL — 最低限度验证服务可达性和 API Key 有效性
+ * 1. 检测 API 格式：Anthropic 格式走专用最小化 messages 请求
+ * 2. GET /v1/models — 标准 OpenAI 兼容接口
+ * 3. chat completions — 适用于对话模型（通过本地代理）
+ * 4. no-cors ping — 最低限度验证服务可达性
+ *
+ * 任何一种方式成功即认为连接可用。
  */
 export async function testConnection(config?: Partial<LLMConfig>): Promise<boolean> {
   const cfg = { ...getLLMConfig(), ...config }
   const cleanBase = cfg.baseUrl.replace(/\/+$/, '').replace(/\/chat\/completions$/, '')
+  const format = resolveApiFormat(cfg as LLMConfig)
+
+  // ── Anthropic 格式专用检测 ──
+  // Anthropic 代理不支持 /v1/models 和 HEAD，直接发最小化 messages 请求
+  if (format === 'anthropic') {
+    try {
+      const targetUrl = buildAnthropicUrl(cfg.baseUrl)
+      const headers = buildAnthropicHeaders(cfg.apiKey)
+      const requestBody = {
+        model: cfg.model || 'claude-3-5-sonnet-20241022',
+        max_tokens: 1,
+        messages: [{ role: 'user', content: 'hi' }],
+      }
+
+      const localServer = getLocalServerUrl()
+      const proxyUrl = `${localServer}/api/llm/proxy`
+      const res = await fetch(proxyUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: targetUrl,
+          headers,
+          apiKey: cfg.apiKey,
+          body: requestBody,
+          stream: false,
+        }),
+        signal: AbortSignal.timeout(15000),
+      })
+
+      if (res.ok) return true
+      // 401/403 明确表示认证失败
+      if (res.status === 401 || res.status === 403) return false
+      // 4xx/5xx 来自上游 Anthropic 但不是认证错误 → 服务可达
+      // 检查是否是代理转发的上游错误（说明代理和上游都通了）
+      const errText = await res.text().catch(() => '')
+      if (errText.includes('overloaded') || errText.includes('rate_limit') || res.status === 429 || res.status === 529) {
+        return true // 过载/限流说明服务可达
+      }
+      // 400 可能是 model 不对，但至少说明 API 端点是通的
+      if (res.status === 400 && errText.includes('model')) {
+        return true
+      }
+    } catch {
+      // 代理不可用时回退到 no-cors ping
+    }
+
+    // Anthropic 回退: no-cors ping 验证服务可达性
+    try {
+      const response = await fetch(cleanBase, {
+        method: 'HEAD',
+        mode: 'no-cors',
+        signal: AbortSignal.timeout(10000),
+      })
+      if (response.type === 'opaque' || response.ok) return true
+    } catch {
+      // ignore
+    }
+
+    return false
+  }
+
+  // ── OpenAI 兼容格式检测 ──
 
   // 策略 1: GET /v1/models — 标准 OpenAI 兼容
   try {
@@ -1554,19 +1736,50 @@ export function cosineSimilarity(a: number[], b: number[]): number {
 /**
  * 将 DunCrew ToolInfo 转换为 OpenAI Function Calling 的 tools 参数格式
  */
+/**
+ * sanitized name → original name 的全局映射表
+ * 用于工具执行时反向查找原始名称传给后端
+ */
+export const toolNameMapping: Map<string, string> = new Map()
+
 export function convertToolInfoToFunctions(
   tools: ToolInfo[]
 ): Array<{ type: 'function'; function: FunctionDefinition }> {
+  // 每次转换时重建映射表
+  toolNameMapping.clear()
+
   return tools
     .filter(t => {
       // 排除没有 description 的 instruction skill (无法被 LLM 正确使用)
       if (t.type === 'instruction' && !t.description) return false
       return true
     })
-    .map(t => ({
-      type: 'function' as const,
-      function: toolInfoToFunctionDef(t),
-    }))
+    .map(t => {
+      const sanitized = sanitizeToolName(t.name)
+      // 仅当名称实际被修改时才记录映射
+      if (sanitized !== t.name) {
+        toolNameMapping.set(sanitized, t.name)
+      }
+      return {
+        type: 'function' as const,
+        function: toolInfoToFunctionDef(t),
+      }
+    })
+}
+
+/**
+ * 将 LLM 返回的 sanitized 工具名还原为后端注册的原始名称
+ */
+export function resolveOriginalToolName(sanitizedName: string): string {
+  return toolNameMapping.get(sanitizedName) || sanitizedName
+}
+
+/**
+ * 将工具名称 sanitize 为 OpenAI API 合法格式: ^[a-zA-Z0-9_-]+$
+ * 将不合法字符（如点号、空格、中文等）替换为下划线，并去除首尾下划线
+ */
+function sanitizeToolName(name: string): string {
+  return name.replace(/[^a-zA-Z0-9_-]/g, '_').replace(/^_+|_+$/g, '') || 'unnamed_tool'
 }
 
 /**
@@ -1574,7 +1787,7 @@ export function convertToolInfoToFunctions(
  */
 function toolInfoToFunctionDef(tool: ToolInfo): FunctionDefinition {
   const def: FunctionDefinition = {
-    name: tool.name,
+    name: sanitizeToolName(tool.name),
     description: tool.description || tool.name,
   }
 

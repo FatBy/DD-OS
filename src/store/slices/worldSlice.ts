@@ -1,5 +1,5 @@
 import type { StateCreator } from 'zustand'
-import type { DunEntity, CameraState, GridPosition, RenderSettings, VisualDNA, DunScoring } from '@/types'
+import type { DunEntity, CameraState, GridPosition, RenderSettings, VisualDNA, DunScoring, DunLLMBinding } from '@/types'
 import { createInitialScoring } from '@/types'
 import { normalizeScoring } from '@/services/dunScoringService'
 import type { WorldTheme } from '@/rendering/types'
@@ -104,8 +104,33 @@ function loadDunsFromStorage(): Map<string, DunEntity> {
     if (saved) {
       const arr: DunEntity[] = JSON.parse(saved)
       const map = new Map<string, DunEntity>()
+      
+      // 同 label 去重：如果多个实体有相同 label，保留有 SOP/技能的那个
+      const labelMap = new Map<string, DunEntity>()
       for (const dun of arr) {
-        map.set(dun.id, dun)
+        const label = dun.label || dun.id
+        const existing = labelMap.get(label)
+        if (!existing) {
+          labelMap.set(label, dun)
+          map.set(dun.id, dun)
+        } else {
+          // 比较丰富度：SOP 长度 + 技能数
+          const existingScore = (existing.sopContent?.length || 0) + (existing.boundSkillIds?.length || 0) * 100
+          const newScore = (dun.sopContent?.length || 0) + (dun.boundSkillIds?.length || 0) * 100
+          if (newScore > existingScore) {
+            // 新实体更丰富：替换旧的，并合并 scoring
+            map.delete(existing.id)
+            const bestScoring = (dun.scoring?.totalRuns ?? 0) >= (existing.scoring?.totalRuns ?? 0) ? dun.scoring : existing.scoring
+            map.set(dun.id, { ...dun, scoring: bestScoring || dun.scoring })
+            labelMap.set(label, dun)
+          } else {
+            // 旧的更丰富：跳过新的，但合并 scoring
+            const bestScoring = (existing.scoring?.totalRuns ?? 0) >= (dun.scoring?.totalRuns ?? 0) ? existing.scoring : dun.scoring
+            if (bestScoring && (bestScoring.totalRuns ?? 0) > (existing.scoring?.totalRuns ?? 0)) {
+              map.set(existing.id, { ...existing, scoring: bestScoring })
+            }
+          }
+        }
       }
       return map
     }
@@ -197,6 +222,9 @@ export interface WorldSlice {
   // Skill Binding (Agent 通过 Extension 绑定技能)
   bindSkillToDun: (dunId: string, skillName: string) => void
   unbindSkillFromDun: (dunId: string, skillName: string) => void
+
+  // Per-Dun LLM Binding
+  saveDunLLMBinding: (dunId: string, binding: DunLLMBinding | null) => Promise<void>
 
   // 从后端加载数据 (应用启动后调用)
   loadDunsFromServer: () => Promise<void>
@@ -297,6 +325,32 @@ export const createWorldSlice: StateCreator<WorldSlice> = (set, get) => ({
     saveDunsToStorage(next)
     return { duns: next }
   }),
+
+  saveDunLLMBinding: async (dunId, binding) => {
+    const baseUrl = localServerService.getServerUrl()
+    const res = await fetch(`${baseUrl}/duns/${encodeURIComponent(dunId)}/llm-binding`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(binding ? {
+        provider_id: binding.providerId,
+        model_id: binding.modelId,
+        ...(binding.temperature != null ? { temperature: binding.temperature } : {}),
+      } : null),
+    })
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '')
+      throw new Error(`保存 LLM Binding 失败: HTTP ${res.status} ${errText}`)
+    }
+    // 更新 store
+    set((state) => {
+      const dun = state.duns.get(dunId)
+      if (!dun) return state
+      const next = new Map(state.duns)
+      next.set(dunId, { ...dun, llmBinding: binding ?? undefined, updatedAt: Date.now() })
+      saveDunsToStorage(next)
+      return { duns: next }
+    })
+  },
 
   updateDunPosition: (id, position) => set((state) => {
     const dun = state.duns.get(id)
@@ -405,6 +459,8 @@ export const createWorldSlice: StateCreator<WorldSlice> = (set, get) => ({
         metrics: serverDun.metrics,
         strategy: serverDun.strategy,
         skillsConfirmed: (serverDun as any).skillsConfirmed || existing?.skillsConfirmed || false,
+        // Phase 6: Per-Dun LLM Binding
+        llmBinding: (serverDun as any).llmBinding || existing?.llmBinding,
       })
     }
     saveDunsToStorage(next)
@@ -567,6 +623,15 @@ export const createWorldSlice: StateCreator<WorldSlice> = (set, get) => ({
       // 4. 合并三方数据 (以 updatedAt/createdAt 最新者为准)
       const mergedMap = new Map<string, DunEntity>()
       
+      // 辅助函数：合并两个 DunEntity 时，始终保留 totalRuns 更高的 scoring
+      // 防止空评分（错误目录事件等）因时间戳更新而覆盖历史评分
+      const pickBetterScoring = (a?: DunScoring, b?: DunScoring): DunScoring | undefined => {
+        const aRuns = a?.totalRuns ?? 0
+        const bRuns = b?.totalRuns ?? 0
+        if (aRuns >= bRuns) return a
+        return b
+      }
+
       // 先添加当前 store 数据（跳过已删除的）
       for (const [id, dun] of storeDuns) {
         if (!deletedIds.has(id)) mergedMap.set(id, dun)
@@ -579,7 +644,15 @@ export const createWorldSlice: StateCreator<WorldSlice> = (set, get) => ({
         const localTime = localDun.updatedAt || localDun.createdAt || 0
         const existingTime = existing?.updatedAt || existing?.createdAt || 0
         if (!existing || localTime > existingTime) {
-          mergedMap.set(id, localDun)
+          // 保留 totalRuns 更高的 scoring，防止空评分覆盖历史数据
+          const bestScoring = existing ? pickBetterScoring(localDun.scoring, existing.scoring) : localDun.scoring
+          mergedMap.set(id, { ...localDun, scoring: bestScoring || localDun.scoring })
+        } else if (existing) {
+          // existing 胜出，但仍检查 localDun 是否有更好的 scoring
+          const bestScoring = pickBetterScoring(existing.scoring, localDun.scoring)
+          if (bestScoring && (bestScoring.totalRuns ?? 0) > (existing.scoring?.totalRuns ?? 0)) {
+            mergedMap.set(id, { ...existing, scoring: bestScoring })
+          }
         }
       }
       
@@ -597,8 +670,10 @@ export const createWorldSlice: StateCreator<WorldSlice> = (set, get) => ({
             // 新 Dun：直接添加
             mergedMap.set(serverDun.id, serverDun)
           } else {
-            // 已存在：合并服务器的元数据字段，但始终保留本地 scoring
-            const preservedScoring = hasRealScoring ? normalizeScoring(sScoring as unknown as Record<string, unknown>) : (existing.scoring || createInitialScoring())
+            // 已存在：合并服务器的元数据字段
+            // scoring 保护：取 totalRuns 最高者，防止空评分覆盖真实历史数据
+            const serverNormalized = hasRealScoring ? normalizeScoring(sScoring as unknown as Record<string, unknown>) : undefined
+            const preservedScoring = pickBetterScoring(existing.scoring, serverNormalized) || existing.scoring || createInitialScoring()
             mergedMap.set(serverDun.id, {
               ...existing,
               // 从服务器更新的元数据字段
@@ -615,7 +690,9 @@ export const createWorldSlice: StateCreator<WorldSlice> = (set, get) => ({
               metrics: serverDun.metrics || existing.metrics,
               strategy: serverDun.strategy || existing.strategy,
               skillsConfirmed: (serverDun as any).skillsConfirmed || existing.skillsConfirmed || false,
-              // 始终保留本地 scoring 和位置
+              // Per-Dun LLM Binding
+              llmBinding: (serverDun as any).llmBinding || existing.llmBinding,
+              // 保留 totalRuns 更高的 scoring
               scoring: preservedScoring!,
               position: existing.position,
               visualDNA: existing.visualDNA,
@@ -635,7 +712,7 @@ export const createWorldSlice: StateCreator<WorldSlice> = (set, get) => ({
         const baseUrl = localServerService.getServerUrl()
         const scanRes = await fetch(`${baseUrl}/duns`, { signal: AbortSignal.timeout(5000) })
         if (scanRes.ok) {
-          const diskDuns = await scanRes.json() as Array<{ id: string; label?: string; name?: string }>
+          const diskDuns = await scanRes.json() as Array<{ id: string; label?: string; name?: string; sopContent?: string; skillDependencies?: string[] }>
           const diskIdSet = new Set(diskDuns.map(d => d.id))
           const diskLabelToId = new Map<string, string>()
           for (const d of diskDuns) {
@@ -643,11 +720,53 @@ export const createWorldSlice: StateCreator<WorldSlice> = (set, get) => ({
             if (label) diskLabelToId.set(label, d.id)
           }
 
+          // ── 同 label 磁盘去重 ──
+          // 当两个磁盘目录有相同 label 时（如 agent-economy-researcher 和 智能体经济研究员），
+          // 保留有更丰富内容（SOP/技能）的那个，移除影子目录对应的实体
+          const labelToDiskDuns = new Map<string, typeof diskDuns>()
+          for (const d of diskDuns) {
+            const lbl = d.label || d.name || d.id
+            const arr = labelToDiskDuns.get(lbl) || []
+            arr.push(d)
+            labelToDiskDuns.set(lbl, arr)
+          }
+          const shadowDiskIds = new Set<string>()
+          for (const [, group] of labelToDiskDuns) {
+            if (group.length <= 1) continue
+            // 按内容丰富度排序：有 SOP 和技能的排前面
+            group.sort((a, b) => {
+              const aScore = (a.sopContent?.length || 0) + (a.skillDependencies?.length || 0) * 100
+              const bScore = (b.sopContent?.length || 0) + (b.skillDependencies?.length || 0) * 100
+              return bScore - aScore
+            })
+            // 保留第一个（最丰富），其余标记为影子
+            for (let i = 1; i < group.length; i++) {
+              shadowDiskIds.add(group[i].id)
+              console.log(`[World] Disk label dedup: ${group[i].id} is shadow of ${group[0].id}`)
+            }
+          }
+
           const ghostIds: string[] = []
           const RECENT_THRESHOLD = 5 * 60 * 1000
           const now = Date.now()
 
           for (const [id, dun] of mergedMap) {
+            // 磁盘影子目录 → 合并数据后移除
+            if (shadowDiskIds.has(id)) {
+              const label = dun.label || ''
+              const canonicalId = diskLabelToId.get(label)
+              if (canonicalId && canonicalId !== id && mergedMap.has(canonicalId)) {
+                const canonical = mergedMap.get(canonicalId)!
+                if (dun.sopContent && !canonical.sopContent) canonical.sopContent = dun.sopContent
+                const dunRuns = dun.scoring?.totalRuns ?? 0
+                const canonRuns = canonical.scoring?.totalRuns ?? 0
+                if (dunRuns > canonRuns) canonical.scoring = dun.scoring
+                if (!canonical.visualDNA && dun.visualDNA) canonical.visualDNA = dun.visualDNA
+                if (!canonical.species && dun.species) canonical.species = dun.species
+              }
+              ghostIds.push(id)
+              continue
+            }
             // 磁盘上存在此 ID → 合法
             if (diskIdSet.has(id)) continue
             // 刚创建的保留（可能还没同步到磁盘）
@@ -673,6 +792,39 @@ export const createWorldSlice: StateCreator<WorldSlice> = (set, get) => ({
           if (ghostIds.length > 0) {
             for (const gid of ghostIds) mergedMap.delete(gid)
             console.log(`[World] Disk-scan dedup: removed ${ghostIds.length} ghost/orphan entities`, ghostIds)
+          }
+
+          // ── SQLite scoring 权威修正 ──
+          // /duns API 返回的 scoring 来自 dun_scoring SQLite 表，是评分的权威数据源。
+          // 如果 mergedMap 中的 scoring (来自 localStorage/duns_state) 比 SQLite 更差，
+          // 说明曾被污染，用 SQLite 的数据修正。
+          for (const diskDun of diskDuns) {
+            const ds = (diskDun as any).scoring
+            if (!ds || typeof ds !== 'object') continue
+            const dsRuns = ds.totalRuns ?? ds.totalExecutions ?? 0
+            if (dsRuns <= 0) continue
+
+            // 按 id 匹配
+            const existing = mergedMap.get(diskDun.id)
+            if (existing) {
+              const existingRuns = existing.scoring?.totalRuns ?? 0
+              if (dsRuns > existingRuns) {
+                existing.scoring = normalizeScoring(ds as Record<string, unknown>)
+                console.log(`[World] SQLite scoring fix: ${diskDun.id} runs ${existingRuns} → ${dsRuns}`)
+              }
+            }
+            // 按 label 匹配 (解决 dir_name 与中文 label 不一致的情况)
+            const diskLabel = (diskDun as any).label || (diskDun as any).name || ''
+            if (diskLabel && diskLabel !== diskDun.id) {
+              const byLabel = mergedMap.get(diskLabel)
+              if (byLabel) {
+                const byLabelRuns = byLabel.scoring?.totalRuns ?? 0
+                if (dsRuns > byLabelRuns) {
+                  byLabel.scoring = normalizeScoring(ds as Record<string, unknown>)
+                  console.log(`[World] SQLite scoring fix (label): ${diskLabel} runs ${byLabelRuns} → ${dsRuns}`)
+                }
+              }
+            }
           }
         }
       } catch (e) {

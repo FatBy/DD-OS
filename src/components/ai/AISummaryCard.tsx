@@ -4,7 +4,9 @@ import { Sparkles, RefreshCw, AlertCircle } from 'lucide-react'
 import { useStore } from '@/store'
 import { isLLMConfigured } from '@/services/llmService'
 import { useT } from '@/i18n'
-import type { ViewType } from '@/types'
+import type { ViewType, AISummary } from '@/types'
+
+const EMPTY_SUMMARY: AISummary = { content: '', loading: false, error: null, timestamp: 0 }
 
 interface AISummaryCardProps {
   view: ViewType
@@ -13,8 +15,7 @@ interface AISummaryCardProps {
 export function AISummaryCard({ view }: AISummaryCardProps) {
   const t = useT()
   const generateSummary = useStore((s) => s.generateSummary)
-  const getSummary = useStore((s) => s.getSummary)
-  const summary = getSummary(view)
+  const summary = useStore((s) => s.summaries[view]) ?? EMPTY_SUMMARY
   const configured = isLLMConfigured()
 
   // 进入页面时自动生成摘要

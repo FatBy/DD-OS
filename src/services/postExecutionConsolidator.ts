@@ -13,7 +13,7 @@
  * Phase 3 (APPLY)   - 原子化分发结果到各服务
  */
 
-import type { ExecTrace, DunScoring, L1MemoryEntry } from '@/types'
+import type { ExecTrace, DunScoring, L1MemoryEntry, MemorySearchResult, MemoryWriteAction } from '@/types'
 import type { SimpleChatMessage } from './llmService'
 import { chatBackground } from './llmService'
 import { memoryStore } from './memoryStore'
@@ -22,6 +22,7 @@ import { confidenceTracker } from './confidenceTracker'
 import { sopEvolutionService } from './sopEvolutionService'
 import { dunScoringService } from './dunScoringService'
 import { cleanThinkTags, classifyMemoryContent } from '@/utils/memoryPromotion'
+import { MEMORY_ACTION_INSTRUCTION } from './prompts'
 
 // ============================================
 // Types
@@ -55,10 +56,32 @@ export interface ConsolidationPayload {
   serverUrl: string
   /** 知识库实体标题索引（供 LLM 建立 relations） */
   entityTitles?: string[]
+  /**
+   * V10: 写入闭环 — 预检索出的相关已有记忆（由 consolidate 内部填充，调用方无需提供）
+   * LLM 看到这些后选择 NEW / SUPERSEDE / CONFLICT / SKIP
+   */
+  relatedMemories?: MemorySearchResult[]
+}
+
+/**
+ * V10: 四态 action 记忆输出
+ * - NEW:        全新记忆，直接写入
+ * - SUPERSEDE:  覆盖旧记忆（supersedesId 必填）
+ * - CONFLICT:   与旧记忆冲突并存（conflictWithId 必填）
+ * - SKIP:       已有记忆覆盖，跳过
+ */
+export interface MemoryActionItem {
+  action: MemoryWriteAction
+  content?: string
+  category?: string
+  confidence?: number
+  supersedesId?: string
+  conflictWithId?: string
+  reason?: string
 }
 
 export interface ConsolidationResult {
-  memories: Array<{ content: string; category: string; confidence: number }> | null
+  memories: MemoryActionItem[] | null
   knowledge: Array<{
     op: string
     entity_name: string
@@ -91,6 +114,12 @@ const MAX_RESPONSE_LENGTH = 4000
 const MIN_RESPONSE_FOR_KNOWLEDGE = 200
 const MAX_L1_CANDIDATES_IN_PROMPT = 10
 
+// V10: 查重相关常量
+const DEDUP_QUERY_MAX_CHARS = 200        // finalResponse 截取长度作为 query
+const DEDUP_MAX_RELATED = 5              // 注入 prompt 的相关记忆条数上限
+const DEDUP_SNIPPET_MAX = 200            // 每条相关记忆摘要长度
+const DEDUP_MIN_SCORE = 0.25             // 查重搜索的最低分数阈值
+
 // ============================================
 // System Prompt
 // ============================================
@@ -114,8 +143,10 @@ const CONSOLIDATION_SYSTEM_PROMPT = [
   '',
   '不值得保留的：纯工具执行细节、临时操作、无上下文碎片。',
   '',
-  '输出 JSON 数组:',
-  '[{"content":"提炼内容","category":"procedural|factual|insight","confidence":0.0-1.0}]',
+  MEMORY_ACTION_INSTRUCTION,
+  '',
+  '输出 JSON 数组（每条记忆包含 action 字段）:',
+  '[{"action":"NEW|SUPERSEDE|CONFLICT|SKIP","content":"提炼内容","category":"preference|project|discovery|uncategorized","confidence":0.0-1.0,"supersedesId":"<仅SUPERSEDE>","conflictWithId":"<仅CONFLICT>","reason":"<SUPERSEDE/CONFLICT时必填>"}]',
   '无可复用记忆时输出: <MEMORIES>[]</MEMORIES>',
   '',
   '== 任务 2: 知识实体提取 → <KNOWLEDGE> ==',
@@ -194,6 +225,58 @@ export function safeExtractTag<T>(raw: string, tag: string): T | null {
 // Phase 2: Prompt 构建
 // ============================================
 
+/**
+ * V10: 从 payload 构造查重 query。优先用 finalResponse 前 N 字（最接近实际沉淀维度），
+ * 为空或过短时 fallback 到 userPrompt。
+ */
+function buildDedupQuery(payload: ConsolidationPayload): string {
+  const raw = (payload.finalResponse || '').trim()
+
+  // 兜底 1: finalResponse 过短或疑似错误消息 → fallback 到 userPrompt
+  if (raw.length < 30 || /^(error|failed|错误|失败)/i.test(raw)) {
+    return (payload.userPrompt || '').slice(0, DEDUP_QUERY_MAX_CHARS)
+  }
+
+  // 兜底 2: 清洗 markdown 代码块和 URL，避免把代码/链接当 query
+  const cleaned = raw
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/https?:\/\/\S+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  // 清洗后若太短（全是代码块），fallback 到 userPrompt
+  if (cleaned.length < 20) {
+    return (payload.userPrompt || '').slice(0, DEDUP_QUERY_MAX_CHARS)
+  }
+
+  return cleaned.slice(0, DEDUP_QUERY_MAX_CHARS)
+}
+
+/**
+ * V10: 预检索相关已有记忆，供 LLM 决策四态 action 时参考。
+ * 查询失败不阻塞主流程，返回空数组。
+ */
+async function fetchRelatedMemories(payload: ConsolidationPayload): Promise<MemorySearchResult[]> {
+  const query = buildDedupQuery(payload)
+  if (!query || query.length < 10) return []
+  try {
+    // 注意：purpose='dedup_check'，不计入 L1 命中计数
+    const results = await memoryStore.search({
+      query,
+      sources: ['memory'],
+      dunId: payload.dunId,
+      maxResults: DEDUP_MAX_RELATED,
+      minScore: DEDUP_MIN_SCORE,
+      useMmr: true,
+      purpose: 'dedup_check',
+    })
+    return results
+  } catch (error: any) {
+    console.warn('[Consolidator] fetchRelatedMemories failed:', error.message)
+    return []
+  }
+}
+
 function buildConsolidationPrompt(payload: ConsolidationPayload): SimpleChatMessage[] {
   const sections: string[] = []
 
@@ -262,6 +345,19 @@ function buildConsolidationPrompt(payload: ConsolidationPayload): SimpleChatMess
     )
   }
 
+  // 7. V10: 当前相关记忆（供四态 action 决策）
+  if (payload.relatedMemories && payload.relatedMemories.length > 0) {
+    sections.push('## 当前相关记忆 (决策 NEW/SUPERSEDE/CONFLICT/SKIP 时参考)')
+    for (const mem of payload.relatedMemories) {
+      const content = (mem.content ?? mem.snippet ?? '').slice(0, DEDUP_SNIPPET_MAX).replace(/\n+/g, ' ')
+      const cat = mem.category ? ` [${mem.category}]` : ''
+      sections.push(`- [${mem.id}]${cat} ${content}`)
+    }
+    sections.push('')
+  } else {
+    sections.push('## 当前相关记忆', '（无相关已有记忆，默认 action=NEW）', '')
+  }
+
   return [
     { role: 'system', content: CONSOLIDATION_SYSTEM_PROMPT },
     { role: 'user', content: sections.join('\n') },
@@ -287,6 +383,13 @@ async function consolidate(payload: ConsolidationPayload): Promise<Consolidation
       (!payload.finalResponse || payload.finalResponse.length < MIN_RESPONSE_FOR_KNOWLEDGE) &&
       payload.promotableCandidates.length === 0) {
     return emptyResult
+  }
+
+  // V10: 预检索相关记忆供 LLM 决策（NEW/SUPERSEDE/CONFLICT/SKIP）
+  try {
+    payload.relatedMemories = await fetchRelatedMemories(payload)
+  } catch {
+    payload.relatedMemories = []
   }
 
   const messages = buildConsolidationPrompt(payload)
@@ -376,26 +479,112 @@ async function applyResult(
     console.warn('[Consolidator] Scoring persistence failed:', err)
   })
 
-  // --- 4. 记忆写入 ---
+  // --- 4. 记忆写入（V10: 四态 action 分发） ---
   if (result.memories && result.memories.length > 0) {
+    // 建索引，快速从 supersedesId/conflictWithId 回查内容
+    const relatedById = new Map<string, MemorySearchResult>()
+    for (const related of payload.relatedMemories || []) {
+      relatedById.set(related.id, related)
+    }
+
+    const stats = { new: 0, supersede: 0, conflict: 0, skip: 0, invalid: 0 }
+
     for (const mem of result.memories) {
-      if (!mem.content || mem.content === '无') continue
-      const classification = classifyMemoryContent(mem.content)
+      // V10: 向后兼容 — 旧输出没有 action 字段时默认 NEW
+      const action: MemoryWriteAction = (mem.action || 'NEW') as MemoryWriteAction
+      const content = (mem.content || '').trim()
+
+      if (action === 'SKIP') {
+        stats.skip += 1
+        continue
+      }
+
+      if (action === 'SUPERSEDE') {
+        const targetId = mem.supersedesId
+        if (!targetId || !relatedById.has(targetId) || !content) {
+          console.warn('[Consolidator] SUPERSEDE missing valid target or content, fallback to NEW:', mem)
+          // fallback 为 NEW，避免丢数据
+          if (!content) { stats.invalid += 1; continue }
+          // 降级走 NEW
+        } else {
+          const classification = classifyMemoryContent(content)
+          memoryStore.supersede({
+            targetId,
+            newContent: content,
+            newTags: ['consolidator', 'supersede', classification.category],
+            newCategory: mem.category || classification.category,
+            newConfidence: mem.confidence ?? 0.6,
+            source: 'memory',
+            dunId,
+            reason: mem.reason || 'LLM-detected fact update',
+            metadata: {
+              flushedAt: Date.now(),
+              layer: classification.layer,
+            },
+          }).then(newId => {
+            if (newId) knowledgeIngestService.recordFlush(dunId)
+          }).catch(err => console.warn('[Consolidator] Supersede failed:', err))
+          stats.supersede += 1
+          continue
+        }
+      }
+
+      if (action === 'CONFLICT') {
+        const conflictId = mem.conflictWithId
+        if (!conflictId || !relatedById.has(conflictId) || !content) {
+          console.warn('[Consolidator] CONFLICT missing valid target or content, fallback to NEW:', mem)
+          if (!content) { stats.invalid += 1; continue }
+          // 降级走 NEW
+        } else {
+          const classification = classifyMemoryContent(content)
+          memoryStore.markConflict({
+            targetId: conflictId,
+            newContent: content,
+            newTags: ['consolidator', 'conflict', classification.category],
+            newCategory: mem.category || classification.category,
+            newConfidence: mem.confidence ?? 0.5,
+            source: 'memory',
+            dunId,
+            reason: mem.reason || 'LLM-detected semantic conflict',
+            metadata: {
+              flushedAt: Date.now(),
+              layer: classification.layer,
+            },
+          }).then(newId => {
+            if (newId) knowledgeIngestService.recordFlush(dunId)
+          }).catch(err => console.warn('[Consolidator] MarkConflict failed:', err))
+          stats.conflict += 1
+          continue
+        }
+      }
+
+      // NEW 分支（也是 SUPERSEDE/CONFLICT 降级后的兜底）
+      if (!content || content === '无') {
+        stats.invalid += 1
+        continue
+      }
+      const classification = classifyMemoryContent(content)
       memoryStore.writeWithDedup({
         source: 'memory',
-        content: mem.content,
+        content,
         dunId,
         tags: ['consolidator', classification.category],
         metadata: {
           flushedAt: Date.now(),
-          category: classification.category,
+          category: mem.category || classification.category,
           layer: classification.layer,
           confidence: mem.confidence ?? 0.5,
         },
       }).then(written => {
         if (written) knowledgeIngestService.recordFlush(dunId)
       }).catch(err => console.warn('[Consolidator] Memory write failed:', err))
+      stats.new += 1
     }
+
+    console.log(
+      `[Consolidator] Memory actions: new=${stats.new} supersede=${stats.supersede} ` +
+      `conflict=${stats.conflict} skip=${stats.skip} invalid=${stats.invalid}`,
+    )
   }
 
   // --- 5. Knowledge 缓冲 ---

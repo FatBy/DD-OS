@@ -51,10 +51,18 @@ class WebMixin:
         def _cache_and_return(result_str: str) -> str:
             """缓存搜索结果并返回"""
             self._web_search_cache[cache_key] = (time.time(), result_str)
-            # 防止缓存无限增长: 超过 100 条时清理最旧的
+            # 防止缓存无限增长: 超过 100 条时清理过期条目和最旧的一批
             if len(self._web_search_cache) > 100:
-                oldest_key = min(self._web_search_cache, key=lambda k: self._web_search_cache[k][0])
-                del self._web_search_cache[oldest_key]
+                now = time.time()
+                # 先清理过期条目 (TTL 5 分钟)
+                expired = [k for k, (ts, _) in self._web_search_cache.items() if now - ts > 300]
+                for k in expired:
+                    del self._web_search_cache[k]
+                # 仍超过阈值则淘汰最旧的一半
+                if len(self._web_search_cache) > 100:
+                    sorted_keys = sorted(self._web_search_cache, key=lambda k: self._web_search_cache[k][0])
+                    for k in sorted_keys[:len(sorted_keys) // 2]:
+                        del self._web_search_cache[k]
             return result_str
 
         encoded_query = urllib.parse.quote(query)

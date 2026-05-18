@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { type ReactNode, Suspense } from 'react'
 import { motion } from 'framer-motion'
 import { X } from 'lucide-react'
 import { GlassCard } from './GlassCard'
@@ -55,7 +55,13 @@ export function HouseContainer({ house, children }: HouseContainerProps) {
 
         {/* Content */}
         <div className="flex-1 overflow-hidden relative">
-          {children}
+          <Suspense fallback={
+            <div className="flex items-center justify-center h-full text-stone-400">
+              <div className="animate-pulse">Loading...</div>
+            </div>
+          }>
+            {children}
+          </Suspense>
         </div>
       </GlassCard>
     </motion.div>

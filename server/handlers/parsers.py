@@ -8,16 +8,53 @@ import json
 import base64
 import io
 import csv as csv_module
+import subprocess
 import unicodedata
 import platform
+import uuid
 from pathlib import Path
 from datetime import datetime
 
 from server.constants import (
     HAS_PDF, HAS_DOCX, HAS_PPTX, HAS_OCR, HAS_XLSX, HAS_BS4,
     HAS_EPUB, HAS_RTF, HAS_COM, HAS_XLRD, HAS_CHARSET, HAS_YAML,
-    MAX_FILE_SIZE,
+    HAS_MARKITDOWN, MAX_FILE_SIZE, MAX_OUTPUT_SIZE,
 )
+
+if HAS_PDF:
+    import pdfplumber
+
+if HAS_DOCX:
+    from docx import Document as DocxDocument
+
+if HAS_PPTX:
+    from pptx import Presentation as PptxPresentation
+
+if HAS_OCR:
+    import pytesseract
+    from PIL import Image
+
+if HAS_XLSX:
+    import openpyxl
+
+if HAS_BS4:
+    from bs4 import BeautifulSoup
+
+if HAS_EPUB:
+    import ebooklib
+    from ebooklib import epub as epub_lib
+
+if HAS_RTF:
+    from striprtf.striprtf import rtf_to_text
+
+if HAS_XLRD:
+    import xlrd
+
+if HAS_CHARSET:
+    from charset_normalizer import from_bytes as charset_from_bytes
+
+if HAS_YAML:
+    import yaml
 
 class ParsersMixin:
     """File Upload + Parsers Mixin (18+ formats)"""
@@ -153,12 +190,10 @@ class ParsersMixin:
         try:
             parsed_text = self._tool_parse_file({'filePath': str(file_path)})
         except Exception as e:
-            print(f"[ERROR] 文件解析失败: {e}", file=sys.stderr)
-            err_msg = str(e)
-            if '未安装' in err_msg or 'pip install' in err_msg:
-                parsed_text = f'[解析失败: {err_msg}]'
-            else:
-                parsed_text = f'[解析失败: 请检查文件格式是否正确]'
+            import traceback
+            print(f"[ERROR] 文件解析失败:\n{traceback.format_exc()}", file=sys.stderr)
+            # 透传真实错误类型 + 消息，便于用户/LLM 自查（而不是掩盖成"请检查文件格式"）
+            parsed_text = f'[解析失败: {type(e).__name__}: {str(e)[:500]}]'
 
         file_size = len(file_bytes)
         self.send_json({
@@ -217,7 +252,9 @@ class ParsersMixin:
         try:
             parsed_text = self._tool_parse_file({'filePath': str(file_path)})
         except Exception as e:
-            parsed_text = f'[解析失败: {str(e)}]'
+            import traceback
+            print(f"[ERROR] 文件解析失败:\n{traceback.format_exc()}", file=sys.stderr)
+            parsed_text = f'[解析失败: {type(e).__name__}: {str(e)[:500]}]'
 
         self.send_json({
             'success': True,
@@ -249,11 +286,9 @@ class ParsersMixin:
         try:
             parsed_text = self._tool_parse_file({'filePath': str(file_path)})
         except Exception as e:
-            err_msg = str(e)
-            if '未安装' in err_msg or 'pip install' in err_msg:
-                parsed_text = f'[解析失败: {err_msg}]'
-            else:
-                parsed_text = f'[解析失败: 请检查文件格式是否正确]'
+            import traceback
+            print(f"[ERROR] 文件解析失败:\n{traceback.format_exc()}", file=sys.stderr)
+            parsed_text = f'[解析失败: {type(e).__name__}: {str(e)[:500]}]'
 
         self.send_json({
             'success': True,
@@ -264,146 +299,6 @@ class ParsersMixin:
             'timestamp': datetime.now().isoformat()
         })
 
-    def _execute_plugin_tool(self, spec: dict, tool_name: str, args: dict) -> str:
-        """执行插件工具 - subprocess 隔离执行"""
-        exe_path = spec['exe_path']
-        runtime = spec.get('runtime', 'python')
-
-        # 确定运行时命令
-        if runtime == 'python':
-            cmd = [sys.executable, exe_path]
-        elif runtime == 'node':
-            cmd = ['node', exe_path]
-        else:
-            raise ValueError(f"Unsupported runtime: {runtime}")
-
-        # 构建输入：包含工具名和参数（支持多工具 manifest）
-        input_data = json.dumps({
-            'tool': tool_name,
-            'args': args
-        }, ensure_ascii=False)
-
-        try:
-            process = subprocess.run(
-                cmd,
-                input=input_data,
-                capture_output=True,
-                text=True,
-                timeout=PLUGIN_TIMEOUT,
-                cwd=spec.get('skill_dir', str(self.clawd_path)),
-            )
-
-            if process.returncode != 0:
-                stderr = process.stderr[:MAX_OUTPUT_SIZE] if process.stderr else ''
-                raise RuntimeError(f"Plugin exited with code {process.returncode}: {stderr}")
-
-            return process.stdout[:MAX_OUTPUT_SIZE] if process.stdout else ''
-
-        except subprocess.TimeoutExpired:
-            raise RuntimeError(f"Plugin timed out after {PLUGIN_TIMEOUT}s")
-
-    def _execute_instruction_tool(self, spec: dict, tool_name: str, args: dict) -> str:
-        """执行指令型工具 - 通过 skill-executor 解析 SKILL.md 并返回指令"""
-        skill_executor = self.clawd_path / 'skills' / 'skill-executor' / 'execute.py'
-
-        if not skill_executor.exists():
-            raise RuntimeError(f"skill-executor not found at {skill_executor}")
-
-        # 使用 original_name (kebab-case) 让 SkillDiscovery 能找到目录
-        original_name = spec.get('original_name', tool_name)
-
-        input_data = json.dumps({
-            'tool': 'run_skill',
-            'args': {
-                'skill_name': original_name,
-                'args': args,
-                'project_root': str(self.clawd_path),
-            }
-        }, ensure_ascii=False)
-
-        try:
-            process = subprocess.run(
-                [sys.executable, str(skill_executor)],
-                input=input_data,
-                capture_output=True,
-                text=True,
-                timeout=PLUGIN_TIMEOUT,
-                cwd=str(skill_executor.parent),
-            )
-
-            if process.returncode != 0:
-                stderr = process.stderr[:MAX_OUTPUT_SIZE] if process.stderr else ''
-                raise RuntimeError(f"Instruction skill error: {stderr}")
-
-            result = json.loads(process.stdout)
-            if not result.get('success'):
-                raise RuntimeError(result.get('error', 'Unknown error'))
-
-            return result.get('instructions', result.get('output', ''))
-
-        except subprocess.TimeoutExpired:
-            raise RuntimeError(f"Instruction skill timed out after {PLUGIN_TIMEOUT}s")
-        except json.JSONDecodeError:
-            # skill-executor 返回非 JSON 时，直接返回原文
-            return process.stdout[:MAX_OUTPUT_SIZE] if process.stdout else ''
-
-    def _execute_mcp_tool(self, tool_name: str, args: dict) -> str:
-        """执行 MCP 工具 - 通过 MCPManager 调用远程 MCP 服务器"""
-        if not self.registry.mcp_manager:
-            raise RuntimeError("MCP manager not initialized")
-
-        try:
-            result = self.registry.mcp_manager.call_tool(tool_name, args, timeout=PLUGIN_TIMEOUT)
-            if result is None:
-                return json.dumps({"status": "error", "error": f"MCP tool '{tool_name}' returned no result (possible silent failure)"})
-            return str(result)
-        except Exception as e:
-            raise RuntimeError(f"MCP tool execution failed: {e}")
-    
-    def _resolve_path(self, relative_path: str, allow_outside: bool = False) -> Path:
-        """解析并验证路径安全性"""
-        if not relative_path:
-            raise ValueError("Path cannot be empty")
-        
-        # 移除开头的斜杠
-        clean_path = relative_path.lstrip('/')
-        
-        # 默认在 clawd 目录下操作
-        if allow_outside and os.path.isabs(relative_path):
-            file_path = Path(relative_path)
-        else:
-            file_path = self.clawd_path / clean_path
-        
-        # 安全检查：防止路径遍历
-        try:
-            resolved = file_path.resolve()
-            if not allow_outside:
-                resolved.relative_to(self.clawd_path.resolve())
-        except ValueError:
-            raise PermissionError(f"Access denied: path outside allowed directory")
-        
-        return resolved
-    
-    def _tool_read_file(self, args: dict) -> str:
-        """读取文件内容"""
-        path = args.get('path', '')
-        
-        # 读操作默认允许绝对路径（安全的只读操作）
-        file_path = self._resolve_path(path, allow_outside=True)
-        
-        if not file_path.exists():
-            raise FileNotFoundError(f"File not found: {path}")
-        if not file_path.is_file():
-            raise ValueError(f"Not a file: {path}")
-        if file_path.stat().st_size > MAX_FILE_SIZE:
-            raise ValueError(f"File too large (>{MAX_FILE_SIZE} bytes)")
-        
-        try:
-            return file_path.read_text(encoding='utf-8')
-        except UnicodeDecodeError:
-            content = file_path.read_text(encoding='utf-8', errors='replace')
-            return f"[注意: 文件包含非UTF-8字符，已用替代字符显示]\n{content}"
-    
     def _tool_parse_file(self, args: dict) -> str:
         """解析文档/数据/代码/图像文件，返回提取的文本内容（解析器注册表模式）"""
         file_path_str = args.get('filePath') or args.get('path', '')
@@ -661,7 +556,51 @@ class ParsersMixin:
                 page_text = page.extract_text() or ''
                 if page_text.strip():
                     pages.append(f"--- 第{i+1}页 ---\n{page_text}")
-            return "\n\n".join(pages)
+            text = "\n\n".join(pages)
+            if text.strip():
+                return text
+
+            # 文本层为空 → 大概率是扫描版/图片型 PDF，尝试 OCR 降级
+            if not HAS_OCR:
+                raise RuntimeError(
+                    f"PDF 无可提取的文本层（文件: {file_path.name}），疑似扫描版/图片型 PDF。\n"
+                    "需要 OCR 但未安装 pytesseract/Pillow，请运行: pip install pytesseract Pillow\n"
+                    "并安装 Tesseract-OCR 引擎: https://github.com/UB-Mannheim/tesseract/wiki"
+                )
+            try:
+                pytesseract.get_tesseract_version()
+            except pytesseract.TesseractNotFoundError:
+                raise RuntimeError(
+                    f"PDF 无可提取的文本层（文件: {file_path.name}），疑似扫描版/图片型 PDF。\n"
+                    "需要 OCR 降级，但 Tesseract-OCR 引擎未安装或未加入 PATH。\n"
+                    "Windows 安装包: https://github.com/UB-Mannheim/tesseract/wiki (请勾选 Chinese 语言包)"
+                )
+
+            lang = args.get('language', 'eng+chi_sim')
+            ocr_pages = []
+            for i, page in enumerate(pdf.pages):
+                try:
+                    # resolution=200 兼顾识别率与速度；更高会显著拖慢大 PDF
+                    page_image = page.to_image(resolution=200).original
+                    ocr_text = pytesseract.image_to_string(page_image, lang=lang)
+                    if ocr_text.strip():
+                        ocr_pages.append(f"--- 第{i+1}页 (OCR) ---\n{ocr_text}")
+                except pytesseract.TesseractError as e:
+                    msg = str(e)
+                    if 'data file' in msg or 'loading language' in msg or 'traineddata' in msg:
+                        raise RuntimeError(
+                            f"Tesseract 语言包缺失 ({lang})，无法对扫描版 PDF 做 OCR。\n"
+                            f"请下载 chi_sim.traineddata 放入 Tesseract 安装目录的 tessdata/ 下。\n"
+                            f"原始错误: {msg}"
+                        )
+                    raise
+
+            if not ocr_pages:
+                raise RuntimeError(
+                    f"PDF 无文本层，OCR 降级后也未识别出任何文本（文件: {file_path.name}）。"
+                    "可能是图像质量过低或内容非文本。"
+                )
+            return "\n\n".join(ocr_pages)
     
     def _parse_docx(self, file_path: Path, args: dict) -> str:
         if not HAS_DOCX:
@@ -711,9 +650,31 @@ class ParsersMixin:
     def _parse_image_ocr(self, file_path: Path, args: dict) -> str:
         if not HAS_OCR:
             raise RuntimeError("pytesseract/Pillow 未安装，请运行 pip install pytesseract Pillow")
+        # 预检 tesseract 二进制是否真的可用（pytesseract 仅是包装，需要系统里有 tesseract.exe）
+        try:
+            pytesseract.get_tesseract_version()
+        except pytesseract.TesseractNotFoundError:
+            raise RuntimeError(
+                "Tesseract-OCR 引擎未安装或未加入 PATH。\n"
+                "Windows 安装包: https://github.com/UB-Mannheim/tesseract/wiki (安装时请勾选 Chinese 语言包)\n"
+                "安装后请将 C:\\Program Files\\Tesseract-OCR 加入系统 PATH，然后重启 DunCrew 后端。"
+            )
         img = Image.open(str(file_path))
         lang = args.get('language', 'eng+chi_sim')
-        return pytesseract.image_to_string(img, lang=lang)
+        try:
+            return pytesseract.image_to_string(img, lang=lang)
+        except pytesseract.TesseractError as e:
+            msg = str(e)
+            # 语言包缺失的典型错误提示（Failed loading language / Error opening data file）
+            if 'data file' in msg or 'loading language' in msg or 'traineddata' in msg:
+                raise RuntimeError(
+                    f"Tesseract 语言包缺失 ({lang})。\n"
+                    f"请下载 chi_sim.traineddata 放入 Tesseract 安装目录下的 tessdata/ 子目录:\n"
+                    f"  https://github.com/tesseract-ocr/tessdata/raw/main/chi_sim.traineddata\n"
+                    f"或重新运行 Tesseract 安装程序并勾选 Chinese (Simplified) 语言包。\n"
+                    f"原始错误: {msg}"
+                )
+            raise
     
     def _parse_json(self, file_path: Path, args: dict) -> str:
         raw = file_path.read_text(encoding='utf-8')
@@ -847,4 +808,64 @@ class ParsersMixin:
         
         return raw.decode('utf-8', errors='replace')
 
+    # ============================================
+    # 📝 MarkItDown - 结构化文件转 Markdown
+    # ============================================
 
+    def _tool_convert_to_markdown(self, args: dict) -> str:
+        """使用 Microsoft MarkItDown 将文件转换为结构化 Markdown"""
+        if not HAS_MARKITDOWN:
+            raise RuntimeError(
+                "markitdown 未安装。请运行: pip install \"markitdown[all]\""
+            )
+
+        file_path_str = args.get('filePath') or args.get('path', '')
+        if not file_path_str:
+            raise ValueError("filePath is required")
+
+        output_path_str = args.get('outputPath', '')
+
+        # 解析文件路径（支持绝对 + 相对路径）
+        file_path = self._resolve_path(file_path_str, allow_outside=True)
+
+        # 模糊路径匹配（复用 parseFile 的逻辑）
+        if not file_path.exists():
+            fuzzy = self._fuzzy_resolve_for_parse(file_path_str)
+            if fuzzy is None:
+                raise FileNotFoundError(f"File not found: {file_path_str}")
+            file_path = fuzzy
+
+        if not file_path.is_file():
+            raise ValueError(f"Path is not a file: {file_path_str}")
+
+        if file_path.stat().st_size > MAX_FILE_SIZE:
+            raise ValueError(f"File too large (>{MAX_FILE_SIZE // 1024 // 1024}MB)")
+
+        # 初始化 MarkItDown（禁用第三方插件，仅本地文件转换）
+        from markitdown import MarkItDown
+        converter = MarkItDown(enable_plugins=False)
+
+        # 执行转换
+        result = converter.convert(str(file_path))
+        md_content = result.text_content
+
+        if not md_content or not md_content.strip():
+            return f"[文件 {file_path.name} 无法转换为 Markdown，内容为空]"
+
+        # 如果指定了输出路径，写入文件
+        if output_path_str:
+            output_path = self._resolve_path(output_path_str, allow_outside=True)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(md_content, encoding='utf-8')
+            return f"已将 {file_path.name} 转换为 Markdown 并保存至: {output_path}\n\n内容预览 (前 2000 字符):\n\n{md_content[:2000]}"
+
+        # 截断到 MAX_OUTPUT_SIZE（安全 UTF-8 边界截断）
+        encoded = md_content.encode('utf-8')
+        if len(encoded) > MAX_OUTPUT_SIZE:
+            safe_idx = MAX_OUTPUT_SIZE
+            while safe_idx > 0 and (encoded[safe_idx] & 0xC0) == 0x80:
+                safe_idx -= 1
+            md_content = encoded[:safe_idx].decode('utf-8')
+            md_content += f"\n\n[内容过长，已截断至约 {MAX_OUTPUT_SIZE // 1024}KB]"
+
+        return md_content

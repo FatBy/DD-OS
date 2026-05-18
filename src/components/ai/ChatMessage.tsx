@@ -362,11 +362,11 @@ function ExecutionCard({ execution, content }: { execution: ExecutionStatus; con
   
   // 执行状态配置
   const t = useT()
-  const configs: Record<string, { icon: typeof Clock; color: string; label: string }> = {
-    pending: { icon: Clock, color: 'amber', label: t('msg.pending_execution') },
-    running: { icon: Loader2, color: 'cyan', label: t('msg.executing') },
-    success: { icon: CheckCircle2, color: 'emerald', label: t('msg.execution_complete') },
-    error: { icon: XCircle, color: 'red', label: t('msg.execution_failed') },
+  const configs: Record<string, { icon: typeof Clock; colorClass: string; label: string }> = {
+    pending: { icon: Clock, colorClass: 'text-amber-400', label: t('msg.pending_execution') },
+    running: { icon: Loader2, colorClass: 'text-cyan-400', label: t('msg.executing') },
+    success: { icon: CheckCircle2, colorClass: 'text-emerald-400', label: t('msg.execution_complete') },
+    error: { icon: XCircle, colorClass: 'text-red-400', label: t('msg.execution_failed') },
   }
   const config = configs[execution.status] || configs.pending
   const Icon = config.icon
@@ -396,10 +396,10 @@ function ExecutionCard({ execution, content }: { execution: ExecutionStatus; con
       )}>
         <Icon className={cn(
           'w-4 h-4',
-          `text-${config.color}-400`,
+          config.colorClass,
           execution.status === 'running' && 'animate-spin'
         )} />
-        <span className={cn('text-sm font-mono font-medium', `text-${config.color}-400`)}>
+        <span className={cn('text-sm font-mono font-medium', config.colorClass)}>
           {config.label}
         </span>
         {/* 仅当 content 与 output 不同时才在状态栏显示 content 摘要，避免重复 */}

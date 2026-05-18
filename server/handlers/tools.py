@@ -13,8 +13,9 @@ from pathlib import Path
 from datetime import datetime
 
 from server.constants import (
-    DANGEROUS_COMMANDS, DANGEROUS_SHELL_PATTERNS,
+    DANGEROUS_COMMAND_PATTERNS, DANGEROUS_SHELL_PATTERNS,
     MAX_FILE_SIZE, MAX_OUTPUT_SIZE, PLUGIN_TIMEOUT,
+    SAFE_CLI_PREFIXES,
 )
 from server.state import _db_lock
 from server.utils import safe_utf8_truncate
@@ -80,6 +81,11 @@ class ToolsMixin:
             fp = args.get('filePath') or args.get('path', '')
             if not fp:
                 return False, "parseFile 缺少 filePath 参数"
+        
+        elif tool_name == 'convertToMarkdown':
+            fp = args.get('filePath') or args.get('path', '')
+            if not fp:
+                return False, "convertToMarkdown 缺少 filePath 参数"
         
         return True, ''
     
@@ -292,6 +298,7 @@ class ToolsMixin:
                     'screenCapture': self._tool_screen_capture,
                     'ocrExtract': self._tool_ocr_extract,
                     'searchWiki': self._tool_search_wiki,
+                    'convertToMarkdown': self._tool_convert_to_markdown,
                 }
                 handler = builtin_handlers.get(tool_name)
                 if handler:
@@ -447,9 +454,30 @@ class ToolsMixin:
         
         return resolved
     
+    def _resolve_dun_file_path(self, path: str) -> str:
+        """如果 path 以 duns/{dunId}/... 开头，通过 _resolve_dun_dir 解析到正确的目录。
+        防止中文 label 作为 dunId 时创建影子目录。"""
+        normalized = path.replace('\\', '/')
+        if not normalized.startswith('duns/'):
+            return path
+        parts = normalized.split('/', 2)
+        if len(parts) < 3:
+            return path
+        dun_id_in_path = parts[1]
+        try:
+            resolved_dir = self._resolve_dun_dir(dun_id_in_path, auto_create=False)
+        except Exception:
+            return path
+        if resolved_dir and resolved_dir.name != dun_id_in_path:
+            new_path = f'duns/{resolved_dir.name}/{parts[2]}'
+            print(f'[Tools] Dun path resolved: {dun_id_in_path} → {resolved_dir.name}', flush=True)
+            return new_path
+        return path
+
     def _tool_read_file(self, args: dict) -> str:
         """读取文件内容"""
         path = args.get('path', '')
+        path = self._resolve_dun_file_path(path)
         
         # 读操作默认允许绝对路径（安全的只读操作）
         file_path = self._resolve_path(path, allow_outside=True)
@@ -481,6 +509,9 @@ class ToolsMixin:
             normalized = path.replace('\\', '/')
             if not normalized.startswith('duns/') and not normalized.startswith('nexuses/'):
                 path = f'duns/{dun_id}/output/{path}'
+        
+        # 解析 dun 目录：防止中文 label 创建影子目录
+        path = self._resolve_dun_file_path(path)
         
         file_path = self._resolve_path(path, allow_outside=True)
         
@@ -689,6 +720,9 @@ class ToolsMixin:
             if not normalized.startswith('duns/') and not normalized.startswith('nexuses/'):
                 path = f'duns/{dun_id}/output/{path}'
         
+        # 解析 dun 目录：防止中文 label 创建影子目录
+        path = self._resolve_dun_file_path(path)
+        
         file_path = self._resolve_path(path, allow_outside=True)
         file_path.parent.mkdir(parents=True, exist_ok=True)
         
@@ -729,16 +763,28 @@ class ToolsMixin:
         if not command:
             raise ValueError("Command cannot be empty")
         
-        # 安全检查
+        # 安全检查 (使用正则表达式精确匹配)
         cmd_lower = command.lower().strip()
-        for dangerous in DANGEROUS_COMMANDS:
-            if dangerous in cmd_lower:
-                raise PermissionError(f"Dangerous command blocked: {command}")
-        
-        # 检查危险 shell 模式（防止通过 shell 元字符绕过黑名单）
-        for pattern in DANGEROUS_SHELL_PATTERNS:
-            if pattern in cmd_lower:
-                raise PermissionError(f"Dangerous shell pattern blocked: {command}")
+
+        # 白名单前缀豁免：如果命令以安全 CLI 工具开头，跳过危险检测
+        # 支持带完整路径的情况（如 C:\...\claude.cmd -p ...）
+        import os.path as _osp
+        _cmd_basename = _osp.basename(cmd_lower).replace('.cmd', '').replace('.exe', '').replace('.bat', '')
+        is_safe_cli = any(
+            cmd_lower.startswith(prefix + ' ') or cmd_lower == prefix or
+            _cmd_basename.startswith(prefix + ' ') or _cmd_basename == prefix
+            for prefix in SAFE_CLI_PREFIXES
+        )
+
+        if not is_safe_cli:
+            for pattern in DANGEROUS_COMMAND_PATTERNS:
+                if pattern.search(cmd_lower):
+                    raise PermissionError(f"Dangerous command blocked: {command}")
+            
+            # 检查危险 shell 模式（防止通过 shell 元字符绕过黑名单）
+            for pattern in DANGEROUS_SHELL_PATTERNS:
+                if pattern.search(cmd_lower):
+                    raise PermissionError(f"Dangerous shell pattern blocked: {command}")
         
         try:
             process = subprocess.run(

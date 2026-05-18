@@ -684,3 +684,33 @@ export const TASK_COMPLETION_PROMPT = TASK_COMPLETION_PROMPT_ZH
 export function getTaskCompletionPrompt(locale: Locale): string {
   return locale === 'en' ? TASK_COMPLETION_PROMPT_EN : TASK_COMPLETION_PROMPT_ZH
 }
+
+// ============================================
+// V10: 记忆写入闭环 — 四态 action 指令片段
+// ----------------------------------------------------------------------------
+// 由 postExecutionConsolidator 在构建 <MEMORIES> 任务 prompt 时拼接使用。
+// 核心目的：让 LLM 在看到"当前相关记忆"之后，选择 NEW / SUPERSEDE / CONFLICT / SKIP，
+// 而不是盲写导致重复沉淀或事实冲突。
+// ============================================
+
+export const MEMORY_ACTION_INSTRUCTION = [
+  '## 四态 Action（必须从下列之一中选择）',
+  '',
+  '- **NEW**：完全新的认知，现有记忆中不存在相近内容。',
+  '- **SUPERSEDE**：新认知更新了已有事实（例如用户偏好变更、项目名改动、结论被修正）。',
+  '  * 必填 `supersedesId`：指向下方"当前相关记忆"中被取代的 id。',
+  '  * 新内容应覆盖旧内容的信息，而不是简单追加。',
+  '- **CONFLICT**：新旧事实并存且互相矛盾，暂无法判断孰对。',
+  '  * 必填 `conflictWithId`：指向冲突的另一条记忆 id。',
+  '  * 两条都保留，留待后续信号解决。',
+  '- **SKIP**：已有记忆已充分覆盖该认知，不需要写入。输出时只给出 `action: "SKIP"` 即可，无需 content。',
+  '',
+  '## 判定提示',
+  '- 看不到"当前相关记忆"段，或该段为空 → 默认 NEW。',
+  '- 相似度很高且信息等价 → SKIP，不要重复沉淀。',
+  '- 同一主题但事实变化（如"工作地在 A" → "工作地在 B"）→ SUPERSEDE。',
+  '- 同一主题且事实互斥但都有来源 → CONFLICT。',
+  '',
+  '## 输出格式（每条记忆一个对象）',
+  '{"action":"NEW|SUPERSEDE|CONFLICT|SKIP","content":"断言内容(SKIP时可省略)","category":"preference|project|discovery|uncategorized","confidence":0.0-1.0,"supersedesId":"<仅SUPERSEDE时必填>","conflictWithId":"<仅CONFLICT时必填>","reason":"<SUPERSEDE/CONFLICT时必填的原因>"}',
+].join('\n')

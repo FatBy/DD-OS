@@ -6,6 +6,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 from server.constants import RESOURCES_DIR
 
@@ -56,6 +57,40 @@ class EmbeddingManager:
             'model_exists': self._model_exists(),
             'dimension': self.DIMENSION,
         }
+
+    def is_loaded(self) -> bool:
+        return self._session is not None
+
+    @staticmethod
+    def is_local_base_url(base_url: str | None) -> bool:
+        """Return whether an embedding base URL points back to the local server."""
+        if not base_url:
+            return True
+        try:
+            host = (urlparse(str(base_url)).hostname or '').lower()
+        except Exception:
+            host = ''
+        if not host:
+            return False
+        return host in {'localhost', '127.0.0.1', '::1', '0.0.0.0'} or host.endswith('.localhost')
+
+    def should_use_local_for_config(self, config: dict | None) -> bool:
+        if not isinstance(config, dict):
+            return True
+        return self.is_local_base_url(config.get('embedBaseUrl'))
+
+    def sync_with_llm_config(self, config: dict | None, reason: str = 'config'):
+        """Keep the local ONNX model resident only when the Embed channel is local."""
+        if self.should_use_local_for_config(config):
+            print(f'[Embedding] Local embedding configured ({reason}); preheating local model', file=sys.stderr)
+            self.preheat()
+            return
+
+        if self.is_loaded() or self._loading:
+            print(f'[Embedding] External embedding configured ({reason}); unloading local model', file=sys.stderr)
+        else:
+            print(f'[Embedding] External embedding configured ({reason}); local preheat skipped', file=sys.stderr)
+        self.shutdown()
 
     def _get_model_dir(self) -> Path:
         """模型存储路径：优先 clawd_path/models (已有模型)，其次项目目录/models"""
@@ -161,6 +196,8 @@ class EmbeddingManager:
 
     def preheat(self):
         """后台线程预加载模型（服务启动时调用）"""
+        if self._session is not None or self._loading:
+            return
         if not self.is_available():
             print('[Embedding] Preheat skipped: onnxruntime/tokenizers not installed', file=sys.stderr)
             return
@@ -179,8 +216,13 @@ class EmbeddingManager:
 
         self._encode_semaphore.acquire()
         try:
+            session = self._session
+            tokenizer = self._tokenizer
+            if session is None or tokenizer is None:
+                raise RuntimeError('Embedding model is not loaded')
+
             # Tokenize
-            encodings = self._tokenizer.encode_batch(texts)
+            encodings = tokenizer.encode_batch(texts)
             input_ids = np.array([e.ids for e in encodings], dtype=np.int64)
             attention_mask = np.array([e.attention_mask for e in encodings], dtype=np.int64)
             token_type_ids = np.array([e.type_ids for e in encodings], dtype=np.int64)
@@ -192,10 +234,10 @@ class EmbeddingManager:
                 'token_type_ids': token_type_ids,
             }
             # 只传模型实际接受的输入
-            valid_input_names = {inp.name for inp in self._session.get_inputs()}
+            valid_input_names = {inp.name for inp in session.get_inputs()}
             feeds = {k: v for k, v in feeds.items() if k in valid_input_names}
 
-            outputs = self._session.run(None, feeds)
+            outputs = session.run(None, feeds)
 
             # CLS pooling: 取 [CLS] token (index 0) 的向量
             # outputs[0] shape: (batch_size, seq_len, hidden_dim)

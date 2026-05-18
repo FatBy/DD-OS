@@ -34,6 +34,11 @@ let tasksSinceLastCheck = 0
 /** 衰减定时器 */
 let decayIntervalId: ReturnType<typeof setInterval> | null = null
 
+/** 是否已初始化（幂等 guard） */
+let _initialized = false
+/** 正在初始化中（防并发） */
+let _initPromise: Promise<void> | null = null
+
 /** 上一次检测时间 (防抖) */
 let lastCheckTimestamp = 0
 const CHECK_COOLDOWN_MS = 60_000 // 最少间隔 1 分钟
@@ -45,6 +50,19 @@ const CHECK_COOLDOWN_MS = 60_000 // 最少间隔 1 分钟
  * 应在应用启动时调用一次
  */
 export async function init(): Promise<void> {
+  // 幂等 guard: 防止 StrictMode 双执行和 onConnected 回调重入
+  if (_initialized) return
+  if (_initPromise) return _initPromise
+
+  _initPromise = _doInit()
+  try {
+    await _initPromise
+  } finally {
+    _initPromise = null
+  }
+}
+
+async function _doInit(): Promise<void> {
   // 0. 懒加载 store（打破循环依赖）
   if (!_storeRef) {
     const { useStore } = await import('@/store')
@@ -65,6 +83,7 @@ export async function init(): Promise<void> {
   }, SOUL_EVOLUTION_CONFIG.DECAY_INTERVAL_MS)
 
   console.log('[SoulEvolution] Initialized, decay interval =', SOUL_EVOLUTION_CONFIG.DECAY_INTERVAL_MS, 'ms')
+  _initialized = true
 }
 
 /**
@@ -76,6 +95,8 @@ export function destroy(): void {
     decayIntervalId = null
   }
   tasksSinceLastCheck = 0
+  _initialized = false
+  _initPromise = null
 }
 
 /**

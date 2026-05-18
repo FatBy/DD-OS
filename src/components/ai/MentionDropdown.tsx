@@ -45,16 +45,17 @@ export interface MentionDropdownProps {
  * 第三层: description 包含匹配
  */
 export function filterMentionItems(items: MentionItem[], query: string): MentionItem[] {
-  if (!query) return items.slice(0, 12)
+  const uniqueItems = dedupeMentionItems(items)
+  if (!query) return uniqueItems.slice(0, 12)
 
   const q = query.toLowerCase()
 
   // 第一层：name 前缀
-  const prefixMatches = items.filter(i => i.name.toLowerCase().startsWith(q))
+  const prefixMatches = uniqueItems.filter(i => i.name.toLowerCase().startsWith(q))
   if (prefixMatches.length >= 5) return prefixMatches.slice(0, 12)
 
   // 第二层：name 包含 + keywords 包含
-  const nameOrKwMatches = items.filter(i => {
+  const nameOrKwMatches = uniqueItems.filter(i => {
     if (i.name.toLowerCase().includes(q)) return true
     if (i.keywords?.some(kw => kw.toLowerCase().includes(q))) return true
     return false
@@ -62,13 +63,25 @@ export function filterMentionItems(items: MentionItem[], query: string): Mention
   if (nameOrKwMatches.length >= 3) return nameOrKwMatches.slice(0, 12)
 
   // 第三层：description 包含
-  const descMatches = items.filter(i => {
+  const descMatches = uniqueItems.filter(i => {
     if (i.name.toLowerCase().includes(q)) return true
     if (i.keywords?.some(kw => kw.toLowerCase().includes(q))) return true
     if (i.description?.toLowerCase().includes(q)) return true
     return false
   })
   return descMatches.slice(0, 12)
+}
+
+function dedupeMentionItems(items: MentionItem[]): MentionItem[] {
+  const seen = new Set<string>()
+  const unique: MentionItem[] = []
+  for (const item of items) {
+    const key = `${item.category}:${item.name}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    unique.push(item)
+  }
+  return unique
 }
 
 // ============================================

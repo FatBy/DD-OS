@@ -12,18 +12,28 @@ from server.constants import HAS_HYBRID_SEARCH
 from server.state import (
     _db_lock, _embedding_manager,
     _CATEGORY_CAPACITY_LIMITS, _MERGE_BATCH_SIZE, _CAPACITY_CHECK_INTERVAL,
+    _COMPACTION_CONFIG,
 )
+# V10: 保真检查
+try:
+    from server.handlers.memory_compaction import (
+        check_preservation, fallback_merge,
+    )
+    _HAS_COMPACTION = True
+except Exception:  # pragma: no cover
+    _HAS_COMPACTION = False
 
 # 条件导入 hybrid_search 符号
 if HAS_HYBRID_SEARCH:
     from hybrid_search import (
-        HybridSearchEngine, EmbeddingEngine,
-        ensure_vector_table, index_memory_vectors,
+        HybridSearchEngine, EmbeddingEngine, OpenAICompatibleEmbeddingEngine,
+        ensure_vector_table, index_memory_vectors, reindex_all_memory_vectors,
+        reindex_all_wiki_vectors,
     )
 
 def init_sqlite_db(db_path: Path) -> sqlite3.Connection:
     """初始化 SQLite 数据库，创建 V2 所需的表"""
-    conn = sqlite3.connect(str(db_path), check_same_thread=False)
+    conn = sqlite3.connect(str(db_path), check_same_thread=False, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
@@ -61,6 +71,7 @@ def init_sqlite_db(db_path: Path) -> sqlite3.Connection:
         );
 
         -- 记忆表 (FTS5 全文搜索)
+        -- V10: 加入 supersede 三态（status / superseded_by / supersede_reason / supersede_at）
         CREATE TABLE IF NOT EXISTS memory (
             id TEXT PRIMARY KEY,
             source TEXT NOT NULL DEFAULT 'ephemeral',
@@ -70,9 +81,17 @@ def init_sqlite_db(db_path: Path) -> sqlite3.Connection:
             metadata TEXT DEFAULT '{}',
             created_at INTEGER NOT NULL,
             deleted_at INTEGER,
-            category TEXT DEFAULT 'uncategorized'
+            category TEXT DEFAULT 'uncategorized',
+            status TEXT NOT NULL DEFAULT 'active',   -- active | superseded | conflicted
+            superseded_by TEXT,                      -- 指向新条目的 id（或冲突对方的 id）
+            supersede_reason TEXT,                   -- 为何被取代/冲突
+            supersede_at INTEGER                     -- 何时被取代/冲突
         );
         CREATE INDEX IF NOT EXISTS idx_memory_source ON memory(source);
+        -- 注意：status / superseded_by 索引不在此处创建。
+        -- 因为旧库 memory 表不存在这两列，CREATE TABLE IF NOT EXISTS 不会补列，
+        -- 在 executescript 内直接建索引会在旧库上报 "no such column: status" 导致启动失败。
+        -- 这两个索引改由下方 V10 迁移段在 ALTER TABLE ADD COLUMN 之后创建（幂等）。
 
         -- FTS5 虚拟表 (全文搜索)
         CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
@@ -184,10 +203,47 @@ def init_sqlite_db(db_path: Path) -> sqlite3.Connection:
             chunk_seq   INTEGER NOT NULL DEFAULT 0,
             embedding   BLOB NOT NULL,
             chunk_content TEXT DEFAULT '',
+            embedding_model TEXT DEFAULT '',
+            embedding_fingerprint TEXT DEFAULT '',
             created_at  INTEGER NOT NULL,
             PRIMARY KEY (entity_id, chunk_seq)
         );
         CREATE INDEX IF NOT EXISTS idx_wv_entity ON wiki_vectors(entity_id);
+
+        -- ============================================
+        -- Study Room (自习室) 会话与段落
+        -- 字段来源：server/handlers/study.py 中 INSERT/UPDATE/SELECT 反推
+        --   - study_sessions: 写作会话元数据 (大对象 brief/document/chat_messages 等存 JSON 文件)
+        --   - study_sections: 段落级状态 (乐观锁 revision)
+        -- 风格指纹 (fingerprints) 和版本历史 (versions) 均用 JSON 文件存储，不入库
+        -- ============================================
+        CREATE TABLE IF NOT EXISTS study_sessions (
+            id            TEXT PRIMARY KEY,
+            title         TEXT NOT NULL DEFAULT '',
+            genre         TEXT DEFAULT 'custom',
+            length_hint   TEXT DEFAULT 'medium',
+            dun_id        TEXT,
+            status        TEXT NOT NULL DEFAULT 'active',   -- active | exported | archived
+            revision      INTEGER NOT NULL DEFAULT 1,       -- 乐观锁
+            exported_path TEXT,                             -- 导出归档路径 (status=exported 时填)
+            created_at    INTEGER NOT NULL,
+            updated_at    INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_study_sessions_status ON study_sessions(status);
+        CREATE INDEX IF NOT EXISTS idx_study_sessions_updated ON study_sessions(updated_at);
+        CREATE INDEX IF NOT EXISTS idx_study_sessions_dun ON study_sessions(dun_id);
+
+        CREATE TABLE IF NOT EXISTS study_sections (
+            id             TEXT NOT NULL,                   -- 段 id (前端从 agenda 生成)
+            session_id     TEXT NOT NULL,
+            section_order  INTEGER NOT NULL DEFAULT 0,
+            status         TEXT NOT NULL DEFAULT 'planned', -- planned | drafting | done | skipped
+            revision       INTEGER NOT NULL DEFAULT 1,      -- 段级乐观锁
+            updated_at     INTEGER NOT NULL,
+            PRIMARY KEY (id, session_id),
+            FOREIGN KEY (session_id) REFERENCES study_sessions(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_study_sections_session ON study_sections(session_id, section_order);
     """)
 
     # V6: 安全地添加 dun_id 列 (如果不存在) — memory 表
@@ -240,6 +296,36 @@ def init_sqlite_db(db_path: Path) -> sqlite3.Connection:
         conn.execute("ALTER TABLE memory ADD COLUMN category TEXT DEFAULT 'uncategorized'")
         print("[SQLite] Added 'category' column to memory table")
 
+    # V10: 为 memory 表安全地添加 supersede 四字段（幂等）
+    # status: active | superseded | conflicted
+    for col, definition in [
+        ('status', "TEXT NOT NULL DEFAULT 'active'"),
+        ('superseded_by', "TEXT"),
+        ('supersede_reason', "TEXT"),
+        ('supersede_at', "INTEGER"),
+    ]:
+        try:
+            conn.execute(f"SELECT {col} FROM memory LIMIT 1")
+        except sqlite3.OperationalError:
+            # SQLite 不允许 ALTER TABLE ADD COLUMN 使用 NOT NULL 且无常量默认值之外的表达式
+            # 'active' 是常量，OK
+            conn.execute(f"ALTER TABLE memory ADD COLUMN {col} {definition}")
+            print(f"[SQLite] Added '{col}' column to memory table (V10 supersede)")
+    # 为 supersede 新字段建索引（幂等）
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_status ON memory(status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_superseded_by ON memory(superseded_by)")
+
+    # V10: 为 wiki_claim 补齐 supersede_reason / supersede_at（与 memory 表对齐）
+    for col, definition in [
+        ('supersede_reason', "TEXT"),
+        ('supersede_at', "INTEGER"),
+    ]:
+        try:
+            conn.execute(f"SELECT {col} FROM wiki_claim LIMIT 1")
+        except sqlite3.OperationalError:
+            conn.execute(f"ALTER TABLE wiki_claim ADD COLUMN {col} {definition}")
+            print(f"[SQLite] Added '{col}' column to wiki_claim table (V10 supersede)")
+
     # V9: Wiki Schema 迁移 — Entity 层新增字段
     for col, definition in [
         ('category', "TEXT"),
@@ -275,6 +361,17 @@ def init_sqlite_db(db_path: Path) -> sqlite3.Connection:
             print(f"[SQLite] Migrated {migrated} wiki_entity type values to 'concept'")
     except Exception:
         pass
+
+    for col, definition in [
+        ('embedding_model', "TEXT DEFAULT ''"),
+        ('embedding_fingerprint', "TEXT DEFAULT ''"),
+    ]:
+        try:
+            conn.execute(f"SELECT {col} FROM wiki_vectors LIMIT 1")
+        except sqlite3.OperationalError:
+            conn.execute(f"ALTER TABLE wiki_vectors ADD COLUMN {col} {definition}")
+            print(f"[SQLite] Added '{col}' column to wiki_vectors table")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_wv_fingerprint ON wiki_vectors(embedding_fingerprint)")
 
     conn.commit()
 
@@ -358,8 +455,11 @@ def _run_capacity_check(conn: sqlite3.Connection) -> None:
 
     for category, limit in _CATEGORY_CAPACITY_LIMITS.items():
         with _db_lock:
+            # V10: 容量只基于 active 记忆统计，已 supersede 的不占额度
             row = conn.execute(
-                "SELECT COUNT(*) as cnt FROM memory WHERE category = ? AND deleted_at IS NULL AND source != 'exec_trace'",
+                "SELECT COUNT(*) as cnt FROM memory "
+                "WHERE category = ? AND deleted_at IS NULL AND status = 'active' "
+                "AND source != 'exec_trace'",
                 (category,),
             ).fetchone()
         count = row['cnt'] if row else 0
@@ -381,13 +481,19 @@ def _run_capacity_check(conn: sqlite3.Connection) -> None:
 def _merge_oldest(conn: sqlite3.Connection, category: str, now_ms: int) -> None:
     """取最旧的 N 条同类记忆，合并内容为 1 条新记忆，软删除原始条目。
 
-    因为后端无 LLM 访问权限，使用文本拼接作为合并策略。
-    这些记忆本身就是短句认知（如 "用户偏好 pnpm"），拼接后仍然可读。
+    V10: 引入保真检查（memory_compaction.check_preservation）：
+      1. 先用 fallback_merge 做保守合并（去重 + 分号拼接）
+      2. 用实体保留率 / 句数 fallback 检查合并质量
+      3. 未通过 → 保留原条目不合并（等待下次，或由前端触发 LLM 合并路径）
+
+    因为后端无 LLM 访问权限，真正的"语义重写"合并由前端驱动（可在后台任务中读取
+    memory.status='active' 的原条目，调 LLM 生成新内容后走 /api/memory/supersede）。
     """
     with _db_lock:
+        # V10: 只合并 active 条目，避免把 superseded 当原料
         rows = conn.execute(
             "SELECT id, content, tags, metadata, dun_id FROM memory "
-            "WHERE category = ? AND deleted_at IS NULL "
+            "WHERE category = ? AND deleted_at IS NULL AND status = 'active' "
             "ORDER BY created_at ASC LIMIT ?",
             (category, _MERGE_BATCH_SIZE),
         ).fetchall()
@@ -418,11 +524,41 @@ def _merge_oldest(conn: sqlite3.Connection, category: str, now_ms: int) -> None:
     if not contents:
         return
 
-    # 合并内容：用分号连接短句
-    merged_content = '；'.join(contents)
-    # 过长时截断
-    if len(merged_content) > 500:
-        merged_content = merged_content[:497] + '...'
+    # V10: 用 compaction 模块做合并 + 保真检查
+    max_chars = int(_COMPACTION_CONFIG.get('MAX_OUTPUT_CHARS', 500))
+    if _HAS_COMPACTION:
+        merged_content = fallback_merge(contents, max_chars=max_chars)
+
+        # 读取 wiki_entity 标题做实体保留率检查
+        entity_titles: list[str] = []
+        try:
+            with _db_lock:
+                ent_rows = conn.execute(
+                    "SELECT title FROM wiki_entity WHERE status = 'active' LIMIT 500"
+                ).fetchall()
+                entity_titles = [r['title'] for r in ent_rows if r['title']]
+        except Exception:
+            entity_titles = []
+
+        passed, report = check_preservation(
+            contents,
+            merged_content,
+            entity_titles=entity_titles or None,
+            entity_retention_min=float(_COMPACTION_CONFIG.get('ENTITY_RETENTION_MIN', 0.8)),
+            sentence_retention_min=float(_COMPACTION_CONFIG.get('SENTENCE_RETENTION_MIN', 0.6)),
+        )
+        if not passed:
+            print(
+                f"[MemoryCapacity] Preservation check FAILED for '{category}': "
+                f"mode={report['mode']} retention={report['retention']} "
+                f"threshold={report['threshold']}; skipping merge"
+            )
+            return
+    else:
+        # 极端 fallback：compaction 模块导入失败时，沿用旧逻辑
+        merged_content = '；'.join(contents)
+        if len(merged_content) > max_chars:
+            merged_content = merged_content[:max_chars - 3] + '...'
 
     merged_id = f"mem-merged-{uuid.uuid4().hex[:12]}"
     merged_tags = json.dumps(list(all_tags | {'merged', f'merged_from_{len(source_ids)}'}))
@@ -430,20 +566,28 @@ def _merge_oldest(conn: sqlite3.Connection, category: str, now_ms: int) -> None:
         'category': category,
         'merged_from': source_ids,
         'merged_at': now_ms,
+        'compaction_mode': 'fallback_with_preservation_check',
     })
 
     with _db_lock:
-        # 写入合并后的新条目
+        # 写入合并后的新条目（status 默认 active）
         conn.execute(
-            "INSERT INTO memory (id, source, content, dun_id, tags, metadata, created_at, category) "
-            "VALUES (?, 'memory', ?, NULL, ?, ?, ?, ?)",
+            "INSERT INTO memory (id, source, content, dun_id, tags, metadata, created_at, category, status) "
+            "VALUES (?, 'memory', ?, NULL, ?, ?, ?, ?, 'active')",
             (merged_id, merged_content, merged_tags, merged_metadata, now_ms, category),
         )
-        # 软删除原始条目
+        # V10: 将原始条目标记为 superseded（而非单纯 deleted）
+        # 这样可以审计追溯哪些条目合并到了 merged_id
         placeholders = ','.join('?' * len(source_ids))
         conn.execute(
-            f"UPDATE memory SET deleted_at = ? WHERE id IN ({placeholders})",
-            [now_ms] + source_ids,
+            f"""UPDATE memory
+                SET status = 'superseded',
+                    superseded_by = ?,
+                    supersede_reason = ?,
+                    supersede_at = ?,
+                    deleted_at = ?
+                WHERE id IN ({placeholders})""",
+            [merged_id, f'capacity-merge into {category}', now_ms, now_ms] + source_ids,
         )
         conn.commit()
 
@@ -453,9 +597,11 @@ def _merge_oldest(conn: sqlite3.Connection, category: str, now_ms: int) -> None:
 def _soft_delete_oldest(conn: sqlite3.Connection, category: str, excess: int, now_ms: int) -> None:
     """软删除某类中最旧的 excess 条记忆（排除 exec_trace，它们由知识编译管道管理）"""
     with _db_lock:
+        # V10: 只选 active 条目（不要把 superseded/conflicted 再软删一次）
         rows = conn.execute(
             "SELECT id FROM memory "
-            "WHERE category = ? AND deleted_at IS NULL AND source != 'exec_trace' "
+            "WHERE category = ? AND deleted_at IS NULL AND status = 'active' "
+            "AND source != 'exec_trace' "
             "ORDER BY created_at ASC LIMIT ?",
             (category, excess),
         ).fetchall()
@@ -474,20 +620,228 @@ def _soft_delete_oldest(conn: sqlite3.Connection, category: str, excess: int, no
     print(f"[MemoryCapacity] Soft-deleted {len(ids)} oldest '{category}' memories")
 
 
+# ============================================
+# V10: 通用 Supersede 工具函数（供 memory / wiki_claim 复用）
+# ============================================
+
+# 白名单：允许执行 supersede 操作的表名，防 SQL 注入
+_SUPERSEDE_ALLOWED_TABLES = frozenset({'memory', 'wiki_claim'})
+
+
+def mark_superseded(
+    conn: sqlite3.Connection,
+    table: str,
+    target_id: str,
+    new_id: str | None,
+    reason: str,
+    ts: int,
+) -> bool:
+    """将指定记录标记为 superseded（被新记录取代）。
+
+    Args:
+        conn: 已连接的 sqlite3.Connection
+        table: 目标表名，必须在白名单内
+        target_id: 被取代的记录 id
+        new_id: 新记录 id，可空（例如用户手动归档）
+        reason: 取代原因（可读文本）
+        ts: 取代时间戳（毫秒）
+
+    Returns:
+        是否成功更新（若记录不存在或已非 active，返回 False）
+
+    Raises:
+        ValueError: table 不在白名单
+    """
+    if table not in _SUPERSEDE_ALLOWED_TABLES:
+        raise ValueError(f"mark_superseded: table {table!r} not allowed")
+
+    with _db_lock:
+        cursor = conn.execute(
+            f"""UPDATE {table}
+                SET status = 'superseded',
+                    superseded_by = ?,
+                    supersede_reason = ?,
+                    supersede_at = ?
+                WHERE id = ? AND status = 'active'""",
+            (new_id, reason, ts, target_id),
+        )
+        conn.commit()
+    return cursor.rowcount > 0
+
+
+def mark_conflicted(
+    conn: sqlite3.Connection,
+    table: str,
+    target_id: str,
+    conflict_with: str,
+    reason: str,
+    ts: int,
+) -> bool:
+    """将两条记录标记为 conflicted（都不删，等后续信号解决）。
+
+    对 wiki_claim：同时写 conflict_with 字段以保持向后兼容。
+    对 memory：写入 superseded_by 字段（复用同一列指向冲突对方）。
+    """
+    if table not in _SUPERSEDE_ALLOWED_TABLES:
+        raise ValueError(f"mark_conflicted: table {table!r} not allowed")
+
+    with _db_lock:
+        if table == 'wiki_claim':
+            # wiki_claim 已有 conflict_with 列，同步写入保持兼容
+            cursor = conn.execute(
+                """UPDATE wiki_claim
+                    SET status = 'conflicted',
+                        conflict_with = ?,
+                        supersede_reason = ?,
+                        supersede_at = ?,
+                        updated_at = ?
+                    WHERE id = ? AND status = 'active'""",
+                (conflict_with, reason, ts, ts, target_id),
+            )
+        else:
+            cursor = conn.execute(
+                f"""UPDATE {table}
+                    SET status = 'conflicted',
+                        superseded_by = ?,
+                        supersede_reason = ?,
+                        supersede_at = ?
+                    WHERE id = ? AND status = 'active'""",
+                (conflict_with, reason, ts, target_id),
+            )
+        conn.commit()
+    return cursor.rowcount > 0
+
+
+def _load_embedding_llm_config() -> dict:
+    clawd_path = getattr(_embedding_manager, '_clawd_path', None)
+    if not clawd_path:
+        return {}
+    config_file = Path(clawd_path) / 'data' / 'llm_config.json'
+    if not config_file.exists():
+        return {}
+    try:
+        data = json.loads(config_file.read_text(encoding='utf-8'))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def shutdown_hybrid_engine():
+    import server.state as _st
+    if _st._embedding_engine and hasattr(_st._embedding_engine, 'shutdown'):
+        try:
+            _st._embedding_engine.shutdown()
+        except Exception as e:
+            print(f"[EmbeddingEngine] Failed to unload model: {e}")
+    _st._embedding_engine = None
+    _st._hybrid_engine = None
+
+
+def _create_embedding_engine(config: dict):
+    if _embedding_manager.should_use_local_for_config(config):
+        model_dir = _embedding_manager._get_model_dir()
+        if not model_dir.exists():
+            return None
+        return EmbeddingEngine(str(model_dir))
+
+    base_url = str(config.get('embedBaseUrl') or '').strip()
+    api_key = str(config.get('embedApiKey') or config.get('apiKey') or '').strip()
+    model = str(config.get('embedModel') or '').strip()
+    if not base_url or not api_key or not model:
+        print('[EmbeddingEngine] External embedding config incomplete; hybrid vector search disabled')
+        return None
+    return OpenAICompatibleEmbeddingEngine(base_url=base_url, api_key=api_key, model=model)
+
+
 def get_hybrid_engine():
     """获取混合搜索引擎 (懒初始化, 模型不存在时返回 None)"""
     import server.state as _st
     if not HAS_HYBRID_SEARCH:
         return None
-    if _st._hybrid_engine is not None:
-        return _st._hybrid_engine
-    model_dir = _embedding_manager._get_model_dir()
-    if not model_dir.exists():
+    config = _load_embedding_llm_config()
+    next_engine = _create_embedding_engine(config)
+    if next_engine is None:
+        shutdown_hybrid_engine()
         return None
-    _st._embedding_engine = EmbeddingEngine(str(model_dir))
+
+    current_fp = getattr(_st._embedding_engine, 'fingerprint', None)
+    next_fp = getattr(next_engine, 'fingerprint', None)
+    if _st._hybrid_engine is not None and current_fp == next_fp:
+        return _st._hybrid_engine
+
+    shutdown_hybrid_engine()
+    _st._embedding_engine = next_engine
     _st._hybrid_engine = HybridSearchEngine(
         embedding_engine=_st._embedding_engine,
         reranker_engine=None,
         llm_call_fn=None,
     )
     return _st._hybrid_engine
+
+
+_vector_reindex_lock = threading.Lock()
+
+
+def _count_vectors_for_engine(conn: sqlite3.Connection, table: str, id_col: str, embedding_engine) -> int:
+    fp = getattr(embedding_engine, 'fingerprint', '')
+    if getattr(embedding_engine, 'accepts_legacy_vectors', False):
+        sql = (
+            f"SELECT COUNT(DISTINCT {id_col}) FROM {table} "
+            "WHERE embedding_fingerprint = ? OR embedding_fingerprint IS NULL OR embedding_fingerprint = ''"
+        )
+        return conn.execute(sql, (fp,)).fetchone()[0]
+    return conn.execute(
+        f"SELECT COUNT(DISTINCT {id_col}) FROM {table} WHERE embedding_fingerprint = ?",
+        (fp,),
+    ).fetchone()[0]
+
+
+def ensure_current_vector_indexes(reason: str = 'manual'):
+    import server.state as _st
+    if not HAS_HYBRID_SEARCH or not _st._db_conn:
+        return
+
+    engine = get_hybrid_engine()
+    embedding_engine = _st._embedding_engine
+    if not engine or not embedding_engine:
+        return
+    if not embedding_engine.available:
+        return
+
+    conn = _st._db_conn
+    fp = getattr(embedding_engine, 'fingerprint', 'unknown')
+    try:
+        with _db_lock:
+            memory_total = conn.execute(
+                "SELECT COUNT(*) FROM memory WHERE deleted_at IS NULL AND status = 'active' AND content != ''"
+            ).fetchone()[0]
+            memory_indexed = _count_vectors_for_engine(conn, 'memory_vectors', 'memory_id', embedding_engine)
+            wiki_total = conn.execute(
+                "SELECT COUNT(*) FROM wiki_entity WHERE status = 'active'"
+            ).fetchone()[0]
+            wiki_indexed = _count_vectors_for_engine(conn, 'wiki_vectors', 'entity_id', embedding_engine)
+
+        if memory_total > 0 and memory_indexed < memory_total:
+            print(f"[VectorIndex] Reindexing memory vectors ({reason}, {memory_indexed}/{memory_total}, fp={fp})")
+            indexed = reindex_all_memory_vectors(conn, embedding_engine, _db_lock)
+            print(f"[VectorIndex] Memory reindex complete: {indexed} memories")
+
+        if wiki_total > 0 and wiki_indexed < wiki_total:
+            print(f"[VectorIndex] Reindexing wiki vectors ({reason}, {wiki_indexed}/{wiki_total}, fp={fp})")
+            indexed = reindex_all_wiki_vectors(conn, embedding_engine, _db_lock)
+            print(f"[VectorIndex] Wiki reindex complete: {indexed} entities")
+    except Exception as e:
+        print(f"[VectorIndex] Reindex failed ({reason}): {e}")
+
+
+def ensure_current_vector_indexes_async(reason: str = 'manual'):
+    if not _vector_reindex_lock.acquire(blocking=False):
+        return
+
+    def _run():
+        try:
+            ensure_current_vector_indexes(reason)
+        finally:
+            _vector_reindex_lock.release()
+
+    threading.Thread(target=_run, name='vector-reindex', daemon=True).start()

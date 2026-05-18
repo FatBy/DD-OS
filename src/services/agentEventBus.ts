@@ -15,6 +15,7 @@ import type {
   FailoverReason,
 } from '@/types'
 import { createInitialRunState } from '@/types'
+import { emitPluginHook } from '@/services/pluginBridge'
 
 type Listener = (event: AgentEventEnvelope) => void
 
@@ -81,6 +82,9 @@ class AgentEventBusImpl implements IAgentEventBus {
           try { listener(event) } catch (e) { console.error('[EventBus] stream listener error:', e) }
         }
       }
+
+      // 转发到插件系统 Hook（fire-and-forget）
+      this.forwardToPluginHook(event)
     })
   }
 
@@ -586,6 +590,24 @@ class AgentEventBusImpl implements IAgentEventBus {
           }
         }
         break
+    }
+  }
+
+  // ═══ 插件 Hook 转发 ═══
+
+  private forwardToPluginHook(event: AgentEventEnvelope): void {
+    const { stream, type, data, runId } = event
+    const hookData = { ...data, runId }
+
+    // 映射 EventBus 事件到插件 Hook 名称
+    if (stream === 'lifecycle' && type === 'run_start') {
+      emitPluginHook('session_start', hookData)
+    } else if (stream === 'lifecycle' && type === 'run_end') {
+      emitPluginHook('agent_end', hookData)
+    } else if (stream === 'tool' && type === 'tool_end') {
+      emitPluginHook('after_tool_call', hookData)
+    } else if (stream === 'assistant' && type === 'message_end') {
+      emitPluginHook('llm_output', hookData)
     }
   }
 

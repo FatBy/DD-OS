@@ -16,7 +16,7 @@ import { installSkill, triggerHotReload } from '@/services/installService'
 import { dunScoringService } from '@/services/dunScoringService'
 import { agentEventBus } from '@/services/agentEventBus'
 import { getConstructionProgress } from '@/store/slices/worldSlice'
-import type { DunEntity, DunExperience, DunScoring } from '@/types'
+import type { DunEntity, DunExperience, DunScoring, DunLLMBinding } from '@/types'
 import { getScoreTier, SCORE_TIER_COLORS } from '@/types'
 import { formatTime } from '@/utils/formatTime'
 import {
@@ -105,13 +105,14 @@ export function DunDetailPanel() {
   const addDun = useStore((s) => s.addDun)
   const skills = useStore((s) => s.skills)
   const openClawSkills = useStore((s) => s.openClawSkills)
-  const llmConfig = useStore((s) => s.llmConfig)
   const setActiveDun = useStore((s) => s.setActiveDun)
   const activeDunId = useStore((s) => s.activeDunId)
   const tasks = useStore((s) => s.tasks)
   const activeExecutions = useStore((s) => s.activeExecutions)
 
   const addToast = useStore((s) => s.addToast)
+  const providers = useStore((s) => s.linkStation.providers)
+  const saveDunLLMBinding = useStore((s) => s.saveDunLLMBinding)
 
   // 搜索技能功能
   const pendingDunChatInput = useStore((s) => s.pendingDunChatInput)
@@ -127,9 +128,11 @@ export function DunDetailPanel() {
   const [showModelConfig, setShowModelConfig] = useState(false)
   // showSOP 已移除：SOP Tab 现在直接完整展示，不再折叠
   const [showTaskDetail, setShowTaskDetail] = useState(false)  // 任务流程默认折叠
-  const [customBaseUrl, setCustomBaseUrl] = useState('')
-  const [customModel, setCustomModel] = useState('')
-  const [customApiKey, setCustomApiKey] = useState('')
+  // LLM Binding 状态
+  const [bindingProviderId, setBindingProviderId] = useState<string>('')
+  const [bindingModelId, setBindingModelId] = useState<string>('')
+  const [bindingTemperature, setBindingTemperature] = useState<number>(0.7)
+  const [useCustomTemp, setUseCustomTemp] = useState(false)
   const [experiences, setExperiences] = useState<DunExperience[]>([])
   
   // V2: 评分系统状态
@@ -408,12 +411,15 @@ export function DunDetailPanel() {
     }
     // 先从缓存加载
     const cached = dunScoringService.getScoring(dun.id)
+    console.log(`[DunDetailPanel] Loading scoring for ${dun.id}, cached:`, cached ? `score=${cached.score}` : 'null')
     if (cached) {
       setScoring(cached)
     } else {
       // 尝试从服务端加载，失败则用 getOrCreate 创建初始值
       const serverUrl = localStorage.getItem('duncrew_server_url') || getServerUrl()
+      console.log(`[DunDetailPanel] Fetching from server: ${serverUrl}`)
       dunScoringService.loadFromServer(dun.id, serverUrl).then(loaded => {
+        console.log(`[DunDetailPanel] Server loaded for ${dun.id}:`, loaded ? `score=${loaded.score} runs=${loaded.totalRuns}` : 'null')
         setScoring(loaded || dunScoringService.getOrCreate(dun.id))
       })
     }
@@ -447,6 +453,27 @@ export function DunDetailPanel() {
       }
     }
   }, [dunPanelOpen, selectedDunForPanel, pendingDunChatInput])
+
+  // LLM Binding 初始化：面板打开时从 dun.llmBinding 读取
+  useEffect(() => {
+    if (!dun) return
+    if (dun.llmBinding) {
+      setBindingProviderId(dun.llmBinding.providerId)
+      setBindingModelId(dun.llmBinding.modelId)
+      if (dun.llmBinding.temperature != null) {
+        setBindingTemperature(dun.llmBinding.temperature)
+        setUseCustomTemp(true)
+      } else {
+        setBindingTemperature(0.7)
+        setUseCustomTemp(false)
+      }
+    } else {
+      setBindingProviderId('')
+      setBindingModelId('')
+      setBindingTemperature(0.7)
+      setUseCustomTemp(false)
+    }
+  }, [dun?.id, dun?.llmBinding, dunPanelOpen])
   
   if (!dun) return null
   
@@ -488,10 +515,53 @@ export function DunDetailPanel() {
     }
   }
   
-  // Which model is being used
-  const activeModel = dun.customModel 
-    ? { label: dun.customModel.model, isCustom: true }
-    : { label: llmConfig.model || 'Not configured', isCustom: false }
+  // LLM Binding: 当前选中的 Provider 对象
+  const selectedProvider = useMemo(() => {
+    if (!bindingProviderId) return null
+    return providers.find(p => p.id === bindingProviderId) ?? null
+  }, [providers, bindingProviderId])
+
+  // LLM Binding: 绑定状态摘要
+  const bindingStatus = useMemo(() => {
+    if (dun.llmBinding) {
+      const p = providers.find(pp => pp.id === dun.llmBinding!.providerId)
+      const pLabel = p?.label || dun.llmBinding.providerId
+      const mLabel = p?.models.find(m => m.id === dun.llmBinding!.modelId)?.name || dun.llmBinding.modelId
+      return { label: `${pLabel} / ${mLabel}`, isCustom: true }
+    }
+    return { label: '使用全局配置', isCustom: false }
+  }, [dun.llmBinding, providers])
+
+  // 保存 LLM Binding
+  const handleSaveBinding = async () => {
+    if (!dun) return
+    if (!bindingProviderId || !bindingModelId) {
+      // 清除绑定
+      await saveDunLLMBinding(dun.id, null)
+      addToast({ type: 'success', title: '已切换为全局配置' })
+    } else {
+      const binding: DunLLMBinding = {
+        providerId: bindingProviderId,
+        modelId: bindingModelId,
+        ...(useCustomTemp ? { temperature: bindingTemperature } : {}),
+      }
+      await saveDunLLMBinding(dun.id, binding)
+      addToast({ type: 'success', title: '模型绑定已保存' })
+    }
+    setShowModelConfig(false)
+  }
+
+  // 清除 LLM Binding
+  const handleClearBinding = async () => {
+    if (!dun) return
+    await saveDunLLMBinding(dun.id, null)
+    setBindingProviderId('')
+    setBindingModelId('')
+    setBindingTemperature(0.7)
+    setUseCustomTemp(false)
+    addToast({ type: 'success', title: '已清除模型绑定' })
+    setShowModelConfig(false)
+  }
   
   const handleExecute = () => {
     // 点击 Execute 按钮：始终创建新的 Dun 会话，然后打开主聊天面板
@@ -504,35 +574,6 @@ export function DunDetailPanel() {
     setActiveDun(null)
   }
   
-  const handleSaveModel = () => {
-    if (!dun) return
-    const updated = { ...dun }
-    if (customBaseUrl && customModel) {
-      updated.customModel = {
-        baseUrl: customBaseUrl,
-        model: customModel,
-        apiKey: customApiKey || undefined,
-      }
-    } else {
-      updated.customModel = undefined
-    }
-    // Update via remove + add
-    removeDun(dun.id)
-    addDun(updated)
-    setShowModelConfig(false)
-  }
-  
-  const handleClearModel = () => {
-    if (!dun) return
-    const updated = { ...dun, customModel: undefined }
-    removeDun(dun.id)
-    addDun(updated)
-    setCustomBaseUrl('')
-    setCustomModel('')
-    setCustomApiKey('')
-    setShowModelConfig(false)
-  }
-  
   const handleDelete = () => {
     const confirmMsg = '确定要删除此节点吗？此操作不可撤销。'
     if (confirm(confirmMsg)) {
@@ -543,11 +584,6 @@ export function DunDetailPanel() {
 
   // Initialize model config fields when opening
   const handleToggleModelConfig = () => {
-    if (!showModelConfig && dun.customModel) {
-      setCustomBaseUrl(dun.customModel.baseUrl)
-      setCustomModel(dun.customModel.model)
-      setCustomApiKey(dun.customModel.apiKey || '')
-    }
     setShowModelConfig(!showModelConfig)
   }
   
@@ -1601,7 +1637,7 @@ export function DunDetailPanel() {
               {/* ==================== TAB: SKILLS(Rules) - end / TAB: RECORDS resume ==================== */}
               </>)}
               {activeTab === 'records' && (<>
-              {/* ==================== Model Config ==================== */}
+              {/* ==================== LLM 模型配置 ==================== */}
               <div className="p-5 rounded-xl bg-white/[0.03] border border-white/[0.06]">
                 <button
                   onClick={handleToggleModelConfig}
@@ -1609,15 +1645,15 @@ export function DunDetailPanel() {
                 >
                   <Cpu className="w-4 h-4 text-stone-400" />
                   <span className="text-xs font-mono text-stone-400 uppercase tracking-wider">
-                    Model
+                    模型配置
                   </span>
                   <span className={cn(
                     'ml-auto text-xs font-mono px-2 py-0.5 rounded',
-                    activeModel.isCustom 
+                    bindingStatus.isCustom 
                       ? 'bg-amber-500/15 text-amber-400 border border-amber-500/20'
                       : 'text-stone-300'
                   )}>
-                    {activeModel.isCustom ? 'Custom' : 'Global'}
+                    {bindingStatus.isCustom ? '独立绑定' : '全局'}
                   </span>
                   {showModelConfig 
                     ? <ChevronDown className="w-3 h-3 text-stone-300" />
@@ -1626,8 +1662,16 @@ export function DunDetailPanel() {
                 </button>
                 
                 <p className="text-xs font-mono text-stone-300 mt-1.5 truncate">
-                  {activeModel.label}
+                  {bindingStatus.label}
                 </p>
+
+                {/* 旧版 customModel 迁移提示 */}
+                {dun.customModel && !dun.llmBinding && (
+                  <p className="text-xs text-amber-500/80 mt-1.5 flex items-center gap-1">
+                    <AlertCircle className="w-3 h-3 flex-shrink-0" />
+                    当前使用旧版自定义模型配置，建议迁移到新版绑定
+                  </p>
+                )}
                 
                 <AnimatePresence initial={false}>
                   {showModelConfig && (
@@ -1639,49 +1683,90 @@ export function DunDetailPanel() {
                       className="overflow-hidden"
                     >
                       <div className="mt-3 pt-3 border-t border-stone-100 space-y-3">
+                        {/* Provider 选择 */}
                         <div>
-                          <label className="text-[13px] font-mono text-stone-300 uppercase mb-1 block">Base URL</label>
-                          <input
-                            type="text"
-                            value={customBaseUrl}
-                            onChange={e => setCustomBaseUrl(e.target.value)}
-                            placeholder={llmConfig.baseUrl || 'https://api.openai.com/v1'}
-                            className="w-full px-3 py-2 bg-stone-100/80 border border-stone-200 rounded text-sm font-mono text-stone-600 placeholder:text-stone-300 focus:outline-none focus:border-cyan-500/30"
-                          />
+                          <label className="text-[13px] font-mono text-stone-300 uppercase mb-1 block">Provider</label>
+                          <select
+                            value={bindingProviderId}
+                            onChange={e => {
+                              setBindingProviderId(e.target.value)
+                              setBindingModelId('')  // 切换 provider 时重置 model
+                            }}
+                            className="w-full px-3 py-2 bg-stone-100/80 border border-stone-200 rounded text-sm font-mono text-stone-600 focus:outline-none focus:border-cyan-500/30 appearance-none cursor-pointer"
+                          >
+                            <option value="">使用全局配置</option>
+                            {providers.map(p => (
+                              <option key={p.id} value={p.id}>{p.label}</option>
+                            ))}
+                          </select>
                         </div>
-                        <div>
-                          <label className="text-[13px] font-mono text-stone-300 uppercase mb-1 block">Model</label>
-                          <input
-                            type="text"
-                            value={customModel}
-                            onChange={e => setCustomModel(e.target.value)}
-                            placeholder={llmConfig.model || 'gpt-4o'}
-                            className="w-full px-3 py-2 bg-stone-100/80 border border-stone-200 rounded text-sm font-mono text-stone-600 placeholder:text-stone-300 focus:outline-none focus:border-cyan-500/30"
-                          />
-                        </div>
-                        <div>
-                          <label className="text-[13px] font-mono text-stone-300 uppercase mb-1 block">API Key (optional, uses global if empty)</label>
-                          <input
-                            type="password"
-                            value={customApiKey}
-                            onChange={e => setCustomApiKey(e.target.value)}
-                            placeholder="Leave empty for global key"
-                            className="w-full px-3 py-2 bg-stone-100/80 border border-stone-200 rounded text-sm font-mono text-stone-600 placeholder:text-stone-300 focus:outline-none focus:border-cyan-500/30"
-                          />
-                        </div>
+
+                        {/* Model 选择 - 仅当选了 provider 时显示 */}
+                        {selectedProvider && (
+                          <div>
+                            <label className="text-[13px] font-mono text-stone-300 uppercase mb-1 block">Model</label>
+                            <select
+                              value={bindingModelId}
+                              onChange={e => setBindingModelId(e.target.value)}
+                              className="w-full px-3 py-2 bg-stone-100/80 border border-stone-200 rounded text-sm font-mono text-stone-600 focus:outline-none focus:border-cyan-500/30 appearance-none cursor-pointer"
+                            >
+                              <option value="">请选择模型</option>
+                              {selectedProvider.models.map(m => (
+                                <option key={m.id} value={m.id}>{m.name || m.id}</option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
+
+                        {/* Temperature 滑块 - 仅当选了 provider + model 时显示 */}
+                        {selectedProvider && bindingModelId && (
+                          <div>
+                            <div className="flex items-center justify-between mb-1">
+                              <label className="text-[13px] font-mono text-stone-300 uppercase">Temperature</label>
+                              <button
+                                onClick={() => setUseCustomTemp(!useCustomTemp)}
+                                className={cn(
+                                  'text-[11px] font-mono px-2 py-0.5 rounded border transition-colors',
+                                  useCustomTemp
+                                    ? 'bg-cyan-500/15 text-cyan-400 border-cyan-500/20'
+                                    : 'bg-stone-100/80 text-stone-400 border-stone-200 hover:text-stone-500'
+                                )}
+                              >
+                                {useCustomTemp ? '自定义' : '使用默认'}
+                              </button>
+                            </div>
+                            {useCustomTemp && (
+                              <div className="flex items-center gap-3">
+                                <input
+                                  type="range"
+                                  min={0}
+                                  max={2}
+                                  step={0.1}
+                                  value={bindingTemperature}
+                                  onChange={e => setBindingTemperature(parseFloat(e.target.value))}
+                                  className="flex-1 h-1.5 bg-stone-200 rounded-full appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-cyan-400 [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-white [&::-webkit-slider-thumb]:shadow"
+                                />
+                                <span className="text-xs font-mono text-stone-500 w-8 text-right tabular-nums">
+                                  {bindingTemperature.toFixed(1)}
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
                         <div className="flex gap-2 pt-1">
                           <button
-                            onClick={handleSaveModel}
+                            onClick={handleSaveBinding}
                             className="flex-1 py-2 px-4 rounded text-xs font-mono bg-cyan-500/20 border border-cyan-500/30 text-cyan-300 hover:bg-cyan-500/30 transition-colors"
                           >
-                            Save
+                            保存
                           </button>
-                          {dun.customModel && (
+                          {dun.llmBinding && (
                             <button
-                              onClick={handleClearModel}
+                              onClick={handleClearBinding}
                               className="py-2 px-4 rounded text-xs font-mono bg-stone-100/80 border border-stone-200 text-stone-400 hover:text-stone-500 transition-colors"
                             >
-                              Reset to Global
+                              恢复全局
                             </button>
                           )}
                         </div>

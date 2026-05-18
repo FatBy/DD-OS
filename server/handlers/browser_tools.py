@@ -10,8 +10,12 @@ import base64
 from pathlib import Path
 from datetime import datetime
 
-from server.constants import HAS_OCR, HAS_SCREEN_CAPTURE
+from server.constants import HAS_OCR, HAS_SCREEN_CAPTURE, MAX_FILE_SIZE, MAX_OUTPUT_SIZE
 from server.state import _browser_manager
+
+if HAS_OCR:
+    import pytesseract
+    from PIL import Image
 
 if HAS_SCREEN_CAPTURE:
     import mss as mss_lib

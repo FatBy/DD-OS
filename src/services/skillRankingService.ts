@@ -9,7 +9,7 @@
  *   4. 质量先验   (SKILL.md 完整度，解决冷启动)
  */
 
-import { embed, cosineSimilarity } from './llmService'
+import { embed, cosineSimilarity, getLLMConfig } from './llmService'
 import { skillStatsService } from './skillStatsService'
 import type { OpenClawSkill } from '@/types'
 
@@ -250,8 +250,18 @@ loadEmbeddingCacheFromStorage()
 // 防抖持久化 timer
 let _persistTimer: ReturnType<typeof setTimeout> | null = null
 
+function embeddingConfigFingerprint(): string {
+  const cfg = getLLMConfig()
+  return `${cfg.embedBaseUrl || cfg.baseUrl || 'local'}::${cfg.embedModel || 'auto'}`
+}
+
 function skillFingerprint(skill: OpenClawSkill): string {
-  return `${skill.name}::${skill.description ?? ''}::${(skill.keywords ?? []).join(',')}`
+  return [
+    embeddingConfigFingerprint(),
+    skill.name,
+    skill.description ?? '',
+    (skill.keywords ?? []).join(','),
+  ].join('::')
 }
 
 async function getSkillEmbedding(skill: OpenClawSkill): Promise<number[] | null> {

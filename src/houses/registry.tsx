@@ -1,12 +1,14 @@
+import { lazy } from 'react'
 import type { HouseConfig } from '@/types'
-import { Home, Brain, ScrollText, ListTodo, Ghost, Settings, Radio, Library } from 'lucide-react'
-import { SkillHouse } from '@/components/houses/SkillHouse'
-import { MemoryHouse } from '@/components/houses/MemoryHouse'
-import { TaskHouse } from '@/components/houses/TaskHouse'
-import { SoulHouse } from '@/components/houses/SoulHouse'
-import { SettingsHouse } from '@/components/houses/SettingsHouse'
-import { LinkStationHouse } from '@/components/houses/LinkStationHouse'
-import { LibraryHouse } from '@/components/houses/LibraryHouse'
+import { Home, Brain, ScrollText, Ghost, Settings, Radio, Library } from 'lucide-react'
+
+// 懒加载所有 House 组件，首屏不再拉入完整依赖图
+const SkillHouse = lazy(() => import('@/components/houses/SkillHouse').then(m => ({ default: m.SkillHouse })))
+const MemoryHouse = lazy(() => import('@/components/houses/MemoryHouse').then(m => ({ default: m.MemoryHouse })))
+const SoulHouse = lazy(() => import('@/components/houses/SoulHouse').then(m => ({ default: m.SoulHouse })))
+const LinkStationHouse = lazy(() => import('@/components/houses/LinkStationHouse').then(m => ({ default: m.LinkStationHouse })))
+const LibraryHouse = lazy(() => import('@/components/houses/LibraryHouse').then(m => ({ default: m.LibraryHouse })))
+const SettingsHouse = lazy(() => import('@/components/houses/SettingsHouse').then(m => ({ default: m.SettingsHouse })))
 
 // World view is handled separately as the background layer.
 // This placeholder is registered so the Dock can render a "Home" icon.
@@ -23,14 +25,7 @@ export const houseRegistry: HouseConfig[] = [
     themeColor: 'slate',
     description: '2.5D 游戏地图背景',
   },
-  {
-    id: 'task',
-    name: '任务监控',
-    icon: ListTodo,
-    component: TaskHouse,
-    themeColor: 'amber',
-    description: '会话任务看板 (映射自 Sessions)',
-  },
+
   {
     id: 'skill',
     name: '技能树',

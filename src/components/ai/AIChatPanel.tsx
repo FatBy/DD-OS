@@ -3,7 +3,8 @@ import { motion, AnimatePresence, useDragControls } from 'framer-motion'
 import { 
   MessageSquare, X, Send, Trash2, Square, Sparkles, Loader2, Zap,
   Image, Paperclip, Puzzle, Server, Command, GripHorizontal, Wand2,
-  PanelLeftClose, PanelLeft, CheckCircle, AlertCircle, Box
+  PanelLeftClose, PanelLeft, CheckCircle, AlertCircle, Box,
+  PanelRightClose, PanelRight, FileText
 } from 'lucide-react'
 import { useStore } from '@/store'
 import { isLLMConfigured } from '@/services/llmService'
@@ -17,8 +18,25 @@ import { MentionDropdown, detectMention, closeMention, filterMentionItems, type 
 import { CreateDunModal, DunInitialData } from '@/components/world/CreateDunModal'
 import { autoInstallSkills } from '@/services/installService'
 import { ConversationSidebar } from './ConversationSidebar'
+import { ExecutionProgressPanel } from './ExecutionProgressPanel'
+import { MarkdownDocPanel } from './MarkdownDocPanel'
 import { useT } from '@/i18n'
 import { getServerUrl as _getServerUrl } from '@/utils/env'
+
+const PANEL_WIDTH_KEY = 'duncrew_progress_panel_width'
+const SIDEBAR_WIDTH_KEY = 'duncrew_sidebar_width'
+const MAX_PROGRESS_TABS = 10
+
+// Tab 数据结构
+interface ProgressTab {
+  taskId: string
+  title: string       // 任务标题（截取前30字）
+  status: 'executing' | 'done' | 'terminated' | string
+  openedAt: number    // 打开时间，用于排序
+  type?: 'execution' | 'document'  // 不填默认 execution，保持兼容
+  filePath?: string                // document 类型的文件路径
+  documentContent?: string         // 文档内容缓存
+}
 
 export function AIChatPanel() {
   const t = useT()
@@ -31,6 +49,18 @@ export function AIChatPanel() {
   const [showDunModal, setShowDunModal] = useState(false)
   const [dunInitialData, setDunInitialData] = useState<DunInitialData | undefined>()
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [showProgressPanel, setShowProgressPanel] = useState(false)
+  const [progressTabs, setProgressTabs] = useState<ProgressTab[]>([])
+  const [activeTabId, setActiveTabId] = useState<string | null>(null)
+  const prevExecutionIdsRef = useRef<Set<string>>(new Set())
+  const [panelWidth, setPanelWidth] = useState(() => {
+    const saved = localStorage.getItem(PANEL_WIDTH_KEY)
+    return saved ? Number(saved) : 380
+  })
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    const saved = localStorage.getItem(SIDEBAR_WIDTH_KEY)
+    return saved ? Number(saved) : 260
+  })
   const [parsingFiles, setParsingFiles] = useState(false)
   const [parseProgress, setParseProgress] = useState<Array<{ name: string; status: 'uploading' | 'done' | 'error' }>>([])
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -133,6 +163,183 @@ export function AIChatPanel() {
     }
     return items
   }, [openClawSkills, mcpServers, duns])
+
+  // 执行进展面板自动展开逻辑 + 多 Tab 管理
+  const activeExecutions = useStore((s) => s.activeExecutions)
+
+  // 自动添加/更新 Tab 逻辑
+  useEffect(() => {
+    const prevIds = prevExecutionIdsRef.current
+
+    // 检测新出现的 executing 任务
+    for (const task of activeExecutions) {
+      const isExecuting = task.status === 'executing' || task.status === 'retrying'
+      if (isExecuting && !prevIds.has(task.id)) {
+        // 新的执行任务 → 添加为新 Tab 并激活
+        setProgressTabs(prev => {
+          // 已存在则不重复添加
+          if (prev.some(t => t.taskId === task.id)) return prev
+          const newTab: ProgressTab = {
+            taskId: task.id,
+            title: (task.title || task.description || '未命名任务').slice(0, 30),
+            status: task.status,
+            openedAt: Date.now(),
+          }
+          let updated = [...prev, newTab]
+          // 超过最大数量时，关闭最早的已完成 Tab
+          if (updated.length > MAX_PROGRESS_TABS) {
+            const doneTab = updated.find(t => t.status === 'done' || t.status === 'terminated')
+            if (doneTab) {
+              updated = updated.filter(t => t.taskId !== doneTab.taskId)
+            } else {
+              updated = updated.slice(1) // 全部都在执行中，移除最旧的
+            }
+          }
+          return updated
+        })
+        setActiveTabId(task.id)
+        setShowProgressPanel(true)
+      }
+    }
+
+    // 更新所有 Tab 的状态
+    setProgressTabs(prev => prev.map(tab => {
+      const task = activeExecutions.find(t => t.id === tab.taskId)
+      if (!task) return tab
+      if (task.status !== tab.status) {
+        return { ...tab, status: task.status }
+      }
+      return tab
+    }))
+
+    // 更新 prevIds
+    const executingIds = new Set(
+      activeExecutions
+        .filter(t => t.status === 'executing' || t.status === 'retrying')
+        .map(t => t.id)
+    )
+    prevExecutionIdsRef.current = executingIds
+  }, [activeExecutions])
+
+  // 关闭 Tab 逻辑
+  const closeTab = useCallback((tabId: string) => {
+    setProgressTabs(prev => {
+      const updated = prev.filter(t => t.taskId !== tabId)
+      // 如果关闭的是当前激活的 Tab，切换到最近的
+      if (activeTabId === tabId) {
+        if (updated.length > 0) {
+          setActiveTabId(updated[updated.length - 1].taskId)
+        } else {
+          setActiveTabId(null)
+          setShowProgressPanel(false)
+        }
+      }
+      return updated
+    })
+  }, [activeTabId])
+
+  // 打开文档 Tab
+  const openDocument = useCallback((filePath: string, title?: string) => {
+    const docId = `doc_${Date.now()}`
+    const fileName = title || filePath.split(/[/\\]/).pop() || '文档'
+    setProgressTabs(prev => {
+      // 如果已打开同一文件，直接切换
+      const existing = prev.find(t => t.type === 'document' && t.filePath === filePath)
+      if (existing) {
+        setActiveTabId(existing.taskId)
+        return prev
+      }
+      // 超过最大 Tab 数时回收已完成的最旧 Tab
+      let updated = [...prev]
+      if (updated.length >= MAX_PROGRESS_TABS) {
+        const doneTabs = updated.filter(t => t.status !== 'executing')
+        if (doneTabs.length > 0) {
+          const oldest = doneTabs.sort((a, b) => a.openedAt - b.openedAt)[0]
+          updated = updated.filter(t => t.taskId !== oldest.taskId)
+        }
+      }
+      return [...updated, {
+        taskId: docId,
+        title: fileName,
+        status: 'done',
+        openedAt: Date.now(),
+        type: 'document' as const,
+        filePath,
+      }]
+    })
+    setActiveTabId(docId)
+    setShowProgressPanel(true)
+  }, [])
+
+  // 监听 pendingDocumentOpen
+  const pendingDocumentOpen = useStore(s => s.pendingDocumentOpen)
+  useEffect(() => {
+    if (pendingDocumentOpen) {
+      openDocument(pendingDocumentOpen.filePath, pendingDocumentOpen.title)
+      useStore.getState().clearPendingDocument()
+    }
+  }, [pendingDocumentOpen, openDocument])
+
+  // 持久化面板宽度
+  useEffect(() => {
+    localStorage.setItem(PANEL_WIDTH_KEY, String(panelWidth))
+  }, [panelWidth])
+
+  // 持久化侧边栏宽度
+  useEffect(() => {
+    localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth))
+  }, [sidebarWidth])
+
+  // 响应式：窗口过窄时隐藏面板
+  useEffect(() => {
+    const handleResize = () => {
+      if (window.innerWidth < 800) {
+        setShowProgressPanel(false)
+      }
+    }
+    window.addEventListener('resize', handleResize)
+    return () => window.removeEventListener('resize', handleResize)
+  }, [])
+
+  // 可拖拽分割线 - 右侧执行面板
+  const handleDividerMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    const startX = e.clientX
+    const startWidth = panelWidth
+
+    const handleMouseMove = (ev: MouseEvent) => {
+      const delta = startX - ev.clientX
+      setPanelWidth(Math.max(280, Math.min(600, startWidth + delta)))
+    }
+
+    const handleMouseUp = () => {
+      document.removeEventListener('mousemove', handleMouseMove)
+      document.removeEventListener('mouseup', handleMouseUp)
+    }
+
+    document.addEventListener('mousemove', handleMouseMove)
+    document.addEventListener('mouseup', handleMouseUp)
+  }, [panelWidth])
+
+  // 可拖拽分割线 - 左侧会话列表
+  const handleSidebarDividerMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    const startX = e.clientX
+    const startWidth = sidebarWidth
+
+    const handleMouseMove = (ev: MouseEvent) => {
+      const delta = ev.clientX - startX
+      setSidebarWidth(Math.max(180, Math.min(360, startWidth + delta)))
+    }
+
+    const handleMouseUp = () => {
+      document.removeEventListener('mousemove', handleMouseMove)
+      document.removeEventListener('mouseup', handleMouseUp)
+    }
+
+    document.addEventListener('mousemove', handleMouseMove)
+    document.addEventListener('mouseup', handleMouseUp)
+  }, [sidebarWidth])
 
   const configured = isLLMConfigured()
   const quickCommands = getQuickCommands(currentView)
@@ -735,7 +942,7 @@ export function AIChatPanel() {
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               onClick={() => setIsOpen(false)}
-              className="fixed inset-0 z-[50] bg-stone-900/5 backdrop-blur-sm"
+              className="fixed inset-0 z-[50] bg-black/40 backdrop-blur-sm"
             />
             
             {/* 拖动约束区域 */}
@@ -754,26 +961,24 @@ export function AIChatPanel() {
               dragElastic={0.05}
               dragMomentum={false}
               className="fixed top-0 bottom-0 left-[70px] right-0 m-auto z-[52]
-                         w-[1200px] max-w-[calc(100%-90px)] h-[80vh] max-h-[850px]
-                         bg-white/95 backdrop-blur-3xl 
-                         border border-white/80
-                         rounded-[2rem]
+                         w-[92vw] max-w-[calc(100%-90px)] h-[88vh]
+                         bg-white
+                         rounded-2xl
                          flex flex-col overflow-hidden
-                         shadow-[0_20px_60px_rgba(0,0,0,0.05)]
+                         shadow-xl shadow-black/8
                          pointer-events-auto"
             >
               {/* Header - 可拖动区域 */}
               <div 
-                className="flex items-center justify-between px-6 py-4 border-b border-stone-100 bg-white/50 z-20 cursor-grab active:cursor-grabbing"
+                className="flex items-center justify-between px-6 py-4 border-b border-gray-100 bg-white z-20 cursor-grab active:cursor-grabbing"
                 onPointerDown={(e) => dragControls.start(e)}
               >
                 <div className="flex items-center gap-3">
-                  <GripHorizontal className="w-4 h-4 text-stone-300" />
+                  <GripHorizontal className="w-4 h-4 text-gray-400" />
                   {/* 侧边栏折叠按钮 */}
                   <button
                     onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-                    className="p-1.5 text-stone-400 hover:text-stone-600 
-                               hover:bg-stone-100 rounded-lg transition-colors"
+                    className="w-7 h-7 flex items-center justify-center rounded-full bg-gray-100 hover:bg-gray-200 text-gray-500 hover:text-gray-700 transition-colors shadow-sm"
                     title={sidebarCollapsed ? t('chat.expand_sidebar') : t('chat.collapse_sidebar')}
                   >
                     {sidebarCollapsed ? (
@@ -782,15 +987,15 @@ export function AIChatPanel() {
                       <PanelLeftClose className="w-4 h-4" />
                     )}
                   </button>
-                  <div className="w-8 h-8 rounded-xl bg-amber-50 border border-amber-100 flex items-center justify-center">
+                  <div className="w-8 h-8 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center">
                     <Sparkles className="w-4 h-4 text-amber-500" />
                   </div>
-                  <h2 className="text-lg font-black text-stone-800 tracking-wide">AI Assistant</h2>
-                  <span className="ml-1 px-2 py-0.5 rounded-md bg-stone-100 border border-stone-200 text-[10px] font-bold text-stone-400 uppercase tracking-widest">
+                  <h2 className="text-lg font-black text-gray-800 tracking-wide">AI Assistant</h2>
+                  <span className="ml-1 px-2.5 py-0.5 rounded-full bg-gray-100 border border-gray-200/80 text-[11px] font-bold text-gray-500 uppercase tracking-widest">
                     {currentView}
                   </span>
                   {agentStatus === 'thinking' && (
-                    <span className="text-sm font-mono text-stone-500 animate-pulse flex items-center gap-1.5 ml-2">
+                    <span className="text-sm font-mono text-gray-500 animate-pulse flex items-center gap-1.5 ml-2">
                       <Loader2 className="w-3.5 h-3.5 animate-spin" /> {t('task.agent_thinking')}
                     </span>
                   )}
@@ -805,9 +1010,9 @@ export function AIChatPanel() {
                   <button
                     onClick={handleCreateDun}
                     disabled={chatStreaming || isObserverAnalyzing}
-                    className="flex items-center gap-1.5 text-xs font-bold text-amber-600 
-                             bg-amber-50 hover:bg-amber-100 px-3 py-1.5 rounded-lg
-                             transition-colors disabled:opacity-30 disabled:pointer-events-none"
+                    className="flex items-center gap-1.5 text-sm font-bold text-amber-600 
+                             bg-amber-500/10 hover:bg-amber-500/20 px-3 py-1.5 rounded-lg
+                             border border-amber-500/30 transition-colors disabled:opacity-30 disabled:pointer-events-none"
                     title={t('chat.create_dun_from_chat')}
                   >
                     {isObserverAnalyzing ? (
@@ -817,17 +1022,46 @@ export function AIChatPanel() {
                     )}
                     <span>{t('chat.create_dun')}</span>
                   </button>
-                  <div className="w-px h-4 bg-stone-200" />
+                  {/* 执行进展面板展开按钮 */}
+                  <button
+                    onClick={() => {
+                      if (showProgressPanel) {
+                        setShowProgressPanel(false)
+                      } else {
+                        // 打开面板：如果没有Tab但有任务，自动为最后一个任务创建Tab
+                        if (progressTabs.length === 0 && activeExecutions.length > 0) {
+                          const lastTask = activeExecutions[activeExecutions.length - 1]
+                          setProgressTabs([{
+                            taskId: lastTask.id,
+                            title: (lastTask.title || lastTask.description || '未命名任务').slice(0, 30),
+                            status: lastTask.status,
+                            openedAt: Date.now(),
+                          }])
+                          setActiveTabId(lastTask.id)
+                        }
+                        setShowProgressPanel(true)
+                      }
+                    }}
+                    className="w-7 h-7 flex items-center justify-center rounded-full bg-gray-100 hover:bg-gray-200 text-gray-500 hover:text-gray-700 transition-colors shadow-sm"
+                    title={showProgressPanel ? '关闭执行面板' : '展开执行面板'}
+                  >
+                    {showProgressPanel ? (
+                      <PanelRightClose className="w-4 h-4" />
+                    ) : (
+                      <PanelRight className="w-4 h-4" />
+                    )}
+                  </button>
+                  <div className="w-px h-4 bg-gray-200" />
                   <button
                     onClick={clearChat}
-                    className="text-stone-400 hover:text-red-400 transition-colors"
+                    className="text-gray-400 hover:text-red-500 transition-colors"
                     title={t('chat.clear')}
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>
                   <button
                     onClick={() => setIsOpen(false)}
-                    className="text-stone-400 hover:text-rose-500 transition-colors"
+                    className="text-gray-400 hover:text-rose-500 transition-colors"
                   >
                     <X className="w-5 h-5" />
                   </button>
@@ -835,13 +1069,13 @@ export function AIChatPanel() {
               </div>
 
               {/* 主体内容区：侧边栏 + 聊天区 */}
-              <div className="flex-1 flex overflow-hidden bg-[#faf9f8]">
+              <div className="flex-1 flex overflow-hidden">
                 {/* 会话侧边栏 */}
                 <AnimatePresence mode="wait">
                   {!sidebarCollapsed && (
                     <motion.div
                       initial={{ width: 0, opacity: 0 }}
-                      animate={{ width: 240, opacity: 1 }}
+                      animate={{ width: sidebarWidth, opacity: 1 }}
                       exit={{ width: 0, opacity: 0 }}
                       transition={{ duration: 0.2 }}
                       className="flex-shrink-0 overflow-hidden"
@@ -851,32 +1085,40 @@ export function AIChatPanel() {
                   )}
                 </AnimatePresence>
 
+                {/* 左侧可拖拽分割线 */}
+                {!sidebarCollapsed && (
+                  <div
+                    className="w-[3px] cursor-col-resize flex-shrink-0 bg-gray-100 hover:bg-emerald-300 transition-colors"
+                    onMouseDown={handleSidebarDividerMouseDown}
+                  />
+                )}
+
                 {/* 聊天主区域 */}
                 <div className="flex-1 flex flex-col min-w-0 bg-white relative">
                   {/* 背景轻微纹理 */}
-                  <div className="absolute inset-0 pointer-events-none opacity-[0.02]" style={{ backgroundImage: 'radial-gradient(#000 1px, transparent 1px)', backgroundSize: '24px 24px' }} />
+                  <div className="absolute inset-0 pointer-events-none opacity-[0.015]" style={{ backgroundImage: 'radial-gradient(#d1d5db 1px, transparent 1px)', backgroundSize: '24px 24px' }} />
                   {/* Messages */}
                   <div className="flex-1 overflow-y-auto px-6 py-5 space-y-6 z-10">
                 <ChatErrorBoundary onReset={clearChat}>
                 {!configured ? (
                   <div className="flex flex-col items-center justify-center h-full text-center">
-                    <Sparkles className="w-16 h-16 text-stone-200 mb-5" />
-                    <p className="text-lg font-mono text-stone-500 mb-2">{t('chat.not_configured')}</p>
-                    <p className="text-base font-mono text-stone-400">
+                    <Sparkles className="w-16 h-16 text-gray-300 mb-5" />
+                    <p className="text-lg font-mono text-gray-600 mb-2">{t('chat.not_configured')}</p>
+                    <p className="text-base font-mono text-gray-500">
                       {t('chat.configure_prompt')}
                     </p>
                   </div>
                 ) : isMessagesLoading ? (
                   <div className="flex flex-col items-center justify-center h-full text-center">
-                    <Loader2 className="w-10 h-10 text-stone-300 mb-4 animate-spin" />
-                    <p className="text-sm font-mono text-stone-400">
+                    <Loader2 className="w-10 h-10 text-gray-400 mb-4 animate-spin" />
+                    <p className="text-sm font-mono text-gray-500">
                       {t('chat.loading_conversations')}
                     </p>
                   </div>
                 ) : chatMessages.length === 0 && !chatStreaming ? (
                   <div className="flex flex-col items-center justify-center h-full text-center">
-                    <MessageSquare className="w-16 h-16 text-stone-200 mb-5" />
-                    <p className="text-lg font-mono text-stone-400 mb-4">
+                    <MessageSquare className="w-16 h-16 text-gray-300 mb-5" />
+                    <p className="text-lg font-mono text-gray-600 mb-4">
                       {t('chat.input_placeholder')}
                     </p>
                     
@@ -884,8 +1126,8 @@ export function AIChatPanel() {
                     <button
                       onClick={handleCreateDun}
                       className="flex items-center gap-3 px-6 py-3.5 mb-8
-                                 bg-amber-50 border border-amber-200 rounded-xl
-                                 text-amber-600 hover:bg-amber-100 hover:border-amber-300
+                                 bg-amber-500/10 border border-amber-500/30 rounded-xl
+                                 text-amber-600 hover:bg-amber-500/20 hover:border-amber-500/50
                                  transition-all duration-300 group"
                     >
                       <Wand2 className="w-5 h-5 group-hover:rotate-12 transition-transform duration-300" />
@@ -898,9 +1140,9 @@ export function AIChatPanel() {
                           <button
                             key={cmd.label}
                             onClick={() => handleQuickCommand(cmd.prompt)}
-                            className="px-4 py-2.5 text-sm font-mono bg-white border border-stone-200 
-                                       rounded-xl text-stone-600 hover:text-amber-600 hover:border-amber-300 hover:bg-amber-50
-                                       transition-colors"
+                            className="px-4 py-2.5 text-sm font-mono bg-white/80 border border-gray-200/80 
+                                       rounded-xl text-gray-600 hover:text-amber-600 hover:border-amber-500/30 hover:bg-amber-50
+                                       transition-colors shadow-sm"
                           >
                             {cmd.label}
                           </button>
@@ -922,7 +1164,7 @@ export function AIChatPanel() {
                       </>
                     )}
                     {chatError && (
-                      <div className="px-5 py-4 bg-red-500/10 border border-red-500/20 rounded-xl text-base font-mono text-red-400">
+                      <div className="px-5 py-4 bg-red-50 border border-red-200/60 rounded-xl text-base font-mono text-red-600">
                         {chatError}
                       </div>
                     )}
@@ -934,15 +1176,15 @@ export function AIChatPanel() {
 
               {/* Quick Commands Bar */}
               {configured && chatMessages.length > 0 && quickCommands.length > 0 && (
-                <div className="px-6 py-3 border-t border-stone-100 flex gap-2 overflow-x-auto z-10">
+                <div className="px-6 py-3 border-t border-gray-100 flex gap-2 overflow-x-auto z-10">
                   {quickCommands.map((cmd) => (
                     <button
                       key={cmd.label}
                       onClick={() => handleQuickCommand(cmd.prompt)}
                       disabled={chatStreaming}
-                      className="flex-shrink-0 px-4 py-2 text-sm font-mono bg-white border border-stone-200 
-                                 rounded-xl text-stone-500 hover:text-amber-600 hover:border-amber-300 hover:bg-amber-50
-                                 transition-colors disabled:opacity-50"
+                      className="flex-shrink-0 px-4 py-2 text-sm font-mono bg-white/80 border border-gray-200/80 
+                                 rounded-xl text-gray-600 hover:text-amber-600 hover:border-amber-500/30 hover:bg-amber-50
+                                 transition-colors disabled:opacity-50 shadow-sm"
                     >
                       {cmd.label}
                     </button>
@@ -952,17 +1194,17 @@ export function AIChatPanel() {
 
               {/* Input - 清透浮动式 */}
               {configured && (
-                <div className="px-6 py-5 bg-gradient-to-t from-white via-white to-transparent z-20">
+                <div className="px-6 py-5 bg-white border-t border-gray-100 z-20">
                   {/* 附件预览 / 解析进度 */}
                   {(attachments.length > 0 || parseProgress.length > 0) && (
                     <div className="flex flex-wrap gap-2 mb-3 max-w-3xl mx-auto">
                       {parsingFiles ? parseProgress.map((p, idx) => (
                         <div
                           key={`parse-${idx}`}
-                          className={`flex items-center gap-2 px-3 py-1.5 border rounded-lg text-xs font-mono
-                            ${p.status === 'done' ? 'bg-emerald-50 border-emerald-200 text-emerald-600' :
-                              p.status === 'error' ? 'bg-red-50 border-red-200 text-red-500' :
-                              'bg-white border-stone-200 text-stone-600'}`}
+                          className={`flex items-center gap-2 px-3 py-1.5 border rounded-lg text-sm font-mono
+                            ${p.status === 'done' ? 'bg-emerald-50 border-emerald-200 text-emerald-700' :
+                              p.status === 'error' ? 'bg-red-50 border-red-200 text-red-700' :
+                              'bg-white/80 border-gray-200 text-gray-700'}`}
                         >
                           {p.status === 'uploading' && <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-500" />}
                           {p.status === 'done' && <CheckCircle className="w-3.5 h-3.5" />}
@@ -971,19 +1213,19 @@ export function AIChatPanel() {
                         </div>
                       )) : attachments.map((att, idx) => (
                         <div
-                          key={idx}
-                          className="flex items-center gap-2 px-3 py-1.5 bg-white border border-stone-200 
-                                     rounded-lg text-xs font-mono text-stone-600"
+                          key={`${att.type}-${att.name}-${idx}`}
+                          className="flex items-center gap-2 px-3 py-1.5 bg-white/80 border border-gray-200 
+                                     rounded-lg text-sm font-mono text-gray-700 shadow-sm"
                         >
                           {att.type === 'image' && <Image className="w-3.5 h-3.5 text-emerald-500" />}
-                          {att.type === 'file' && <Paperclip className="w-3.5 h-3.5 text-stone-500" />}
+                          {att.type === 'file' && <Paperclip className="w-3.5 h-3.5 text-gray-500" />}
                           {att.type === 'skill' && <Puzzle className="w-3.5 h-3.5 text-amber-500" />}
                           {att.type === 'mcp' && <Server className="w-3.5 h-3.5 text-violet-500" />}
                           {att.type === 'dun' && <Box className="w-3.5 h-3.5 text-emerald-500" />}
                           <span className="max-w-[120px] truncate">{att.name}</span>
                           <button
                             onClick={() => removeAttachment(idx)}
-                            className="text-stone-400 hover:text-red-400 ml-0.5"
+                            className="text-gray-400 hover:text-red-500 ml-0.5"
                           >
                             <X className="w-3.5 h-3.5" />
                           </button>
@@ -993,7 +1235,7 @@ export function AIChatPanel() {
                   )}
                   
                   {/* 浮岛输入框 */}
-                  <div className="max-w-3xl mx-auto relative flex items-end gap-2 bg-white border-2 border-stone-200 rounded-2xl p-2 focus-within:border-amber-400 focus-within:shadow-[0_0_15px_rgba(251,191,36,0.15)] transition-all shadow-sm">
+                  <div className="max-w-3xl mx-auto relative flex items-end gap-2 bg-gray-50 border border-gray-200 rounded-xl p-2 focus-within:border-emerald-400 focus-within:shadow-[0_0_12px_rgba(16,185,129,0.08)] transition-all">
                     {/* 工具按钮 */}
                     <div className="flex gap-1 p-1">
                       <input ref={imageInputRef} type="file" accept="image/*" multiple onChange={handleImageUpload} className="hidden" />
@@ -1001,7 +1243,7 @@ export function AIChatPanel() {
                       <button
                         onClick={() => imageInputRef.current?.click()}
                         disabled={chatStreaming}
-                        className="p-1.5 text-stone-400 hover:text-stone-600 bg-stone-50 hover:bg-stone-100 
+                        className="p-1.5 text-gray-400 hover:text-gray-700 bg-gray-100 hover:bg-gray-200 
                                    rounded-lg transition-colors disabled:opacity-50"
                         title="Image"
                       >
@@ -1010,7 +1252,7 @@ export function AIChatPanel() {
                       <button
                         onClick={() => fileInputRef.current?.click()}
                         disabled={chatStreaming}
-                        className="p-1.5 text-stone-400 hover:text-stone-600 bg-stone-50 hover:bg-stone-100 
+                        className="p-1.5 text-gray-400 hover:text-gray-700 bg-gray-100 hover:bg-gray-200 
                                    rounded-lg transition-colors disabled:opacity-50"
                         title="File"
                       >
@@ -1019,7 +1261,7 @@ export function AIChatPanel() {
                       <button
                         onClick={() => setShowSkillModal(true)}
                         disabled={chatStreaming}
-                        className="p-1.5 text-stone-400 hover:text-stone-600 bg-stone-50 hover:bg-stone-100 
+                        className="p-1.5 text-gray-400 hover:text-gray-700 bg-gray-100 hover:bg-gray-200 
                                    rounded-lg transition-colors disabled:opacity-50"
                         title="SKILL"
                       >
@@ -1028,7 +1270,7 @@ export function AIChatPanel() {
                       <button
                         onClick={() => setShowMCPModal(true)}
                         disabled={chatStreaming}
-                        className="p-1.5 text-stone-400 hover:text-stone-600 bg-stone-50 hover:bg-stone-100 
+                        className="p-1.5 text-gray-400 hover:text-gray-700 bg-gray-100 hover:bg-gray-200 
                                    rounded-lg transition-colors disabled:opacity-50"
                         title="MCP"
                       >
@@ -1055,7 +1297,7 @@ export function AIChatPanel() {
                       disabled={chatStreaming}
                       rows={1}
                       className="flex-1 bg-transparent border-none focus:ring-0 resize-none py-3.5 px-2 
-                                 text-stone-700 text-sm font-medium placeholder:text-stone-300
+                                 text-gray-800 text-base font-medium placeholder:text-gray-400
                                  focus:outline-none disabled:opacity-50 min-h-[44px] max-h-[120px]"
                     />
 
@@ -1074,12 +1316,12 @@ export function AIChatPanel() {
                     {parsingFiles ? (
                       <button
                         onClick={handleCancelUpload}
-                        className="m-1.5 w-10 h-10 flex items-center justify-center bg-stone-100 border border-amber-200 
-                                   rounded-xl hover:bg-red-50 hover:border-red-200 transition-colors group"
+                        className="m-1.5 w-10 h-10 flex items-center justify-center bg-gray-100 border border-amber-500/30 
+                                   rounded-xl hover:bg-red-50 hover:border-red-300 transition-colors group"
                         title={t('chat.cancel_upload')}
                       >
                         <Loader2 className="w-4 h-4 text-amber-500 animate-spin group-hover:hidden" />
-                        <X className="w-4 h-4 text-red-400 hidden group-hover:block" />
+                        <X className="w-4 h-4 text-red-500 hidden group-hover:block" />
                       </button>
                     ) : chatStreaming ? (
                       <button
@@ -1093,8 +1335,8 @@ export function AIChatPanel() {
                       <button
                         onClick={handleSend}
                         disabled={(!input.trim() && attachments.length === 0) || parsingFiles}
-                        className="m-1.5 w-10 h-10 flex items-center justify-center bg-amber-100 hover:bg-amber-200 
-                                   text-amber-600 rounded-xl shadow-sm transition-colors
+                        className="m-1.5 w-10 h-10 flex items-center justify-center bg-amber-500/20 hover:bg-amber-500/30 
+                                   text-amber-600 border border-amber-500/30 rounded-xl shadow-sm transition-colors
                                    disabled:opacity-30 disabled:cursor-not-allowed"
                       >
                         <Send className="w-4 h-4" />
@@ -1102,17 +1344,89 @@ export function AIChatPanel() {
                     )}
                   </div>
                   
-                  <div className="text-center mt-3 flex items-center justify-center gap-4 text-[10px] text-stone-400 font-bold uppercase tracking-widest">
-                    <span><kbd className="font-sans px-1 py-0.5 rounded border border-stone-200 bg-stone-50">Enter</kbd> {t('chat.send_shortcut')}</span>
-                    <span><kbd className="font-sans px-1 py-0.5 rounded border border-stone-200 bg-stone-50">Shift+Enter</kbd> {t('chat.newline_shortcut')}</span>
-                    <span><kbd className="font-sans px-1 py-0.5 rounded border border-stone-200 bg-stone-50">@</kbd> Mention</span>
-                    <span><kbd className="font-sans px-1 py-0.5 rounded border border-stone-200 bg-stone-50">Ctrl+V</kbd> {t('chat.paste_shortcut')}</span>
-                    <span><kbd className="font-sans px-1 py-0.5 rounded border border-stone-200 bg-stone-50">Ctrl+K</kbd> {t('chat.close_shortcut')}</span>
+                  <div className="text-center mt-3 flex items-center justify-center gap-4 text-[11px] text-gray-500 font-bold uppercase tracking-widest">
+                    <span><kbd className="font-sans px-1 py-0.5 rounded border border-gray-200 bg-gray-50">Enter</kbd> {t('chat.send_shortcut')}</span>
+                    <span><kbd className="font-sans px-1 py-0.5 rounded border border-gray-200 bg-gray-50">Shift+Enter</kbd> {t('chat.newline_shortcut')}</span>
+                    <span><kbd className="font-sans px-1 py-0.5 rounded border border-gray-200 bg-gray-50">@</kbd> Mention</span>
+                    <span><kbd className="font-sans px-1 py-0.5 rounded border border-gray-200 bg-gray-50">Ctrl+V</kbd> {t('chat.paste_shortcut')}</span>
+                    <span><kbd className="font-sans px-1 py-0.5 rounded border border-gray-200 bg-gray-50">Ctrl+K</kbd> {t('chat.close_shortcut')}</span>
                   </div>
                 </div>
               )}
                 </div>
                 {/* 关闭：聊天主区域 */}
+
+                {/* 可拖拽分割线 + 执行进展面板 (多 Tab) */}
+                {showProgressPanel && progressTabs.length > 0 && (
+                  <>
+                    <div
+                      className="w-[3px] bg-gray-100 hover:bg-emerald-300 cursor-col-resize flex-shrink-0 transition-colors"
+                      onMouseDown={handleDividerMouseDown}
+                    />
+                    <div style={{ width: panelWidth }} className="flex-shrink-0 overflow-hidden flex flex-col">
+                      {/* Tab 栏 */}
+                      <div className="flex items-center border-b border-gray-100 bg-white overflow-x-auto shrink-0">
+                        {progressTabs.map(tab => (
+                          <div
+                            key={tab.taskId}
+                            onClick={() => setActiveTabId(tab.taskId)}
+                            className={`flex items-center gap-2 px-3 py-2 text-sm cursor-pointer border-b-2 whitespace-nowrap flex-shrink-0 transition-colors ${
+                              activeTabId === tab.taskId 
+                                ? 'border-emerald-500 text-gray-800 bg-gray-50/50' 
+                                : 'border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-50'
+                            }`}
+                          >
+                            {/* 状态指示点 / 文档图标 */}
+                            {tab.type === 'document' ? (
+                              <FileText className="w-3 h-3 flex-shrink-0 text-blue-500" />
+                            ) : (
+                              <span className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                                tab.status === 'executing' || tab.status === 'retrying' ? 'bg-blue-400 animate-pulse' :
+                                tab.status === 'done' ? 'bg-emerald-400' : 'bg-red-400'
+                              }`} />
+                            )}
+                            {/* 标题（截取） */}
+                            <span className="max-w-[120px] truncate">{tab.title}</span>
+                            {/* 关闭按钮 */}
+                            <button
+                              onClick={(e) => { e.stopPropagation(); closeTab(tab.taskId); }}
+                              className="ml-1 w-4 h-4 flex items-center justify-center rounded hover:bg-gray-200 text-gray-400 hover:text-gray-600"
+                            >
+                              ×
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                      {/* 执行进展内容 */}
+                      <div className="flex-1 overflow-hidden">
+                        {(() => {
+                          const activeTab = progressTabs.find(t => t.taskId === activeTabId)
+                          if (activeTab?.type === 'document') {
+                            return (
+                              <MarkdownDocPanel
+                                filePath={activeTab.filePath!}
+                                content={activeTab.documentContent}
+                                onContentLoaded={(content) => {
+                                  setProgressTabs(prev => prev.map(t =>
+                                    t.taskId === activeTab.taskId ? { ...t, documentContent: content } : t
+                                  ))
+                                }}
+                              />
+                            )
+                          }
+                          return (
+                            <ExecutionProgressPanel 
+                              taskId={activeTabId || undefined} 
+                              onClose={() => {
+                                if (activeTabId) closeTab(activeTabId)
+                              }} 
+                            />
+                          )
+                        })()}
+                      </div>
+                    </div>
+                  </>
+                )}
               </div>
               {/* 关闭：主体内容区 */}
             </motion.div>

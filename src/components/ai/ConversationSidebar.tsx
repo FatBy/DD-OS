@@ -97,15 +97,15 @@ export function ConversationSidebar({ className }: ConversationSidebarProps) {
   
   return (
     <div className={cn(
-      'w-60 h-full flex flex-col border-r border-stone-100/80 bg-stone-50/50',
+      'w-full h-full flex flex-col border-r border-gray-100 bg-gray-50/80',
       className
     )}>
       {/* Header */}
-      <div className="p-4 border-b border-stone-100">
+      <div className="p-4 border-b border-gray-100">
         <div className="relative">
           <button
             onClick={() => { setShowNewMenu(!showNewMenu); if (showNewMenu) setShowDunPicker(false) }}
-            className="w-full py-2.5 bg-stone-800 hover:bg-stone-700 text-white rounded-xl text-sm font-bold shadow-sm transition-colors flex items-center justify-center gap-2"
+            className="w-full py-2.5 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl text-sm font-bold shadow-sm transition-colors flex items-center justify-center gap-2"
           >
             <Plus className="w-4 h-4" />
             新建会话
@@ -122,29 +122,29 @@ export function ConversationSidebar({ className }: ConversationSidebarProps) {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -8 }}
                 className="absolute top-full left-0 right-0 mt-1 z-10
-                           bg-white border border-stone-200 rounded-xl 
+                           bg-white border border-gray-200 rounded-xl 
                            shadow-lg overflow-hidden"
               >
                 <button
                   onClick={() => handleCreate('general')}
                   className="w-full flex items-center gap-2 px-3 py-2.5 
-                             hover:bg-stone-50 text-sm font-bold text-stone-600 
-                             hover:text-stone-800 transition-colors"
+                             hover:bg-gray-50 text-sm font-bold text-gray-700 
+                             hover:text-gray-900 transition-colors"
                 >
-                  <MessageSquare className="w-4 h-4 text-stone-400" />
+                  <MessageSquare className="w-4 h-4 text-gray-400" />
                   通用对话
                 </button>
                 
                 <button
                   onClick={() => handleCreate('dun')}
                   className="w-full flex items-center gap-2 px-3 py-2.5 
-                             hover:bg-stone-50 text-sm font-bold text-stone-600 
-                             hover:text-stone-800 transition-colors border-t border-stone-100"
+                             hover:bg-gray-50 text-sm font-bold text-gray-700 
+                             hover:text-gray-900 transition-colors border-t border-gray-100"
                 >
-                  <Globe2 className="w-4 h-4 text-stone-400" />
+                  <Globe2 className="w-4 h-4 text-gray-400" />
                   Dun 会话
                   <ChevronRight className={cn(
-                    'w-3 h-3 ml-auto transition-transform text-stone-300',
+                    'w-3 h-3 ml-auto transition-transform text-gray-400',
                     showDunPicker && 'rotate-90'
                   )} />
                 </button>
@@ -156,10 +156,10 @@ export function ConversationSidebar({ className }: ConversationSidebarProps) {
                       animate={{ height: 'auto', opacity: 1 }}
                       exit={{ height: 0, opacity: 0 }}
                       transition={{ duration: 0.15 }}
-                      className="overflow-hidden border-t border-stone-100"
+                      className="overflow-hidden border-t border-gray-100"
                     >
                       {dunList.length === 0 ? (
-                        <div className="px-3 py-3 text-[11px] font-mono text-stone-400 text-center">
+                        <div className="px-3 py-3 text-[11px] font-mono text-gray-400 text-center">
                           还没有可用的 Dun
                         </div>
                       ) : (
@@ -169,15 +169,15 @@ export function ConversationSidebar({ className }: ConversationSidebarProps) {
                               key={n.id}
                               onClick={() => handleSelectDun(n.id)}
                               className="w-full flex items-center gap-2 px-4 py-2 
-                                         hover:bg-stone-50 text-xs font-mono text-stone-500 
-                                         hover:text-stone-700 transition-colors"
+                                         hover:bg-gray-50 text-xs font-mono text-gray-500 
+                                         hover:text-gray-700 transition-colors"
                             >
                               <div 
                                 className="w-2.5 h-2.5 rounded-full flex-shrink-0"
                                 style={{ backgroundColor: `hsl(${n.visualDNA?.primaryHue ?? 270}, 60%, 55%)` }}
                               />
                               <span className="truncate">{n.label || `Dun-${n.id.slice(-6)}`}</span>
-                              <span className="ml-auto text-[10px] text-stone-300 flex-shrink-0">{n.scoring?.score ?? 0}pt</span>
+                              <span className="ml-auto text-[10px] text-gray-400 flex-shrink-0">{n.scoring?.score ?? 0}pt</span>
                             </button>
                           ))}
                         </div>
@@ -192,14 +192,14 @@ export function ConversationSidebar({ className }: ConversationSidebarProps) {
         
         {/* Search */}
         <div className="relative mt-3">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-stone-400" />
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
           <input
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="搜索会话..."
-            className="w-full bg-white border border-stone-200 rounded-lg pl-8 pr-3 py-1.5 
-                       text-xs text-stone-600 focus:outline-none focus:border-amber-300 focus:ring-2 focus:ring-amber-100 transition-all"
+            className="w-full bg-white border border-gray-200 rounded-lg pl-8 pr-3 py-1.5 
+                       text-xs text-gray-700 placeholder:text-gray-400 focus:outline-none focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400/20 transition-all"
           />
         </div>
       </div>
@@ -208,8 +208,8 @@ export function ConversationSidebar({ className }: ConversationSidebarProps) {
       <div className="flex-1 overflow-y-auto p-3 space-y-1.5">
         {conversationList.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center px-4">
-            <MessageSquare className="w-8 h-8 text-stone-200 mb-2" />
-            <p className="text-xs font-mono text-stone-400">
+            <MessageSquare className="w-8 h-8 text-gray-300 mb-2" />
+            <p className="text-xs font-mono text-gray-400">
               {searchQuery ? '没有匹配的会话' : '还没有会话'}
             </p>
           </div>
@@ -229,13 +229,13 @@ export function ConversationSidebar({ className }: ConversationSidebarProps) {
                 className={cn(
                   'group rounded-xl p-3 cursor-pointer transition-all relative',
                   isActive 
-                    ? 'bg-white border border-stone-200 shadow-sm' 
-                    : 'hover:bg-white border border-transparent hover:border-stone-100'
+                    ? 'bg-emerald-50 border border-emerald-200' 
+                    : 'hover:bg-gray-100 border border-transparent'
                 )}
               >
                 {/* Active indicator bar */}
                 {isActive && (
-                  <div className="absolute left-0 top-3 bottom-3 w-1 bg-amber-400 rounded-r-md" />
+                  <div className="absolute left-0 top-3 bottom-3 w-0.5 bg-emerald-400 rounded-r-md" />
                 )}
                 
                 <div className="flex items-start gap-2">
@@ -251,8 +251,8 @@ export function ConversationSidebar({ className }: ConversationSidebarProps) {
                             if (e.key === 'Enter') handleSaveRename()
                             if (e.key === 'Escape') handleCancelRename()
                           }}
-                          className="flex-1 px-1.5 py-0.5 bg-white border border-stone-200 
-                                     rounded text-xs font-mono text-stone-800 outline-none focus:border-amber-300"
+                          className="flex-1 px-1.5 py-0.5 bg-white border border-gray-200 
+                                     rounded text-xs font-mono text-gray-700 outline-none focus:border-emerald-400"
                           onClick={(e) => e.stopPropagation()}
                         />
                         <button
@@ -263,7 +263,7 @@ export function ConversationSidebar({ className }: ConversationSidebarProps) {
                         </button>
                         <button
                           onClick={(e) => { e.stopPropagation(); handleCancelRename() }}
-                          className="p-1 text-stone-400 hover:text-stone-500"
+                          className="p-1 text-gray-400 hover:text-gray-600"
                         >
                           <X className="w-3 h-3" />
                         </button>
@@ -272,19 +272,19 @@ export function ConversationSidebar({ className }: ConversationSidebarProps) {
                       <>
                         <h4 className={cn(
                           'text-sm font-bold truncate',
-                          isActive ? 'text-stone-800' : 'text-stone-600'
+                          isActive ? 'text-gray-800' : 'text-gray-700'
                         )}>
                           {conv.title}
                         </h4>
                         {dun && (
                           <span 
                             className="text-xs font-mono truncate block mt-0.5"
-                            style={{ color: `hsl(${dun.visualDNA?.primaryHue || 270}, 50%, 45%)` }}
+                            style={{ color: `hsl(${dun.visualDNA?.primaryHue || 270}, 50%, 65%)` }}
                           >
                             {dun.label}
                           </span>
                         )}
-                        <p className="text-xs text-stone-400 truncate mt-1">
+                        <p className="text-xs text-gray-400 truncate mt-1">
                           {preview}
                         </p>
                       </>
@@ -296,14 +296,14 @@ export function ConversationSidebar({ className }: ConversationSidebarProps) {
                     <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
                       <button
                         onClick={(e) => { e.stopPropagation(); handleStartRename(conv) }}
-                        className="p-1 text-stone-300 hover:text-stone-500 rounded"
+                        className="p-1 text-gray-400 hover:text-gray-600 rounded"
                         title="重命名"
                       >
                         <Edit2 className="w-3 h-3" />
                       </button>
                       <button
                         onClick={(e) => handleDelete(conv.id, e)}
-                        className="p-1 text-stone-300 hover:text-red-400 rounded"
+                        className="p-1 text-gray-400 hover:text-red-500 rounded"
                         title="删除"
                       >
                         <Trash2 className="w-3 h-3" />
@@ -313,10 +313,10 @@ export function ConversationSidebar({ className }: ConversationSidebarProps) {
                 </div>
                 
                 {/* Timestamp */}
-                <div className="flex items-center justify-between mt-2 text-[10px] text-stone-400 font-bold">
+                <div className="flex items-center justify-between mt-2 text-[10px] text-gray-400 font-bold">
                   <span className={cn(
                     'flex items-center gap-1',
-                    isActive && 'text-emerald-500'
+                    isActive && 'text-emerald-600'
                   )}>
                     {isActive && <CheckCircle2 className="w-3 h-3" />}
                     {conv.messages.length} 条消息

@@ -144,7 +144,10 @@ class SOPEvolutionService {
   private serverUrl: string = getServerUrl()
   private sopTrackers = new Map<string, SOPTracker>()
   private fitnessCache = new Map<string, { data: SOPFitness; ts: number }>()
+  private goldenSummaryCache = new Map<string, { data: GoldenPathSummary | null; ts: number }>()
+  private goldenPathCache = new Map<string, { data: GoldenPath | null; ts: number }>()
   private readonly CACHE_TTL = 60_000
+  private readonly GOLDEN_CACHE_TTL = 30_000
 
   setServerUrl(url: string): void {
     this.serverUrl = url
@@ -155,7 +158,7 @@ class SOPEvolutionService {
   private async readFile(path: string): Promise<string | null> {
     try {
       const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), 5000)
+      const timer = setTimeout(() => controller.abort(), 2000)
       const res = await fetch(`${this.serverUrl}/api/tools/execute`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -379,17 +382,23 @@ class SOPEvolutionService {
 
   /** 供 buildDynamicContext() 调用 — 返回所有 SOP 进化 hints */
   async getContextHints(dunId: string): Promise<string | null> {
+    // 快速前置检查：无执行数据的 Dun 不需要任何 SOP hints
+    // loadSOPFitness 有内存缓存，命中缓存时 0ms；未命中时走 readFile（2s 超时）
+    const fitness = await this.loadSOPFitness(dunId)
+    if (fitness.totalExecutions < EVO.MIN_EXECUTIONS_FOR_HINTS) {
+      // 执行次数不足，后续的 hints/rewrite/goldenPath 全都不会产出内容，直接跳过
+      return null
+    }
+
+    const [hints, rewriteReq, gp] = await Promise.all([
+      this.buildSOPImprovementHints(dunId),
+      this.buildSOPRewriteRequest(dunId),
+      this.buildGoldenPathHint(dunId),
+    ])
     const parts: string[] = []
-
-    const hints = await this.buildSOPImprovementHints(dunId)
     if (hints) parts.push(hints)
-
-    const rewriteReq = await this.buildSOPRewriteRequest(dunId)
     if (rewriteReq) parts.push(rewriteReq)
-
-    const gp = await this.buildGoldenPathHint(dunId)
     if (gp) parts.push(gp)
-
     return parts.length > 0 ? parts.join('\n\n') : null
   }
 
@@ -645,15 +654,35 @@ class SOPEvolutionService {
   // ═══ Golden Path ═══
 
   private async loadGoldenPath(dunId: string): Promise<GoldenPath | null> {
+    const cached = this.goldenPathCache.get(dunId)
+    if (cached && Date.now() - cached.ts < this.GOLDEN_CACHE_TTL) return cached.data
+
     const content = await this.readFile(this.dunFilePath(dunId, EVO.GOLDEN_PATH_FILE))
-    if (!content) return null
-    try { return JSON.parse(content) as GoldenPath } catch { return null }
+    if (!content) { this.goldenPathCache.set(dunId, { data: null, ts: Date.now() }); return null }
+    try {
+      const data = JSON.parse(content) as GoldenPath
+      this.goldenPathCache.set(dunId, { data, ts: Date.now() })
+      return data
+    } catch {
+      this.goldenPathCache.set(dunId, { data: null, ts: Date.now() })
+      return null
+    }
   }
 
   private async loadGoldenPathSummary(dunId: string): Promise<GoldenPathSummary | null> {
+    const cached = this.goldenSummaryCache.get(dunId)
+    if (cached && Date.now() - cached.ts < this.GOLDEN_CACHE_TTL) return cached.data
+
     const content = await this.readFile(this.dunFilePath(dunId, EVO.GOLDEN_SUMMARY_FILE))
-    if (!content) return null
-    try { return JSON.parse(content) as GoldenPathSummary } catch { return null }
+    if (!content) { this.goldenSummaryCache.set(dunId, { data: null, ts: Date.now() }); return null }
+    try {
+      const data = JSON.parse(content) as GoldenPathSummary
+      this.goldenSummaryCache.set(dunId, { data, ts: Date.now() })
+      return data
+    } catch {
+      this.goldenSummaryCache.set(dunId, { data: null, ts: Date.now() })
+      return null
+    }
   }
 
   /** 判断 Dun 是否达到 Golden 状态：EMA ≥ 0.7 且有高置信度 GoldenPathSummary */

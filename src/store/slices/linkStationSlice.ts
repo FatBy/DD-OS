@@ -23,6 +23,7 @@ import type {
   ApiProtocol,
 } from '@/types'
 import { getServerUrl } from '@/utils/env'
+import { initPluginBroadcastListener } from '@/services/pluginBridge'
 
 // ProviderRegion 仅在 PROVIDER_GUIDES 中使用，无需从 types 导入
 
@@ -159,6 +160,12 @@ async function _executeLinkStationSave(
 
 // MCP 状态轮询 timer
 let _mcpPollingTimer: ReturnType<typeof setInterval> | null = null
+
+// loadLinkStation 并发去重标志
+let _linkStationLoading = false
+
+// MCP 状态最后成功查询时间戳（用于轮询节流）
+let _mcpLastPollTime = 0
 
 // ============================================
 // 旧版 localStorage Keys（用于迁移）
@@ -588,6 +595,23 @@ export const PROVIDER_GUIDES: Record<string, ProviderGuide> = {
     tip: '图形化界面管理本地模型，一键下载和运行',
     recommendedModel: '',
   },
+  claudeCode: {
+    label: 'Claude Code (本地)',
+    tagline: '本机 Agent，自带工具生态',
+    icon: '🤖',
+    region: 'local',
+    signupUrl: '',
+    apiKeyPageUrl: '',
+    baseUrl: '',
+    apiProtocol: 'claude-code',
+    steps: [
+      '确认本机已安装并登录 Claude Code CLI',
+      '运行 claude --version 验证安装',
+      '选择此 Provider 即可使用',
+    ],
+    tip: '使用本机 Claude Code 的登录态，无需配置 API Key。需确保 claude 命令可用。',
+    recommendedModel: 'claude-opus-4-7',
+  },
 
   // ── 自定义 ──
   custom: {
@@ -899,6 +923,10 @@ export const createLinkStationSlice: StateCreator<
 
   // ── 持久化 ──
   loadLinkStation: async () => {
+    // 并发去重：避免多处同时调用导致重复 MCP 查询
+    if (_linkStationLoading) return
+    _linkStationLoading = true
+    try {
     // 1. 先尝试从 localStorage 缓存恢复（即时可用，不依赖后端）
     let loaded = false
     try {
@@ -987,6 +1015,16 @@ export const createLinkStationSlice: StateCreator<
 
     // 启动 MCP 状态轮询（每 30s 更新一次）
     get().startMCPStatusPolling()
+
+    // 初始化插件 Provider 广播监听
+    initPluginBroadcastListener({
+      addProvider: (provider) => get().addProvider(provider as ModelProvider),
+      removeProvider: (id) => get().removeProvider(id),
+      getProviders: () => get().linkStation.providers,
+    })
+    } finally {
+      _linkStationLoading = false
+    }
   },
 
   saveLinkStation: async () => {
@@ -1053,12 +1091,15 @@ export const createLinkStationSlice: StateCreator<
   startMCPStatusPolling: () => {
     if (_mcpPollingTimer) return
     _mcpPollingTimer = setInterval(async () => {
+      // 节流：距离上次成功查询不到 60 秒则跳过
+      if (Date.now() - _mcpLastPollTime < 60000) return
       try {
         const serverUrl = localStorage.getItem('duncrew_server_url') || getServerUrl()
         const statusRes = await fetch(`${serverUrl}/mcp/servers`, {
           signal: AbortSignal.timeout(5000),
         })
         if (statusRes.ok) {
+          _mcpLastPollTime = Date.now()
           const statusData = await statusRes.json()
           if (statusData.servers) {
             set((state) => ({
@@ -1081,7 +1122,7 @@ export const createLinkStationSlice: StateCreator<
       } catch {
         // 静默失败
       }
-    }, 30000)
+    }, 120000) // 2分钟轮询间隔（从30秒优化）
   },
 
   stopMCPStatusPolling: () => {

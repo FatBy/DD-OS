@@ -6,7 +6,7 @@
  * 2. MCP 服务 - 蛛网可视化
  */
 
-import { useState, useMemo, useCallback, useRef } from 'react'
+import { useState, useMemo, useCallback, useRef, type ReactNode } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   Radio, Globe, Plus, Search, Trash2, Check, X,
@@ -115,9 +115,13 @@ function ModelChannelSheet() {
     [providers, selectedProviderId]
   )
 
-  const handleGuideComplete = useCallback((provider: ModelProvider, chatBinding?: ModelBinding) => {
+  const handleGuideComplete = useCallback((provider: ModelProvider, bindings?: Partial<ChannelBindings>) => {
     addProvider(provider)
-    if (chatBinding) setChannelBinding('chat', chatBinding)
+    if (bindings) {
+      for (const [channel, binding] of Object.entries(bindings) as Array<[keyof ChannelBindings, ModelBinding | null | undefined]>) {
+        if (binding) setChannelBinding(channel, binding)
+      }
+    }
     setShowGuide(false)
     setGuideKey(null)
     setSelectedProviderId(provider.id)
@@ -273,9 +277,33 @@ function ModelChannelSheet() {
 // Provider 设置向导（3 步）
 // ============================================
 
+type WizardBindingChannel = keyof ChannelBindings | 'none'
+
+const WIZARD_CHANNEL_OPTIONS: Array<{
+  channel: WizardBindingChannel
+  label: string
+  tag: string
+  icon: ReactNode
+}> = [
+  { channel: 'chat', label: '主对话', tag: '核心逻辑', icon: <MessageSquare className="w-4 h-4 text-pink-400" /> },
+  { channel: 'chatSecondary', label: '副对话', tag: '轻量任务', icon: <Zap className="w-4 h-4 text-violet-300" /> },
+  { channel: 'embed', label: 'Embed 向量', tag: '语义匹配', icon: <Database className="w-4 h-4 text-amber-300" /> },
+  { channel: 'imageGen', label: '文生图', tag: '图像生成', icon: <Image className="w-4 h-4 text-blue-300" /> },
+  { channel: 'videoGen', label: '文生视频', tag: '视频生成', icon: <Video className="w-4 h-4 text-cyan-300" /> },
+  { channel: 'none', label: '暂不绑定', tag: '稍后配置', icon: <Unplug className="w-4 h-4 text-stone-300" /> },
+]
+
+function inferDefaultBindingChannel(modelId: string): WizardBindingChannel {
+  const id = modelId.toLowerCase()
+  if (/embed|embedding|向量/.test(id)) return 'embed'
+  if (/image|img|draw|flux|dall|sd-|stable-diffusion|文生图|生图/.test(id)) return 'imageGen'
+  if (/video|wan|sora|hailuo|veo|文生视频|视频/.test(id)) return 'videoGen'
+  return 'chat'
+}
+
 function ProviderSetupWizard({ guideKey, onComplete, onCancel }: {
   guideKey: string
-  onComplete: (provider: ModelProvider, chatBinding?: ModelBinding) => void
+  onComplete: (provider: ModelProvider, bindings?: Partial<ChannelBindings>) => void
   onCancel: () => void
 }) {
   const guide = PROVIDER_GUIDES[guideKey]
@@ -285,6 +313,9 @@ function ProviderSetupWizard({ guideKey, onComplete, onCancel }: {
   const [showKey, setShowKey] = useState(false)
   const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle')
   const [selectedModel, setSelectedModel] = useState(guide?.recommendedModel || '')
+  const [selectedChannel, setSelectedChannel] = useState<WizardBindingChannel>(
+    inferDefaultBindingChannel(guide?.recommendedModel || '')
+  )
   const [showCurlImport, setShowCurlImport] = useState(false)
   const [curlInput, setCurlInput] = useState('')
   const [curlError, setCurlError] = useState('')
@@ -297,13 +328,18 @@ function ProviderSetupWizard({ guideKey, onComplete, onCancel }: {
     }
     if (result.apiKey) setApiKey(result.apiKey)
     if (result.baseUrl) setBaseUrl(result.baseUrl)
-    if (result.model) setSelectedModel(result.model)
+    if (result.model) {
+      setSelectedModel(result.model)
+      setSelectedChannel(inferDefaultBindingChannel(result.model))
+    }
     setCurlError('')
     setShowCurlImport(false)
     setCurlInput('')
   }
 
   if (!guide) return null
+
+  const isClaudeCode = guide.apiProtocol === 'claude-code'
 
   const handleTestConnection = async () => {
     setTestStatus('testing')
@@ -330,10 +366,11 @@ function ProviderSetupWizard({ guideKey, onComplete, onCancel }: {
       updatedAt: now,
       imageGenProfile: guide.imageGenProfile,
     }
-    const chatBinding: ModelBinding | undefined = selectedModel
-      ? { providerId, modelId: selectedModel }
-      : undefined
-    onComplete(provider, chatBinding)
+    const bindings: Partial<ChannelBindings> | undefined =
+      selectedModel && selectedChannel !== 'none'
+        ? { [selectedChannel]: { providerId, modelId: selectedModel } }
+        : undefined
+    onComplete(provider, bindings)
   }
 
   return (
@@ -384,6 +421,12 @@ function ProviderSetupWizard({ guideKey, onComplete, onCancel }: {
                 </a>
               )}
 
+              {isClaudeCode ? (
+                <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl space-y-2">
+                  <p className="text-sm font-medium text-emerald-700">✅ 无需配置 API Key 和 Base URL</p>
+                  <p className="text-xs text-emerald-600/80">Claude Code 使用本机 CLI 登录态，确认已安装并登录后直接点击下一步。</p>
+                </div>
+              ) : (
               <div className="space-y-3">
                 {/* cURL 导入 */}
                 <button
@@ -455,6 +498,7 @@ function ProviderSetupWizard({ guideKey, onComplete, onCancel }: {
                   )}
                 </div>
               </div>
+              )}
 
               {guide.tip && (
                 <p className="text-xs text-stone-500 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
@@ -463,7 +507,7 @@ function ProviderSetupWizard({ guideKey, onComplete, onCancel }: {
               )}
 
               <div className="flex justify-end">
-                <button onClick={() => setStep(2)} disabled={!apiKey && guideKey !== 'ollama'}
+                <button onClick={() => setStep(2)} disabled={!apiKey && guideKey !== 'ollama' && !isClaudeCode}
                   className="px-5 py-2 text-sm font-medium bg-teal-500 text-white rounded-xl hover:bg-teal-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors shadow-sm">
                   下一步 →
                 </button>
@@ -477,7 +521,11 @@ function ProviderSetupWizard({ guideKey, onComplete, onCancel }: {
               <p className="text-sm font-medium text-stone-600">第 2 步：选择模型</p>
               <div>
                 <label className="text-xs font-medium text-stone-500 mb-1.5 block">模型名称</label>
-                <input type="text" value={selectedModel} onChange={e => setSelectedModel(e.target.value)}
+                <input type="text" value={selectedModel} onChange={e => {
+                  const nextModel = e.target.value
+                  setSelectedModel(nextModel)
+                  setSelectedChannel(inferDefaultBindingChannel(nextModel))
+                }}
                   placeholder="输入模型 ID"
                   className="w-full px-3.5 py-2.5 bg-stone-50 border border-stone-200 rounded-xl text-sm text-stone-700 placeholder-stone-400 outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-300 transition-all font-mono"
                 />
@@ -522,27 +570,35 @@ function ProviderSetupWizard({ guideKey, onComplete, onCancel }: {
           {step === 3 && (
             <div className="space-y-5">
               <p className="text-sm font-medium text-stone-600">第 3 步：绑定通道</p>
-              <p className="text-xs text-stone-400">将 {guide.label} 的模型绑定到主对话通道</p>
+              <p className="text-xs text-stone-400">选择 {selectedModel || guide.label} 要绑定的通道，也可以留到后续再配置</p>
 
-              <div className="bg-stone-50 rounded-xl p-4 space-y-3 border border-stone-100">
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-stone-500 flex items-center gap-2">
-                    <MessageSquare className="w-4 h-4 text-pink-400" /> 主对话
-                  </span>
-                  <span className="text-teal-600 font-mono font-medium">{selectedModel || '未配置'}</span>
-                </div>
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-stone-400 flex items-center gap-2">
-                    <Zap className="w-4 h-4 text-violet-300" /> 副对话
-                  </span>
-                  <span className="text-stone-400">可稍后配置</span>
-                </div>
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-stone-400 flex items-center gap-2">
-                    <Database className="w-4 h-4 text-amber-300" /> Embed
-                  </span>
-                  <span className="text-stone-400">可稍后配置</span>
-                </div>
+              <div className="bg-stone-50 rounded-xl p-2.5 space-y-1.5 border border-stone-100">
+                {WIZARD_CHANNEL_OPTIONS.map(option => {
+                  const active = selectedChannel === option.channel
+                  return (
+                    <button
+                      key={option.channel}
+                      type="button"
+                      onClick={() => setSelectedChannel(option.channel)}
+                      className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-left transition-all ${
+                        active
+                          ? 'bg-white border border-teal-200 shadow-sm text-stone-700'
+                          : 'border border-transparent text-stone-400 hover:bg-white/70 hover:text-stone-600'
+                      }`}
+                    >
+                      {option.icon}
+                      <span className="text-sm font-medium">{option.label}</span>
+                      <span className="text-[10px] text-stone-400 bg-stone-100 px-1.5 py-0.5 rounded">{option.tag}</span>
+                      <span className={`ml-auto text-xs ${active ? 'text-teal-600' : 'text-stone-300'}`}>
+                        {active
+                          ? selectedChannel === 'none'
+                            ? '不绑定'
+                            : selectedModel || '未配置'
+                          : '可选'}
+                      </span>
+                    </button>
+                  )
+                })}
               </div>
 
               <div className="flex justify-between">
@@ -602,7 +658,8 @@ function ProviderDetailEditor({ provider, onUpdate, onDelete }: {
     setTestStatus('testing')
     try {
       const model = provider.models[0]?.id || 'test'
-      const ok = await testConnection({ apiKey: provider.apiKey, baseUrl: provider.baseUrl, model })
+      const apiFormat = provider.apiProtocol === 'auto' ? undefined : provider.apiProtocol
+      const ok = await testConnection({ apiKey: provider.apiKey, baseUrl: provider.baseUrl, model, apiFormat })
       setTestStatus(ok ? 'success' : 'error')
     } catch {
       setTestStatus('error')
@@ -614,6 +671,8 @@ function ProviderDetailEditor({ provider, onUpdate, onDelete }: {
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
   }
+
+  const isClaudeCode = provider.apiProtocol === 'claude-code'
 
   return (
     <div className="max-w-2xl mx-auto space-y-6">
@@ -627,8 +686,9 @@ function ProviderDetailEditor({ provider, onUpdate, onDelete }: {
               </span>
             )}
           </h2>
-          <p className="text-stone-400 text-sm mt-1">配置 API 连接和模型参数</p>
+          <p className="text-stone-400 text-sm mt-1">{isClaudeCode ? '使用本机 Claude Code CLI 登录态' : '配置 API 连接和模型参数'}</p>
         </div>
+        {!isClaudeCode && (
         <button
           onClick={() => setShowCurlImport(!showCurlImport)}
           className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-teal-600 bg-teal-50 border border-teal-100 rounded-lg hover:bg-teal-100 transition-colors"
@@ -636,6 +696,7 @@ function ProviderDetailEditor({ provider, onUpdate, onDelete }: {
           <LayoutList className="w-3.5 h-3.5" />
           cURL 导入
         </button>
+        )}
       </div>
 
       <AnimatePresence>
@@ -671,6 +732,13 @@ function ProviderDetailEditor({ provider, onUpdate, onDelete }: {
       <div className="bg-white border border-stone-100 rounded-2xl shadow-sm overflow-hidden">
         <div className="p-6 space-y-4">
           <FieldInput label="名称" value={provider.label} onChange={v => onUpdate({ label: v })} />
+          {isClaudeCode ? (
+            <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl space-y-2">
+              <p className="text-sm font-medium text-emerald-700">✅ 无需配置 API Key 和 Base URL</p>
+              <p className="text-xs text-emerald-600/80">Claude Code 使用本机 CLI 登录态，确保本机已安装并登录 claude 命令行工具。</p>
+            </div>
+          ) : (
+            <>
           <div>
             <FieldInput label="Base URL" value={provider.baseUrl} onChange={v => onUpdate({ baseUrl: v })} mono />
             {provider.baseUrl && /\/(chat\/completions|image_generation|embeddings|audio|video)/.test(provider.baseUrl) && (
@@ -703,6 +771,8 @@ function ProviderDetailEditor({ provider, onUpdate, onDelete }: {
               <option value="auto">自动检测</option>
             </select>
           </div>
+            </>
+          )}
 
           <div>
             <label className="text-xs font-medium text-stone-500 mb-1.5 block">模型列表</label>

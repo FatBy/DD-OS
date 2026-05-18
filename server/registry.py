@@ -447,6 +447,13 @@ class ToolRegistry:
                     'limit': {'type': 'number', 'description': '返回结果数量，默认 5', 'required': False},
                 },
             },
+            'convertToMarkdown': {
+                'description': '将文件转换为结构化 Markdown 格式（保留标题、表格、列表等结构）。支持 PDF/Word/PowerPoint/Excel/HTML/CSV/JSON/XML/EPub/图片等格式。比 parseFile 输出更适合 LLM 消费和文档生成',
+                'inputs': {
+                    'filePath': {'type': 'string', 'description': '要转换的文件路径（支持绝对/相对路径）', 'required': True},
+                    'outputPath': {'type': 'string', 'description': '输出 .md 文件路径（可选，不填则直接返回内容）', 'required': False},
+                },
+            },
         }
         tools = []
         for name in self.builtin_tools:

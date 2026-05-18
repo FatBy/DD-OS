@@ -6,6 +6,7 @@ import json
 import time
 import sqlite3
 import threading
+import traceback
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import unquote, urlparse, parse_qs
@@ -34,6 +35,7 @@ from server.handlers.browser_tools import BrowserToolsMixin
 from server.handlers.dun_tools import DunToolsMixin
 from server.handlers.rule_discovery import RuleDiscoveryMixin
 from server.handlers.wiki import WikiMixin
+from server.handlers.study import StudyMixin
 
 
 class ClawdDataHandler(
@@ -41,7 +43,7 @@ class ClawdDataHandler(
     ToolsMixin, ParsersMixin, WebMixin, SkillsMixin,
     DunsMixin, MCPMixin, ClawHubMixin, TracesMixin,
     ProxyMixin, BrowserToolsMixin, DunToolsMixin,
-    RuleDiscoveryMixin, WikiMixin,
+    RuleDiscoveryMixin, WikiMixin, StudyMixin,
     BaseHTTPRequestHandler
 ):
     clawd_path = None
@@ -80,7 +82,75 @@ class ClawdDataHandler(
     
     def send_error_json(self, message, status=404):
         self.send_json({'error': message, 'status': 'error'}, status)
-    
+
+    def _handle_request_exc(self, method: str, path: str, exc: BaseException) -> None:
+        """5 个 do_* 入口共用的异常兜底器。
+
+        - 客户端已断开 (ConnectionAbortedError / ConnectionResetError / BrokenPipeError)：
+          静默忽略，避免日志噪声
+        - 其它未捕获异常：打印完整 traceback 到 stderr + 返回 500 JSON
+          这样前端能看到 {"error": "<type>: <msg>"} 而不是 ERR_EMPTY_RESPONSE
+        """
+        if isinstance(exc, (ConnectionAbortedError, ConnectionResetError, BrokenPipeError)):
+            return
+        exc_type = type(exc).__name__
+        exc_msg = str(exc)
+        # traceback 打印到 server 终端，便于排查
+        print(f"[Handler] {method} {path} unhandled exception: {exc_type}: {exc_msg}")
+        traceback.print_exc()
+        # 返回 JSON 错误体给前端 (包裹 send_error_json 本身，防二次崩)
+        try:
+            self.send_error_json(f'{exc_type}: {exc_msg}', 500)
+        except Exception:
+            # send_json 自己已经 swallow 了 write 层面的断连异常，
+            # 此处兜底是防头部已发、二次写入出错的极端情况
+            pass
+
+    def handle_one_request(self):
+        """覆盖 BaseHTTPRequestHandler.handle_one_request，统一给所有 do_* 入口加异常兜底。
+
+        原实现里，do_GET/do_POST/... 抛出未捕获异常会直接沿调用栈冒出去，BaseHTTPServer
+        直接断连，浏览器看到的就是 ERR_EMPTY_RESPONSE / net::ERR_CONNECTION_RESET。
+        这里在 method() 调用外层多加一层 except Exception，把异常转成 500 JSON + traceback，
+        前端就能拿到 {"error": "sqlite3.OperationalError: no such table: xxx"} 这样的诊断信息。
+        """
+        from http import HTTPStatus
+        try:
+            self.raw_requestline = self.rfile.readline(65537)
+            if len(self.raw_requestline) > 65536:
+                self.requestline = ''
+                self.request_version = ''
+                self.command = ''
+                self.send_error(HTTPStatus.REQUEST_URI_TOO_LONG)
+                return
+            if not self.raw_requestline:
+                self.close_connection = True
+                return
+            if not self.parse_request():
+                # parse_request 已经发送错误码，直接返回
+                return
+            mname = 'do_' + self.command
+            if not hasattr(self, mname):
+                self.send_error(
+                    HTTPStatus.NOT_IMPLEMENTED,
+                    "Unsupported method (%r)" % self.command)
+                return
+            method = getattr(self, mname)
+            try:
+                method()
+            except Exception as exc:
+                # 🛡️ 统一兜底：do_GET/POST/PUT/DELETE/PATCH 任何未捕获异常走这里
+                self._handle_request_exc(self.command, self.path, exc)
+            try:
+                self.wfile.flush()
+            except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+                pass  # 客户端已断开
+        except TimeoutError as e:
+            # 读/写超时，保持标准库行为：关连接、丢请求
+            self.log_error("Request timed out: %r", e)
+            self.close_connection = True
+            return
+
     def do_OPTIONS(self):
         self.send_response(200)
         self.send_cors_headers()
@@ -92,6 +162,7 @@ class ClawdDataHandler(
         query = parse_qs(parsed.query)
         
         routes = {
+            '/healthz': self.handle_healthz,
             '/status': self.handle_status,
             '/files': self.handle_files,
             '/skills': self.handle_skills,
@@ -248,6 +319,36 @@ class ClawdDataHandler(
             self.handle_wiki_entity_detail(entity_id)
         elif path == '/api/files/read-base64':
             self.handle_read_file_base64(query)
+        # ============================================
+        # Study Room (自习室) API - GET
+        # 路由顺序: 更具体的路径优先, /api/study/sessions/:id/versions/:vid > /versions > /:id
+        # ============================================
+        elif path == '/api/study/sessions':
+            self.handle_study_sessions_list(query)
+        elif path == '/api/study/fingerprints':
+            self.handle_fingerprint_list()
+        elif path == '/api/study/documents':
+            self.handle_study_documents_list(query)
+        elif path.startswith('/api/study/fingerprints/'):
+            fp_id = path[len('/api/study/fingerprints/'):]
+            self.handle_fingerprint_get(fp_id)
+        elif path.startswith('/api/study/sessions/') and '/versions/' in path:
+            # /api/study/sessions/:id/versions/:vid
+            rest = path[len('/api/study/sessions/'):]
+            sid, _, vid = rest.partition('/versions/')
+            if sid and vid:
+                self.handle_study_version_get(sid, vid)
+            else:
+                self.send_error_json(f'Invalid study version path: {path}', 400)
+        elif path.startswith('/api/study/sessions/') and path.endswith('/versions'):
+            sid = path[len('/api/study/sessions/'):-len('/versions')]
+            self.handle_study_versions_list(sid)
+        elif path.startswith('/api/study/sessions/'):
+            sid = path[len('/api/study/sessions/'):]
+            if sid:
+                self.handle_study_session_get(sid)
+            else:
+                self.send_error_json(f'Invalid study session path: {path}', 400)
         elif path.startswith('/data/'):
             # 前端数据读取 API
             key = path[6:]  # strip '/data/'
@@ -325,6 +426,9 @@ class ClawdDataHandler(
             self.handle_wiki_ingest(data)
         elif path == '/api/wiki/claim/conflict':
             self.handle_wiki_claim_conflict(data)
+        # V10: Claim supersede（与 memory supersede 语义对齐）
+        elif path == '/api/wiki/claim/supersede':
+            self.handle_wiki_claim_supersede(data)
         elif path == '/api/wiki/reindex':
             self.handle_wiki_reindex(data)
         elif path == '/api/wiki/batch':
@@ -369,6 +473,9 @@ class ClawdDataHandler(
             self.handle_clawhub_install(data)
         elif path == '/clawhub/publish':
             self.handle_clawhub_publish(data)
+        elif path.startswith('/duns/') and path.endswith('/llm-binding'):
+            dun_name = path[6:-12]  # strip '/duns/' and '/llm-binding'
+            self.handle_dun_llm_binding_save(dun_name, data)
         elif path.startswith('/duns/') and path.endswith('/skills'):
             dun_name = path[6:-7]  # strip '/duns/' and '/skills'
             self.handle_dun_update_skills(dun_name, data)
@@ -431,6 +538,9 @@ class ClawdDataHandler(
             self.handle_memory_prune(data)
         elif path == '/api/memory/decay':
             self.handle_memory_decay(data)
+        # V10: Supersede / Conflict API
+        elif path == '/api/memory/supersede':
+            self.handle_memory_supersede(data)
         elif path.startswith('/data/'):
             # 前端数据写入 API
             key = path[6:]  # strip '/data/'
@@ -446,8 +556,51 @@ class ClawdDataHandler(
         # 🌐 LLM API 代理 (解决 CORS 问题: Moonshot 等 API 的 preflight 不返回 CORS 头)
         elif path == '/api/llm/proxy':
             self.handle_llm_proxy(data)
+        elif path == '/api/llm/claude-code':
+            self.handle_llm_claude_code(data)
+        # ============================================
+        # Study Room (自习室) API - POST
+        # ============================================
+        elif path == '/api/study/sessions':
+            self.handle_study_session_create(data)
+        elif path == '/api/study/fingerprints/distill-prepare':
+            self.handle_fingerprint_distill_prepare(data)
+        elif path.startswith('/api/study/sessions/') and path.endswith('/export'):
+            sid = path[len('/api/study/sessions/'):-len('/export')]
+            self.handle_study_session_export(sid, data)
+        elif path.startswith('/api/study/sessions/') and path.endswith('/versions'):
+            sid = path[len('/api/study/sessions/'):-len('/versions')]
+            self.handle_study_versions_append(sid, data)
+        elif path.startswith('/api/study/sessions/') and '/sections/' in path:
+            # POST /api/study/sessions/:id/sections/:sid
+            rest = path[len('/api/study/sessions/'):]
+            sid, _, sec_id = rest.partition('/sections/')
+            if sid and sec_id:
+                self.handle_study_section_update(sid, sec_id, data)
+            else:
+                self.send_error_json(f'Invalid study section path: {path}', 400)
         else:
             self.send_error_json(f'Unknown endpoint: {path}', 404)
+    
+    def do_PATCH(self):
+        parsed = urlparse(self.path)
+        path = unquote(parsed.path)
+        content_length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(content_length).decode('utf-8') if content_length > 0 else '{}'
+        try:
+            data = json.loads(body) if body else {}
+        except json.JSONDecodeError:
+            self.send_error_json('Invalid JSON', 400)
+            return
+        
+        # Study Room: PATCH /api/study/sessions/:id (元数据更新, 乐观锁)
+        if path.startswith('/api/study/sessions/'):
+            sid = path[len('/api/study/sessions/'):]
+            if sid and '/' not in sid:
+                self.handle_study_session_update(sid, data)
+                return
+        
+        self.send_error_json(f'Unknown PATCH endpoint: {path}', 404)
     
     def do_PUT(self):
         parsed = urlparse(self.path)
@@ -463,6 +616,18 @@ class ClawdDataHandler(
         if path.startswith('/api/dun/') and path.endswith('/scoring'):
             dun_id = path[9:-8]
             self.handle_scoring_put(dun_id, data)
+        # Study Room: PUT /api/study/fingerprints/:id (创建或更新风格指纹)
+        elif path.startswith('/api/study/fingerprints/'):
+            fp_id = path[len('/api/study/fingerprints/'):]
+            self.handle_fingerprint_put(fp_id, data)
+        # Study Room: PUT /api/study/sessions/:id (整体更新 session, 复用 update handler)
+        # 前端 saveSessionToBackend 用的是 PUT; 后端 handler 支持部分字段更新, PUT/PATCH 语义都能跑
+        elif path.startswith('/api/study/sessions/'):
+            sid = path[len('/api/study/sessions/'):]
+            if sid and '/' not in sid:
+                self.handle_study_session_update(sid, data)
+            else:
+                self.send_error_json(f'Invalid study PUT path: {path}', 400)
         else:
             self.send_error_json(f'Unknown PUT endpoint: {path}', 404)
     
@@ -476,7 +641,17 @@ class ClawdDataHandler(
             if mem_id and not mem_id.startswith('search') and not mem_id.startswith('stats'):
                 self.handle_memory_soft_delete(mem_id)
                 return
-        if path.startswith('/duns/') and len(path) > 6:
+        # Study Room API - DELETE (必须排在 /api/sessions/ 之前, 路径更具体)
+        if path.startswith('/api/study/fingerprints/'):
+            fp_id = path[len('/api/study/fingerprints/'):]
+            self.handle_fingerprint_delete(fp_id)
+        elif path.startswith('/api/study/sessions/'):
+            sid = path[len('/api/study/sessions/'):]
+            if sid and '/' not in sid:
+                self.handle_study_session_delete(sid)
+            else:
+                self.send_error_json(f'Invalid study DELETE path: {path}', 400)
+        elif path.startswith('/duns/') and len(path) > 6:
             # DELETE /duns/{id} - 归档 Dun 目录（重命名，防止文件扫描再次加载）
             dun_name = unquote(path[6:])
             self.handle_dun_archive(dun_name)
@@ -631,9 +806,17 @@ curl -X POST http://localhost:3001/api/tools/execute \\
         self.end_headers()
         self.wfile.write(html.encode('utf-8'))
     
+    def handle_healthz(self):
+        self.send_json({
+            'ok': True,
+            'status': 'ok',
+            'timestamp': datetime.now().isoformat()
+        })
+
     def handle_status(self):
         files = list_files(self.clawd_path)
         skill_count = len(self.registry.instruction_tools) + len(self.registry.plugin_tools) + len(self.registry.builtin_tools)
+        tools = self.registry.list_all()
         
         self.send_json({
             'status': 'ok',
@@ -642,8 +825,8 @@ curl -X POST http://localhost:3001/api/tools/execute \\
             'clawdPath': str(self.clawd_path),
             'fileCount': len(files),
             'skillCount': skill_count,
-            'tools': [t['name'] for t in self.registry.list_all()],
-            'toolCount': len(self.registry.list_all()),
+            'tools': [t['name'] for t in tools],
+            'toolCount': len(tools),
             'embedding': _embedding_manager.get_status(),
             'timestamp': datetime.now().isoformat()
         })
@@ -680,8 +863,6 @@ curl -X POST http://localhost:3001/api/tools/execute \\
         try:
             content = filepath.read_text(encoding='utf-8')
             self.send_text(content)
-        except Exception as e:
-            self.send_error_json(f'Read error: {str(e)}', 500)
         except Exception as e:
             self.send_error_json(f'Read error: {str(e)}', 500)
     

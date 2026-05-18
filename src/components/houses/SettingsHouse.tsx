@@ -1,13 +1,19 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { motion } from 'framer-motion'
 import { 
-  Monitor, Info, Check, Type, Wifi, WifiOff, Globe, Languages, Store, LogOut, Loader2
+  Monitor, Info, Check, Type, Wifi, WifiOff, Globe, Languages, Store, LogOut, Loader2,
+  Puzzle, RefreshCw, Save, AlertCircle, ChevronDown, ChevronUp
 } from 'lucide-react'
 import { GlassCard } from '@/components/GlassCard'
 import { staggerContainer, staggerItem } from '@/utils/animations'
 import { useStore } from '@/store'
 import { cn } from '@/utils/cn'
+import { isElectronMode } from '@/utils/env'
 import { useT } from '@/i18n'
+import {
+  listPlugins, getPluginConfig, setPluginConfig, getPluginSchema, checkPluginUpdate,
+  type PluginInfo
+} from '@/services/pluginBridge'
 import type { TranslationKey } from '@/i18n/locales/zh'
 import type { WorldTheme } from '@/rendering/types'
 
@@ -30,6 +36,234 @@ const settingsData: Array<{
   { id: 'particles', labelKey: 'settings.particles', descKey: 'settings.particles_desc', enabled: true },
   { id: 'glow', labelKey: 'settings.glow', descKey: 'settings.glow_desc', enabled: true },
 ]
+
+function PluginSettingsSection() {
+  const [plugins, setPlugins] = useState<PluginInfo[]>([])
+  const [loading, setLoading] = useState(true)
+  const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [editingConfig, setEditingConfig] = useState<Record<string, unknown> | null>(null)
+  const [configSchema, setConfigSchema] = useState<Record<string, unknown> | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [updateStatus, setUpdateStatus] = useState<Record<string, { checking: boolean; hasUpdate?: boolean; latestVersion?: string }>>({})
+
+  const loadPlugins = useCallback(async () => {
+    setLoading(true)
+    try {
+      const list = await listPlugins()
+      setPlugins(list)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { loadPlugins() }, [loadPlugins])
+
+  const handleExpand = async (pluginId: string) => {
+    if (expandedId === pluginId) {
+      setExpandedId(null)
+      setEditingConfig(null)
+      setConfigSchema(null)
+      return
+    }
+    setExpandedId(pluginId)
+    const [config, schema] = await Promise.all([
+      getPluginConfig(pluginId),
+      getPluginSchema(pluginId),
+    ])
+    setEditingConfig(config)
+    setConfigSchema(schema)
+  }
+
+  const handleSave = async (pluginId: string) => {
+    if (!editingConfig) return
+    setSaving(true)
+    try {
+      await setPluginConfig(pluginId, editingConfig)
+      await loadPlugins()
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleCheckUpdate = async (pluginId: string) => {
+    setUpdateStatus(prev => ({ ...prev, [pluginId]: { checking: true } }))
+    try {
+      const info = await checkPluginUpdate(pluginId)
+      setUpdateStatus(prev => ({ ...prev, [pluginId]: { checking: false, ...info } }))
+    } catch {
+      setUpdateStatus(prev => ({ ...prev, [pluginId]: { checking: false } }))
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center gap-2 text-stone-400 text-sm">
+        <Loader2 className="w-4 h-4 animate-spin" />
+        加载插件...
+      </div>
+    )
+  }
+
+  if (plugins.length === 0) {
+    return <p className="text-xs text-stone-400">暂无已安装的插件</p>
+  }
+
+  return (
+    <div className="space-y-2">
+      {plugins.map((plugin) => {
+        const isExpanded = expandedId === plugin.id
+        const update = updateStatus[plugin.id]
+        return (
+          <div key={plugin.id} className="border border-stone-200 rounded-lg overflow-hidden">
+            <button
+              onClick={() => handleExpand(plugin.id)}
+              className="w-full flex items-center justify-between p-3 hover:bg-stone-50 transition-colors"
+            >
+              <div className="flex items-center gap-2">
+                <div className={cn(
+                  'w-2 h-2 rounded-full',
+                  plugin.status === 'loaded' ? 'bg-emerald-400' : 'bg-red-400'
+                )} />
+                <span className="text-sm font-mono text-stone-700">{plugin.name}</span>
+                <span className="text-[11px] text-stone-400">v{plugin.version}</span>
+              </div>
+              {isExpanded ? <ChevronUp className="w-4 h-4 text-stone-400" /> : <ChevronDown className="w-4 h-4 text-stone-400" />}
+            </button>
+
+            {isExpanded && (
+              <div className="px-3 pb-3 space-y-3 border-t border-stone-100">
+                {plugin.description && (
+                  <p className="text-xs text-stone-400 pt-2">{plugin.description}</p>
+                )}
+
+                {plugin.status === 'error' && plugin.errorMessage && (
+                  <div className="flex items-start gap-2 text-xs text-red-400 bg-red-50 rounded p-2">
+                    <AlertCircle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                    <span>{plugin.errorMessage}</span>
+                  </div>
+                )}
+
+                {/* 配置编辑器 */}
+                {plugin.hasConfigSchema && editingConfig && configSchema && (
+                  <div className="space-y-2">
+                    <SchemaConfigEditor
+                      schema={configSchema}
+                      config={editingConfig}
+                      onChange={setEditingConfig}
+                    />
+                    <button
+                      onClick={() => handleSave(plugin.id)}
+                      disabled={saving}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono bg-cyan-500/20 text-cyan-500 rounded-lg hover:bg-cyan-500/30 disabled:opacity-50 transition-colors"
+                    >
+                      {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
+                      保存配置
+                    </button>
+                  </div>
+                )}
+
+                {/* 检查更新 */}
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => handleCheckUpdate(plugin.id)}
+                    disabled={update?.checking}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono text-stone-500 border border-stone-200 rounded-lg hover:bg-stone-50 disabled:opacity-50 transition-colors"
+                  >
+                    {update?.checking ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                    检查更新
+                  </button>
+                  {update && !update.checking && (
+                    <span className={cn('text-xs font-mono', update.hasUpdate ? 'text-amber-500' : 'text-stone-400')}>
+                      {update.hasUpdate ? `新版本: v${update.latestVersion}` : '已是最新'}
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+/** 基于 JSON Schema 的简易配置编辑器 */
+function SchemaConfigEditor({
+  schema,
+  config,
+  onChange,
+  prefix = '',
+}: {
+  schema: Record<string, unknown>
+  config: Record<string, unknown>
+  onChange: (config: Record<string, unknown>) => void
+  prefix?: string
+}) {
+  const properties = (schema as { properties?: Record<string, Record<string, unknown>> }).properties
+  if (!properties) return null
+
+  const updateField = (key: string, value: unknown) => {
+    onChange({ ...config, [key]: value })
+  }
+
+  return (
+    <div className="space-y-2">
+      {Object.entries(properties).map(([key, prop]) => {
+        const fieldType = prop.type as string
+        const title = (prop.title as string) || key
+        const description = prop.description as string | undefined
+        const currentValue = config[key]
+        const fullKey = prefix ? `${prefix}.${key}` : key
+
+        if (fieldType === 'object') {
+          return (
+            <div key={fullKey} className="pl-3 border-l-2 border-stone-200">
+              <p className="text-xs font-mono text-stone-600 mb-1">{title}</p>
+              <SchemaConfigEditor
+                schema={prop}
+                config={(currentValue as Record<string, unknown>) || {}}
+                onChange={(nested) => updateField(key, nested)}
+                prefix={fullKey}
+              />
+            </div>
+          )
+        }
+
+        if (fieldType === 'boolean') {
+          return (
+            <label key={fullKey} className="flex items-center justify-between cursor-pointer">
+              <div>
+                <span className="text-xs font-mono text-stone-600">{title}</span>
+                {description && <p className="text-[11px] text-stone-400">{description}</p>}
+              </div>
+              <input
+                type="checkbox"
+                checked={!!currentValue}
+                onChange={(e) => updateField(key, e.target.checked)}
+                className="w-4 h-4 rounded border-stone-300 text-cyan-500 focus:ring-cyan-400"
+              />
+            </label>
+          )
+        }
+
+        // string / number
+        return (
+          <div key={fullKey}>
+            <label className="text-xs font-mono text-stone-600">{title}</label>
+            {description && <p className="text-[11px] text-stone-400">{description}</p>}
+            <input
+              type={fieldType === 'number' ? 'number' : 'text'}
+              value={(currentValue as string | number) ?? (prop.default as string | number) ?? ''}
+              onChange={(e) => updateField(key, fieldType === 'number' ? Number(e.target.value) : e.target.value)}
+              placeholder={(prop.default as string) || ''}
+              className="mt-1 w-full px-2 py-1.5 text-xs font-mono bg-stone-50 border border-stone-200 rounded-lg focus:outline-none focus:border-cyan-400 text-stone-700"
+            />
+          </div>
+        )
+      })}
+    </div>
+  )
+}
 
 function ClawHubAccountSection() {
   const isAuthenticated = useStore(s => s.clawHubAuthenticated)
@@ -405,6 +639,21 @@ export function SettingsHouse() {
           <ClawHubAccountSection />
         </GlassCard>
       </div>
+
+      {/* 插件管理 (仅 Electron 模式) */}
+      {isElectronMode && (
+        <div>
+          <div className="flex items-center gap-2 mb-2">
+            <Puzzle className="w-4 h-4 text-cyan-400" />
+            <h3 className="font-mono text-sm text-cyan-300 tracking-wider">
+              插件管理
+            </h3>
+          </div>
+          <GlassCard className="p-4">
+            <PluginSettingsSection />
+          </GlassCard>
+        </div>
+      )}
     </div>
   )
 }

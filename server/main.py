@@ -10,6 +10,7 @@ def main():
 
     import os
     import sys
+    import json
     import argparse
     import threading
     import shutil
@@ -124,7 +125,7 @@ You maintain state across conversations through the memory system. Use memories 
         'dunBindSkill', 'dunUnbindSkill', 'openInExplorer', 'parseFile',
         'generateSkill',
         'screenCapture', 'ocrExtract',
-        'searchWiki',
+        'searchWiki', 'convertToMarkdown',
     ]
     for name in builtin_names:
         registry.register_builtin(name, name)  # handler resolved at dispatch time
@@ -164,6 +165,20 @@ You maintain state across conversations through the memory system. Use memories 
 
     # 解耦: 将 clawd_path 注入 EmbeddingManager
     _embedding_manager.set_clawd_path(clawd_path)
+
+    def _load_saved_llm_config() -> dict:
+        config_file = clawd_path / 'data' / 'llm_config.json'
+        if not config_file.exists():
+            return {}
+        try:
+            data = json.loads(config_file.read_text(encoding='utf-8'))
+            return data if isinstance(data, dict) else {}
+        except Exception as e:
+            print(f'[Embedding] Failed to read llm_config.json: {e}', file=sys.stderr)
+            return {}
+
+    embedding_llm_config = _load_saved_llm_config()
+    local_embedding_enabled = _embedding_manager.should_use_local_for_config(embedding_llm_config)
     
     server = ThreadingHTTPServer((args.host, args.port), ClawdDataHandler)
     
@@ -186,13 +201,19 @@ You maintain state across conversations through the memory system. Use memories 
     print(f"Press Ctrl+C to stop\n")
     
     # 后台预热 Embedding 模型，避免首次请求时冷启动
-    _embedding_manager.preheat()
+    _embedding_manager.sync_with_llm_config(embedding_llm_config, reason='startup')
 
     # 后台自动建 wiki 向量索引（embedding 就绪后执行）
     def _auto_reindex_wiki():
         import time
         try:
             # 等待 embedding 模型加载完成
+            from server.db import ensure_current_vector_indexes
+            ensure_current_vector_indexes(reason='startup')
+            return
+            if not local_embedding_enabled:
+                print('[Wiki] Auto-reindex skipped: external embedding configured', file=sys.stderr)
+                return
             if not _embedding_manager.wait_until_ready(timeout=120):
                 return
             time.sleep(2)  # 额外等待确保 DB 初始化完成
