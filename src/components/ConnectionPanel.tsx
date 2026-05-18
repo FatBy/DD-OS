@@ -6,7 +6,7 @@ import {
 } from 'lucide-react'
 import { useStore } from '@/store'
 import { cn } from '@/utils/cn'
-import { localClawService } from '@/services/LocalClawService'
+import * as connectionClient from '@/services/connectionClient'
 import { useT } from '@/i18n'
 import type { TranslationKey } from '@/i18n/locales/zh'
 
@@ -69,11 +69,11 @@ export function ConnectionPanel() {
   const Icon = config.icon
 
   const handleDisconnect = () => {
-    localClawService.disconnect()
+    connectionClient.disconnect()
   }
 
   const handleRetry = () => {
-    localClawService.retry()
+    connectionClient.retry()
   }
 
   const isConnected = status === 'connected'

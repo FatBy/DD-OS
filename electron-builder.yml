@@ -26,6 +26,12 @@ extraResources:
     to: models/bge-large-zh-v1.5-onnx-int8/
     filter:
       - "**/*"
+  # Tesseract-OCR 便携版 (~45MB, 含 eng/chi_sim/osd 语言包)
+  # 需要手动准备 vendor/tesseract/，见 vendor/README.md
+  - from: vendor/tesseract/
+    to: tesseract/
+    filter:
+      - "**/*"
   # 内置技能定义
   - from: skills/
     to: skills/

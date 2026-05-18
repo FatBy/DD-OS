@@ -4,6 +4,7 @@ import * as fs from 'fs'
 import { execSync } from 'child_process'
 import { PythonManager } from './python-manager'
 import { initAutoUpdater } from './auto-updater'
+import { PluginHost } from './plugin-host'
 
 // Windows 高 DPI 修复：
 // force-device-scale-factor=1 让 Chromium 以 1:1 像素渲染（禁止 Windows 位图缩放）
@@ -43,6 +44,7 @@ const isDev = !app.isPackaged
 
 let mainWindow: BrowserWindow | null = null
 const pythonManager = new PythonManager()
+let pluginHost: PluginHost | null = null
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -193,6 +195,15 @@ app.whenReady().then(async () => {
   // 先创建窗口，让用户立刻看到界面
   createWindow()
 
+  // 初始化插件系统（在窗口创建后立即注册 IPC，确保渲染进程可用）
+  try {
+    pluginHost = new PluginHost(mainWindow!)
+    await pluginHost.initialize()
+    console.log('[Main] PluginHost initialized')
+  } catch (err) {
+    console.error('[Main] PluginHost error:', err)
+  }
+
   // 初始化自动更新（生产模式下检查 GitHub Releases）
   initAutoUpdater(mainWindow, pythonManager)
 
@@ -200,10 +211,10 @@ app.whenReady().then(async () => {
   try {
     await pythonManager.start()
     await pythonManager.waitForReady()
-    console.log('[Electron] Python backend is ready')
+    console.log('[Main] Python backend ready')
     mainWindow?.webContents.send('python-ready')
   } catch (err) {
-    console.error('[Electron] Failed to start Python backend:', err)
+    console.error('[Main] Python start error:', err)
   }
 
   app.on('activate', () => {
@@ -214,6 +225,7 @@ app.whenReady().then(async () => {
 })
 
 app.on('window-all-closed', () => {
+  pluginHost?.shutdown()
   pythonManager.stop()
   if (process.platform !== 'darwin') {
     app.quit()
@@ -221,5 +233,6 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  pluginHost?.shutdown()
   pythonManager.stop()
 })

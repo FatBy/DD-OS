@@ -23,4 +23,32 @@ contextBridge.exposeInMainWorld('electronAPI', {
     install: (): Promise<void> => ipcRenderer.invoke('updater:install'),
     openReleases: (): Promise<void> => ipcRenderer.invoke('updater:open-releases'),
   },
+  // 插件系统 API
+  plugins: {
+    list: (): Promise<Array<{
+      id: string; name: string; version: string; description?: string;
+      status: string; errorMessage?: string; hasConfigSchema: boolean;
+    }>> => ipcRenderer.invoke('plugin:list'),
+    getProviders: (): Promise<Array<Record<string, unknown>>> =>
+      ipcRenderer.invoke('plugin:get-providers'),
+    getConfig: (pluginId: string): Promise<Record<string, unknown>> =>
+      ipcRenderer.invoke('plugin:get-config', pluginId),
+    setConfig: (pluginId: string, config: Record<string, unknown>): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke('plugin:set-config', pluginId, config),
+    getSchema: (pluginId: string): Promise<Record<string, unknown> | null> =>
+      ipcRenderer.invoke('plugin:get-schema', pluginId),
+    checkUpdate: (pluginId: string): Promise<{ hasUpdate: boolean; latestVersion?: string; currentVersion?: string }> =>
+      ipcRenderer.invoke('plugin:check-update', pluginId),
+    doUpdate: (pluginId: string): Promise<{ ok: boolean; message?: string }> =>
+      ipcRenderer.invoke('plugin:do-update', pluginId),
+    emitHook: (hookName: string, data: Record<string, unknown>): void =>
+      ipcRenderer.send('plugin:emit-hook', hookName, data),
+    buildContext: (data: Record<string, unknown>): Promise<Record<string, string>> =>
+      ipcRenderer.invoke('plugin:build-context', data),
+    onBroadcast: (cb: (event: string, payload: unknown) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, event: string, payload: unknown) => cb(event, payload)
+      ipcRenderer.on('plugin:broadcast', listener)
+      return () => { ipcRenderer.removeListener('plugin:broadcast', listener) }
+    },
+  },
 })

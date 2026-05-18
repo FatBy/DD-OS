@@ -1,0 +1,55 @@
+{
+  "id": "dogfooding",
+  "name": "Qwen3.6-Plus DogFooding",
+  "version": "1.0.0",
+  "description": "Qwen3.6-Plus-DogFooding 模型 Provider 配置 + 钉钉机器人集成",
+  "entry": "index.js",
+  "updateUrl": "",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "baseUrl": {
+        "type": "string",
+        "title": "API Base URL",
+        "default": "https://idealab.alibaba-inc.com/api/openai/v1"
+      },
+      "apiKey": {
+        "type": "string",
+        "title": "API Key",
+        "description": "DogFooding API 密钥"
+      },
+      "autoRegisterProvider": {
+        "type": "boolean",
+        "title": "自动注册 Provider",
+        "description": "启动时自动将 DogFooding Provider 注册到 DunCrew",
+        "default": true
+      },
+      "dingtalk": {
+        "type": "object",
+        "title": "钉钉机器人",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "启用钉钉通知",
+            "default": false
+          },
+          "serverAddress": {
+            "type": "string",
+            "title": "服务器地址",
+            "default": "wss://open-claw-ali.alibaba-inc.com"
+          },
+          "channelId": {
+            "type": "string",
+            "title": "频道 ID",
+            "default": "ai-work-kit"
+          },
+          "accessToken": {
+            "type": "string",
+            "title": "Access Token",
+            "description": "钉钉 TMCP 鉴权 Token"
+          }
+        }
+      }
+    }
+  }
+}

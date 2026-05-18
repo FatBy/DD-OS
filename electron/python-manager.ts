@@ -19,15 +19,33 @@ export class PythonManager {
 
   /**
    * 启动 Python 后端
-   * 如果端口已被占用且服务正常响应，复用已有进程
+   * 如果端口已被占用且服务正常响应且数据目录匹配，复用已有进程
+   * 否则杀掉旧进程并启动新进程
    */
   async start(): Promise<void> {
+    const isDev = !app.isPackaged
+    const expectedDataPath = path.resolve(this.resolveDataPath(isDev))
+
     // 先检测是否已有服务在运行
     const alreadyRunning = await this.checkHealth()
     if (alreadyRunning) {
-      console.log('[PythonManager] Port 3001 already has a running server, reusing it')
-      this.isExternalProcess = true
-      return
+      // 验证已有进程的数据目录是否与期望一致
+      const serverDataPath = await this.getServerDataPath()
+      if (serverDataPath && path.resolve(serverDataPath) === expectedDataPath) {
+        console.log(`[PythonManager] Port 3001 already has a running server with matching data path, reusing it`)
+        this.isExternalProcess = true
+        return
+      }
+      // 数据目录不匹配，杀掉旧进程
+      console.warn(
+        `[PythonManager] Port 3001 occupied by server with DIFFERENT data path!\n` +
+        `  Running:  ${serverDataPath}\n` +
+        `  Expected: ${expectedDataPath}\n` +
+        `  Killing stale process and starting fresh...`
+      )
+      await this.killProcessOnPort(SERVER_PORT)
+      // 等待端口释放
+      await this.sleep(1000)
     }
 
     this.intentionalStop = false
@@ -169,6 +187,75 @@ export class PythonManager {
         resolve(false)
       })
     })
+  }
+
+  /**
+   * 从已运行的后端 /status 获取 clawdPath，用于验证数据目录是否匹配
+   */
+  private getServerDataPath(): Promise<string | null> {
+    return new Promise((resolve) => {
+      const req = http.get(HEALTH_CHECK_URL, { timeout: 3000 }, (res) => {
+        let body = ''
+        res.on('data', (chunk: Buffer) => { body += chunk.toString() })
+        res.on('end', () => {
+          try {
+            const data = JSON.parse(body)
+            resolve(data.clawdPath || null)
+          } catch {
+            resolve(null)
+          }
+        })
+      })
+      req.on('error', () => resolve(null))
+      req.on('timeout', () => {
+        req.destroy()
+        resolve(null)
+      })
+    })
+  }
+
+  /**
+   * 杀掉占用指定端口的进程
+   */
+  private async killProcessOnPort(port: number): Promise<void> {
+    try {
+      if (process.platform === 'win32') {
+        const output = execSync(
+          `netstat -ano | findstr :${port} | findstr LISTENING`,
+          { encoding: 'utf-8', timeout: 5000 }
+        ).trim()
+        const pids = new Set<string>()
+        for (const line of output.split('\n')) {
+          const parts = line.trim().split(/\s+/)
+          const pid = parts[parts.length - 1]
+          if (pid && pid !== '0') pids.add(pid)
+        }
+        for (const pid of pids) {
+          console.log(`[PythonManager] Killing stale process PID ${pid} on port ${port}`)
+          try {
+            execSync(`taskkill /PID ${pid} /T /F`, { stdio: 'ignore', timeout: 5000 })
+          } catch {
+            // 进程可能已经退出
+          }
+        }
+      } else {
+        try {
+          const output = execSync(`lsof -ti :${port}`, { encoding: 'utf-8', timeout: 5000 }).trim()
+          for (const pid of output.split('\n').filter(Boolean)) {
+            console.log(`[PythonManager] Killing stale process PID ${pid} on port ${port}`)
+            try {
+              execSync(`kill -9 ${pid}`, { stdio: 'ignore', timeout: 5000 })
+            } catch {
+              // ignore
+            }
+          }
+        } catch {
+          // lsof 可能找不到进程
+        }
+      }
+    } catch (err) {
+      console.warn(`[PythonManager] Failed to kill process on port ${port}:`, err)
+    }
   }
 
   /**
