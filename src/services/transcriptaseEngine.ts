@@ -95,6 +95,50 @@ const DEFAULT_CONFIG: TranscriptaseConfig = {
       confidence: 0.65,
       enabled: true,
     },
+
+    // ─── 规则 4: 反复规划熔断 (P-ratio Meltdown) ───
+    // pRatio 是最强失败信号 (特征重要性 34.1%)
+    // 进入 Governor L 桶 (stepCount>=15) + 至少做过执行 (eRatio>=0.1) + 有失败记录
+    {
+      id: 'p_ratio_meltdown',
+      name: '反复规划熔断',
+      featureCondition: {
+        operator: 'AND',
+        clauses: [
+          { feature: 'pRatio', op: '>', value: 0.25 },
+          { feature: 'stepCount', op: '>=', value: 15 },
+          { feature: 'eRatio', op: '>=', value: 0.1 },
+        ],
+      },
+      factsCondition: {
+        hasFailedApproaches: true,
+      },
+      decision: 'abort',
+      confidence: 0.85,
+      enabled: true,
+    },
+
+    // ─── 规则 5: 探索死循环熔断 (Explore Death Spiral) ───
+    // consXTail (17.1%) + stepCount 组合
+    // 末尾连续 5 个 X + 进入 L 桶 + 有执行记录 + 有失败记录
+    {
+      id: 'explore_death_spiral',
+      name: '探索死循环熔断',
+      featureCondition: {
+        operator: 'AND',
+        clauses: [
+          { feature: 'consecutiveXTail', op: '>=', value: 5 },
+          { feature: 'stepCount', op: '>=', value: 15 },
+          { feature: 'eRatio', op: '>=', value: 0.1 },
+        ],
+      },
+      factsCondition: {
+        hasFailedApproaches: true,
+      },
+      decision: 'abort',
+      confidence: 0.9,
+      enabled: true,
+    },
   ],
 }
 
@@ -142,7 +186,16 @@ class TranscriptaseEngine {
     const facts = ledger.facts
     const stepCount = (features.stepCount as number) || 0
 
-    // 前置条件检查
+    // Phase 1: abort 规则优先匹配（不受 spawn 前置检查限制）
+    for (const pattern of this.config.patterns) {
+      if (!pattern.enabled || pattern.decision !== 'abort') continue
+      const matched = this.matchPattern(pattern, features, facts)
+      if (matched) {
+        return this.buildDecision(pattern, ledger)
+      }
+    }
+
+    // spawn 前置条件检查（仅对 spawn_child 类规则生效）
     if (stepCount < this.config.minStepsBeforeSpawn) {
       return CONTINUE_DECISION
     }
@@ -163,9 +216,9 @@ class TranscriptaseEngine {
       return CONTINUE_DECISION
     }
 
-    // 模式匹配（按顺序，首个匹配即返回）
+    // spawn 规则匹配（按顺序，首个匹配即返回）
     for (const pattern of this.config.patterns) {
-      if (!pattern.enabled) continue
+      if (!pattern.enabled || pattern.decision === 'abort') continue
 
       const matched = this.matchPattern(pattern, features, facts)
       if (matched) {
@@ -314,6 +367,55 @@ class TranscriptaseEngine {
     return ruleDecision
   }
 
+  // ═══ 熔断前预警（Phase 1.5） ═══
+
+  /**
+   * 熔断前预警检查：在规则引擎真正触发 abort 之前，
+   * 判断当前 Ledger 特征是否已接近 abort 阈值，若接近则返回预警信号。
+   *
+   * 设计动机：abort 是硬终止，体验不好；预警阶段可以让 LocalClawService
+   * 注入一次"请开始收敛"的 system 提示，给 LLM 机会主动给出阶段性答复，
+   * 往往能在真正熔断前顺利落地。
+   *
+   * 纯规则判定，0ms 延迟，与 evaluate() 完全独立（不互相干扰）。
+   *
+   * @returns 命中预警时返回 { patternId, level, reasoning }；否则 null
+   */
+  evaluateWarning(ledger: BaseLedger): TranscriptaseWarning | null {
+    if (!this.config.enabled) return null
+
+    const features = ledger.features
+    const stepCount = (features.stepCount as number) || 0
+    const consXTail = (features.consecutiveXTail as number) || 0
+    const pRatio = (features.pRatio as number) || 0
+    const eRatio = (features.eRatio as number) || 0
+    const hasFailures = ledger.facts.failedApproaches.length > 0
+
+    // 预警 1：探索死循环临近
+    //   真正 abort 规则：consXTail>=5 & stepCount>=15 & eRatio>=0.1 & 有失败
+    //   预警阈值（更宽松）：consXTail>=3 & stepCount>=10
+    if (consXTail >= 3 && stepCount >= 10) {
+      return {
+        patternId: 'explore_death_spiral',
+        level: 'approaching',
+        reasoning: `连续 ${consXTail} 轮探索未找到突破口（已执行 ${stepCount} 步），再这样下去会被系统强制中止。请立刻停止新一轮探索，基于已收集的信息给出阶段性回答。`,
+      }
+    }
+
+    // 预警 2：反复规划临近
+    //   真正 abort 规则：pRatio>0.25 & stepCount>=15 & eRatio>=0.1 & 有失败
+    //   预警阈值：pRatio>0.2 & stepCount>=10 & 有失败
+    if (pRatio > 0.2 && stepCount >= 10 && hasFailures && eRatio >= 0.05) {
+      return {
+        patternId: 'p_ratio_meltdown',
+        level: 'approaching',
+        reasoning: `已反复规划但始终未能落地执行（规划占比 ${(pRatio * 100).toFixed(0)}%，已执行 ${stepCount} 步）。请停止再做新计划，基于当前已知信息直接给出阶段性结论。`,
+      }
+    }
+
+    return null
+  }
+
   // ═══ 内部方法 ═══
 
   /** 匹配单个模式 */
@@ -375,10 +477,21 @@ class TranscriptaseEngine {
       }
     }
 
+    // reasoning 对用户可见（abort 软着陆会拼进提示），用自然表述代替"规则 [X] 触发"的内部黑话
+    // triggeredPatternId 仍保留原始 id，方便开发者定位触发规则
+    const humanReasons: Record<string, string> = {
+      sub_objective_split: '检测到多个子目标可并行处理，拆分执行',
+      failure_delegation: '当前路径连续遇阻，尝试换一条路径委托',
+      explore_focus: '探索已积累较多资源，进入聚焦执行阶段',
+      p_ratio_meltdown: '反复规划未收敛，继续执行收益递减',
+      explore_death_spiral: '连续探索未找到突破口，反复尝试难以收敛',
+    }
+    const reasoning = humanReasons[pattern.id] || pattern.name
+
     const decision: TranscriptaseDecision = {
       type: pattern.decision,
       confidence,
-      reasoning: `规则 [${pattern.name}] 触发`,
+      reasoning,
       triggeredPatternId: pattern.id,
     }
 
@@ -427,3 +540,20 @@ class TranscriptaseEngine {
 
 // 导出单例
 export const transcriptaseEngine = new TranscriptaseEngine()
+
+// ============================================
+// 预警信号（熔断前轻量提示）
+// ============================================
+
+/**
+ * 熔断前预警信号。
+ * 与 TranscriptaseDecision 独立 —— 预警不改变执行流，仅作为"软提示"输入给 LLM。
+ */
+export interface TranscriptaseWarning {
+  /** 临近的 abort 规则 id，与真正触发时的 triggeredPatternId 对齐 */
+  patternId: string
+  /** 预警级别（目前仅 'approaching'；未来可扩展 'imminent' 等更紧迫级别） */
+  level: 'approaching'
+  /** 对 LLM 可读的自然语言解释（已去黑话） */
+  reasoning: string
+}

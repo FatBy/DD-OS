@@ -71,7 +71,7 @@ export function SectionHeader({ icon, title, badge }: {
   return (
     <div className="flex items-center gap-1.5 mb-2.5">
       <span className="text-stone-400">{icon}</span>
-      <h3 className="text-sm font-semibold text-stone-600 tracking-wide">{title}</h3>
+      <h3 className="text-sm font-semibold text-stone-700 tracking-wide">{title}</h3>
       {badge && (
         <span className="text-xs font-mono text-stone-400 bg-stone-100 px-1.5 py-0.5 rounded-full ml-auto">
           {badge}
@@ -157,8 +157,8 @@ function SkillCard({ skill, onOptimize, onDisable, loading }: {
 
   return (
     <div className={cn(
-      'rounded-2xl border border-stone-200/60 bg-white overflow-hidden transition-shadow',
-      loading ? 'opacity-60 pointer-events-none' : 'hover:shadow-md',
+      'rounded-2xl border border-white/40 bg-white/60 backdrop-blur-sm overflow-hidden transition-all duration-300',
+      loading ? 'opacity-60 pointer-events-none' : 'hover:bg-white/80 hover:shadow-lg hover:shadow-emerald-500/5',
     )}>
       <button
         onClick={() => setExpanded(!expanded)}
@@ -197,7 +197,7 @@ function SkillCard({ skill, onOptimize, onDisable, loading }: {
             <Loader2 className="w-5 h-5 text-stone-300 animate-spin shrink-0 mt-1" />
           ) : (
             <div className={cn(
-              'shrink-0 px-2 py-1 rounded-xl text-xs font-black font-mono border min-w-[42px] text-center',
+              'shrink-0 px-2 py-1 rounded-full text-xs font-black font-mono border min-w-[42px] text-center',
               rateStyle.bg, rateStyle.text, rateStyle.border,
             )}>
               {(skill.triggerRate * 100).toFixed(0)}%
@@ -208,12 +208,12 @@ function SkillCard({ skill, onOptimize, onDisable, loading }: {
         {/* 底部: 标签 + 简洁指标 */}
         <div className="flex items-center gap-1.5 mt-2.5 pt-2 border-t border-stone-100/80">
           {skill.tags.slice(0, 1).map(tag => (
-            <span key={tag} className="px-1.5 py-0.5 rounded-md text-[10px] font-mono bg-stone-50 text-stone-400 border border-stone-100 truncate max-w-[80px]">
+            <span key={tag} className="px-1.5 py-0.5 rounded-full text-xs font-mono bg-stone-50 text-stone-400 border border-stone-100 truncate max-w-[80px]">
               {tag}
             </span>
           ))}
           {skill.primaryEnv && (
-            <span className="px-1.5 py-0.5 rounded-md text-[10px] font-mono bg-stone-50 text-stone-400 border border-stone-200 shrink-0">
+            <span className="px-1.5 py-0.5 rounded-full text-xs font-mono bg-stone-50 text-stone-400 border border-stone-200 shrink-0">
               {skill.primaryEnv}
             </span>
           )}
@@ -221,7 +221,7 @@ function SkillCard({ skill, onOptimize, onDisable, loading }: {
             const cfg = SOURCE_LABEL[skill.source]
             return (
               <span className={cn(
-                'px-1.5 py-0.5 rounded-md text-[10px] font-mono border shrink-0',
+                'px-1.5 py-0.5 rounded-full text-xs font-mono border shrink-0',
                 cfg.bg, cfg.color, cfg.border,
               )}>
                 {cfg.label}
@@ -231,10 +231,10 @@ function SkillCard({ skill, onOptimize, onDisable, loading }: {
 
           <div className="flex-1" />
 
-          <span className="text-[10px] text-stone-400 font-mono">
+          <span className="text-xs text-stone-400 font-mono">
             注入 {skill.injectedCount}
           </span>
-          <span className="text-[10px] text-stone-400 font-mono">
+          <span className="text-xs text-stone-400 font-mono">
             采纳 {skill.triggeredCount}
           </span>
 
@@ -330,10 +330,10 @@ function HealthySkillsSummary({ skills }: { skills: EnrichedSkill[] }) {
   if (skills.length === 0) return null
 
   return (
-    <div className="rounded-2xl border border-emerald-100/80 bg-emerald-50/30 overflow-hidden">
+    <div className="rounded-2xl border border-emerald-100/80 bg-emerald-50/30 backdrop-blur-sm overflow-hidden">
       <button
         onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center gap-2 px-3.5 py-2.5 text-left hover:bg-emerald-50/50 transition-colors"
+        className="w-full flex items-center gap-2 px-3.5 py-2.5 text-left hover:bg-emerald-50/50 transition-all duration-200"
       >
         <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
         <span className="text-sm font-medium text-emerald-700">
@@ -360,7 +360,7 @@ function HealthySkillsSummary({ skills }: { skills: EnrichedSkill[] }) {
                   <span className="text-base leading-none">{skill.emoji}</span>
                   <span className="text-sm text-stone-600 flex-1 truncate">{skill.skillId}</span>
                   {skill.tags[0] && (
-                    <span className="text-[10px] font-mono text-stone-400 bg-stone-100 px-1.5 py-0.5 rounded-md">
+                    <span className="text-xs font-mono text-stone-400 bg-stone-100 px-1.5 py-0.5 rounded-full">
                       {skill.tags[0]}
                     </span>
                   )}
@@ -494,7 +494,7 @@ export function SkillMemorySection({ suggestions, quality, skillAnalysis, proces
       />
 
       {hasData ? (
-        <div className="grid grid-cols-2 gap-2 mb-3">
+        <div className="grid grid-cols-2 gap-4 mb-3">
           {mem && (
             <>
               <InjectionMetricCard
@@ -555,7 +555,7 @@ export function SkillMemorySection({ suggestions, quality, skillAnalysis, proces
               需关注 ({needsAttention.length})
             </span>
           </div>
-          <div className="space-y-2.5">
+          <div className="space-y-4">
             <AnimatePresence>
               {needsAttention.map(skill => (
                 <motion.div

@@ -3,12 +3,12 @@ import { motion, AnimatePresence } from 'framer-motion'
 import {
   Activity, AlertTriangle, RefreshCw,
   Zap, Shield, X as XIcon, ChevronDown,
-  CheckCircle2, Lightbulb, Loader2,
+  CheckCircle2, Lightbulb, Loader2, Eye, Search,
 } from 'lucide-react'
 import { cn } from '@/utils/cn'
 import { getServerUrl } from '@/utils/env'
 import { useStore } from '@/store'
-import { chat, isLLMConfigured } from '@/services/llmService'
+import { chat, getLLMConfig, isLLMConfigured } from '@/services/llmService'
 import { baseSequenceGovernor } from '@/services/baseSequenceGovernor'
 import {
   CandidateRules,
@@ -50,9 +50,18 @@ interface ActiveRule {
   origin?: 'legacy' | 'discovered'
 }
 interface DiscoveredRuleDisplay {
-  id: string; name: string; lifecycle: 'candidate' | 'validated' | 'retired'
+  id: string; name: string; lifecycle: 'candidate' | 'distilled' | 'observing' | 'validated' | 'retired'
   condition: { operator: string; clauses: Array<{ feature: string; op: string; value: number }> }
   action: { promptTemplate: string; severity: string }
+  distillation?: {
+    displayName: string
+    userExplanation: string
+    agentPrompt: string
+    risk: string
+    evidenceSummary: string
+    distilledAt: number
+    distilledBy: string
+  }
   stats: { effectSizePP: number; pValue: number; hitCount: number; hitSuccessRate: number; noHitSuccessRate: number; sampleSize: number }
   origin: string
 }
@@ -176,7 +185,7 @@ function BaseChip({ base, ratio }: { base: string; ratio: number }) {
       </div>
       {/* Tooltip */}
       <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 w-52 opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity duration-150 z-30">
-        <div className="bg-stone-800 text-white text-[11px] rounded-lg px-3 py-2 shadow-lg leading-relaxed">
+        <div className="bg-stone-800 text-white text-xs rounded-lg px-3 py-2 shadow-lg leading-relaxed">
           <p className="font-medium mb-0.5">{meta.desc}</p>
           <p className="text-stone-300">{BASE_CLASSIFY[base]}</p>
         </div>
@@ -188,16 +197,17 @@ function BaseChip({ base, ratio }: { base: string; ratio: number }) {
 
 // ---- Section 1: 英雄区 ----
 
-function HeroSection({ stats, onRefresh, models, selectedModel, onModelChange, onClickSuccessRate, onClickTokens }: {
+function HeroSection({ stats, onRefresh, models, selectedModel, onModelChange, onClickSuccessRate, onClickTokens, runtimeCount, observationCount }: {
   stats: BaseStats; onRefresh: () => void
   models: ModelInfo[]; selectedModel: string; onModelChange: (m: string) => void
   onClickSuccessRate: () => void; onClickTokens: () => void
+  runtimeCount?: number; observationCount?: number
 }) {
   return (
     <motion.div
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
-      className="rounded-xl border border-stone-200/60 bg-gradient-to-br from-white to-stone-50/80 p-5 mb-5"
+      className="rounded-2xl bg-white/60 backdrop-blur-sm border border-white/40 p-5"
     >
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2">
@@ -266,6 +276,24 @@ function HeroSection({ stats, onRefresh, models, selectedModel, onModelChange, o
           ))}
         </div>
       </div>
+
+      {/* 摘要行 */}
+      {(runtimeCount !== undefined || observationCount !== undefined) && (
+        <div className="flex items-center gap-4 mt-3 pt-3 border-t border-stone-100 text-xs text-stone-500">
+          {runtimeCount !== undefined && runtimeCount > 0 && (
+            <span className="flex items-center gap-1">
+              <Shield className="w-3 h-3 text-emerald-500" />
+              <strong className="text-stone-600">{runtimeCount}</strong> 条规则运行中
+            </span>
+          )}
+          {observationCount !== undefined && observationCount > 0 && (
+            <span className="flex items-center gap-1">
+              <Eye className="w-3 h-3 text-stone-400" />
+              <strong className="text-stone-600">{observationCount}</strong> 条系统观察
+            </span>
+          )}
+        </div>
+      )}
     </motion.div>
   )
 }
@@ -407,7 +435,7 @@ function TokenPatternTable({ patterns, title }: { patterns: NgramPattern[]; titl
     <div>
       <h3 className="text-xs font-semibold text-stone-500 mb-2">{title}</h3>
       <div className="bg-stone-50 rounded-lg overflow-hidden">
-        <div className="grid grid-cols-[1fr_60px_52px_40px] gap-1 px-3 py-1.5 text-[10px] text-stone-400 border-b border-stone-100">
+        <div className="grid grid-cols-[1fr_60px_52px_40px] gap-1 px-3 py-1.5 text-xs text-stone-400 border-b border-stone-100">
           <span>模式</span><span className="text-right">消耗</span><span className="text-right">成功率</span><span className="text-right">次数</span>
         </div>
         {patterns.map(p => (
@@ -547,15 +575,15 @@ ${effList || '暂无数据'}
             <div className="grid grid-cols-3 gap-3">
               <div className="bg-blue-50 rounded-xl p-3 text-center">
                 <div className="text-lg font-bold font-mono text-blue-600">{formatTokens(stats.avgTokens)}</div>
-                <div className="text-[10px] text-blue-400 mt-0.5">平均消耗</div>
+                <div className="text-xs text-blue-400 mt-0.5">平均消耗</div>
               </div>
               <div className="bg-stone-50 rounded-xl p-3 text-center">
                 <div className="text-lg font-bold font-mono text-stone-600">{formatTokens(medianTokens)}</div>
-                <div className="text-[10px] text-stone-400 mt-0.5">中位数</div>
+                <div className="text-xs text-stone-400 mt-0.5">中位数</div>
               </div>
               <div className="bg-stone-50 rounded-xl p-3 text-center">
                 <div className="text-xs font-mono text-stone-500 mt-1">{formatTokens(minTokens)} ~ {formatTokens(maxTokens)}</div>
-                <div className="text-[10px] text-stone-400 mt-1">消耗范围</div>
+                <div className="text-xs text-stone-400 mt-1">消耗范围</div>
               </div>
             </div>
 
@@ -566,7 +594,7 @@ ${effList || '暂无数据'}
                 <TokenBar label="成功任务平均" value={avgSuccess} maxVal={barMax} color="bg-emerald-400" />
                 <TokenBar label="失败任务平均" value={avgFail} maxVal={barMax} color="bg-red-400" />
                 {avgFail > avgSuccess * 1.3 && avgFail > 0 && (
-                  <p className="text-[11px] text-amber-600 bg-amber-50 rounded-lg px-3 py-1.5">
+                  <p className="text-xs text-amber-600 bg-amber-50 rounded-lg px-3 py-1.5">
                     失败任务的消耗明显高于成功任务，可能存在无效重试
                   </p>
                 )}
@@ -646,7 +674,7 @@ function RuleDetails({ rule, traceCount }: {
         <div className="flex items-center gap-1.5">
           <span className="text-xs text-stone-400">触发频率</span>
           <span className="text-xs font-mono font-semibold text-stone-600">{rule.hitCount}/{traceCount}</span>
-          <span className="text-[10px] text-stone-400">({(hitRate * 100).toFixed(0)}%)</span>
+          <span className="text-xs text-stone-400">({(hitRate * 100).toFixed(0)}%)</span>
         </div>
         {effectText && (
           <div className="flex items-center gap-1.5">
@@ -661,20 +689,36 @@ function RuleDetails({ rule, traceCount }: {
   )
 }
 
-function ActiveRulesTable({ activeRules, adoptedRules, onRemoveAdopted, onToggleRule, tipMap, traceCount }: {
+function ActiveRulesTable({ activeRules, adoptedRules, onRemoveAdopted, onToggleRule, tipMap, traceCount, observingRules, validatedRules, retiredRules, onRuleAction, distilledRules, distillingId, onDistillRule }: {
   activeRules: ActiveRule[]
   adoptedRules: Rule[]
   onRemoveAdopted: (id: string) => void
   onToggleRule: (ruleName: string, currentStatus: string) => void
   tipMap: Record<string, string>
   traceCount: number
+  observingRules?: DiscoveredRuleDisplay[]
+  validatedRules?: DiscoveredRuleDisplay[]
+  retiredRules?: DiscoveredRuleDisplay[]
+  onRuleAction?: (ruleId: string, action: 'observe' | 'validate' | 'retire') => void
+  distilledRules?: DiscoveredRuleDisplay[]
+  distillingId?: string | null
+  onDistillRule?: (rule: DiscoveredRuleDisplay) => void
 }) {
   const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [showRetired, setShowRetired] = useState(false)
   const hasGovernor = activeRules && activeRules.length > 0
   const hasAdopted = adoptedRules.length > 0
-  if (!hasGovernor && !hasAdopted) return null
+  const hasObserving = (observingRules?.length ?? 0) > 0
+  const hasValidated = (validatedRules?.length ?? 0) > 0
+  const hasRetired = (retiredRules?.length ?? 0) > 0
+  const hasDistilled = (distilledRules?.length ?? 0) > 0
 
-  const activeCount = (activeRules?.filter(r => r.status === 'active').length ?? 0) + adoptedRules.length
+  if (!hasGovernor && !hasAdopted && !hasObserving && !hasValidated) return null
+
+  const activeCount = (activeRules?.filter(r => r.status === 'active').length ?? 0)
+    + adoptedRules.length
+    + (validatedRules?.length ?? 0)
+    + (observingRules?.length ?? 0)
 
   return (
     <motion.div
@@ -685,10 +729,10 @@ function ActiveRulesTable({ activeRules, adoptedRules, onRemoveAdopted, onToggle
     >
       <SectionHeader
         icon={<Shield className="w-3.5 h-3.5" />}
-        title="守护规则"
+        title="运行中的规则"
         badge={`${activeCount} 活跃`}
       />
-      <div className="rounded-xl border border-stone-200/60 overflow-hidden">
+      <div className="rounded-2xl bg-white/60 backdrop-blur-sm border border-white/40 overflow-hidden">
         {/* 守护内置规则 */}
         {activeRules?.map((rule, i) => {
           const isDisabled = rule.status === 'disabled'
@@ -700,7 +744,7 @@ function ActiveRulesTable({ activeRules, adoptedRules, onRemoveAdopted, onToggle
             <div
               key={rule.rule}
               className={cn(
-                'transition-colors',
+                'transition-colors duration-200',
                 i > 0 && 'border-t border-stone-100/80',
                 isDisabled ? 'bg-white/60 opacity-50' : 'bg-emerald-50/60',
               )}
@@ -709,7 +753,7 @@ function ActiveRulesTable({ activeRules, adoptedRules, onRemoveAdopted, onToggle
                 onClick={() => setExpandedId(isExpanded ? null : rule.rule)}
                 className={cn(
                   'w-full flex items-center gap-3 px-3.5 py-2.5 text-sm text-left',
-                  'hover:bg-stone-50/30 transition-colors',
+                  'hover:bg-white/40 rounded-xl transition-colors duration-200',
                 )}
               >
                 <div className="flex-1 min-w-0">
@@ -725,7 +769,7 @@ function ActiveRulesTable({ activeRules, adoptedRules, onRemoveAdopted, onToggle
 
                 <div className="shrink-0 text-right">
                   <div className="font-mono text-sm text-stone-500">{rule.hitCount}</div>
-                  <div className="text-[10px] text-stone-400 leading-none">触发</div>
+                  <div className="text-xs text-stone-400 leading-none">触发</div>
                 </div>
 
                 {effect && (
@@ -744,13 +788,13 @@ function ActiveRulesTable({ activeRules, adoptedRules, onRemoveAdopted, onToggle
                   role="button"
                   onClick={(e) => { e.stopPropagation(); onToggleRule?.(rule.rule, rule.status) }}
                   className={cn(
-                    'relative w-9 h-5 rounded-full transition-colors shrink-0 border',
+                    'relative w-9 h-5 rounded-full transition-all duration-300 shrink-0 border',
                     isDisabled ? 'bg-stone-300 border-stone-400' : 'bg-emerald-500 border-emerald-600',
                   )}
                   title={isDisabled ? '点击启用此规则' : '点击禁用此规则'}
                 >
                   <span className={cn(
-                    'absolute top-[3px] w-[14px] h-[14px] rounded-full bg-white shadow transition-transform',
+                    'absolute top-[3px] w-[14px] h-[14px] rounded-full bg-white shadow transition-all duration-300',
                     isDisabled ? 'left-[2px]' : 'left-[18px]',
                   )} />
                 </span>
@@ -777,8 +821,8 @@ function ActiveRulesTable({ activeRules, adoptedRules, onRemoveAdopted, onToggle
         {hasAdopted && (
           <>
             {hasGovernor && (
-              <div className="border-t border-stone-200/60 px-3.5 py-1.5 bg-stone-50/50">
-                <span className="text-xs font-medium text-stone-400">已采纳规则</span>
+              <div className="border-t border-stone-200/30 px-3.5 py-1.5 bg-stone-50/50">
+                <span className="text-sm font-semibold text-stone-700">已采纳规则</span>
               </div>
             )}
             {adoptedRules.map((rule, i) => {
@@ -796,7 +840,7 @@ function ActiveRulesTable({ activeRules, adoptedRules, onRemoveAdopted, onToggle
                     onClick={() => hasRates && setExpandedId(isExpanded ? null : `adopted:${rule.id}`)}
                     className={cn(
                       'w-full flex items-center gap-3 px-3.5 py-2.5 text-sm text-left group',
-                      hasRates && 'hover:bg-stone-50/30 transition-colors',
+                      hasRates && 'hover:bg-white/40 rounded-xl transition-colors duration-200',
                     )}
                   >
                     <div className="flex-1 min-w-0">
@@ -807,7 +851,7 @@ function ActiveRulesTable({ activeRules, adoptedRules, onRemoveAdopted, onToggle
                     </div>
                     <div className="shrink-0 text-right">
                       <div className="font-mono text-sm text-stone-500">{rule.hitCount}</div>
-                      <div className="text-[10px] text-stone-400 leading-none">触发</div>
+                      <div className="text-xs text-stone-400 leading-none">触发</div>
                     </div>
                     {effect && (
                       <span className={cn('text-xs whitespace-nowrap shrink-0', effect.color)}>
@@ -823,7 +867,7 @@ function ActiveRulesTable({ activeRules, adoptedRules, onRemoveAdopted, onToggle
                     <span
                       role="button"
                       onClick={(e) => { e.stopPropagation(); onRemoveAdopted(rule.id) }}
-                      className="w-5 h-5 flex items-center justify-center rounded text-stone-300 opacity-0 group-hover:opacity-100 hover:text-red-400 hover:bg-red-50 transition-all shrink-0"
+                      className="w-5 h-5 flex items-center justify-center rounded-lg text-stone-300 opacity-0 group-hover:opacity-100 hover:text-red-400 hover:bg-red-50/60 transition-all duration-200 shrink-0"
                       title="移除此规则"
                     >
                       <XIcon className="w-3 h-3" />
@@ -847,18 +891,180 @@ function ActiveRulesTable({ activeRules, adoptedRules, onRemoveAdopted, onToggle
             })}
           </>
         )}
+
+        {/* 已验证规则（数据驱动，已沉淀） */}
+        {hasValidated && (
+          <>
+            <div className="border-t border-stone-200/30 px-3.5 py-1.5 bg-emerald-50/30">
+              <span className="text-sm font-semibold text-stone-700">已验证</span>
+            </div>
+            {validatedRules!.map((rule) => {
+              const isExpanded = expandedId === `validated:${rule.id}`
+              const effect = formatEffect(rule.stats.effectSizePP, rule.stats.hitSuccessRate, rule.stats.noHitSuccessRate)
+              const tip = rule.distillation?.userExplanation || tipMap[rule.id]
+              return (
+                <div key={rule.id} className="bg-emerald-50/40 border-t border-stone-100/80">
+                  <button
+                    onClick={() => setExpandedId(isExpanded ? null : `validated:${rule.id}`)}
+                    className="w-full flex items-center gap-3 px-3.5 py-2.5 text-sm text-left hover:bg-white/40 rounded-xl transition-colors duration-200"
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-xs font-medium px-1.5 py-0.5 rounded-full text-emerald-600 bg-emerald-50/80">已验证</span>
+                        <span className="text-stone-700 font-medium">{getRuleDisplayName(rule)}</span>
+                      </div>
+                      {tip && <p className="text-xs text-stone-400 mt-0.5 leading-snug">{tip}</p>}
+                    </div>
+                    <span className={cn('text-xs whitespace-nowrap shrink-0', effect.color)}>{effect.text}</span>
+                    <ChevronDown className={cn('w-3.5 h-3.5 text-stone-300 shrink-0 transition-transform', isExpanded && 'rotate-180')} />
+                    <span
+                      role="button"
+                      onClick={(e) => { e.stopPropagation(); onRuleAction?.(rule.id, 'retire') }}
+                      className="rounded-md bg-stone-100 px-2 py-1 text-xs font-medium text-stone-500 hover:bg-stone-200 shrink-0"
+                    >
+                      停用
+                    </span>
+                  </button>
+                  <AnimatePresence>
+                    {isExpanded && (
+                      <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden">
+                        <RuleDetails rule={{ hitCount: rule.stats.hitCount, hitSuccessRate: rule.stats.hitSuccessRate, noHitSuccessRate: rule.stats.noHitSuccessRate, effectPP: rule.stats.effectSizePP }} traceCount={traceCount} />
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+              )
+            })}
+          </>
+        )}
+
+        {/* 试用中规则（数据驱动，实验性干预） */}
+        {hasObserving && (
+          <>
+            <div className="border-t border-stone-200/30 px-3.5 py-1.5 bg-amber-50/30">
+              <span className="text-sm font-semibold text-stone-700">试用中</span>
+            </div>
+            {observingRules!.map((rule) => {
+              const isExpanded = expandedId === `observing:${rule.id}`
+              const effect = formatEffect(rule.stats.effectSizePP, rule.stats.hitSuccessRate, rule.stats.noHitSuccessRate)
+              const tip = rule.distillation?.userExplanation || tipMap[rule.id]
+              return (
+                <div key={rule.id} className="bg-amber-50/30 border-t border-stone-100/80">
+                  <button
+                    onClick={() => setExpandedId(isExpanded ? null : `observing:${rule.id}`)}
+                    className="w-full flex items-center gap-3 px-3.5 py-2.5 text-sm text-left hover:bg-white/40 rounded-xl transition-colors duration-200"
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-xs font-medium px-1.5 py-0.5 rounded-full text-amber-700 bg-amber-50/80">试用中</span>
+                        <span className="text-stone-700 font-medium">{getRuleDisplayName(rule)}</span>
+                      </div>
+                      {tip && <p className="text-xs text-stone-400 mt-0.5 leading-snug">{tip}</p>}
+                      {rule.distillation?.risk && (
+                        <p className="text-xs text-amber-600 mt-0.5">风险：{rule.distillation.risk}</p>
+                      )}
+                    </div>
+                    <span className={cn('text-xs whitespace-nowrap shrink-0', effect.color)}>{effect.text}</span>
+                    <ChevronDown className={cn('w-3.5 h-3.5 text-stone-300 shrink-0 transition-transform', isExpanded && 'rotate-180')} />
+                    <div className="flex items-center gap-1 shrink-0">
+                      <span
+                        role="button"
+                        onClick={(e) => { e.stopPropagation(); onRuleAction?.(rule.id, 'validate') }}
+                        className="rounded-md bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-100"
+                      >
+                        验证
+                      </span>
+                      <span
+                        role="button"
+                        onClick={(e) => { e.stopPropagation(); onRuleAction?.(rule.id, 'retire') }}
+                        className="rounded-md bg-stone-100 px-2 py-1 text-xs font-medium text-stone-500 hover:bg-stone-200"
+                      >
+                        停用
+                      </span>
+                    </div>
+                  </button>
+                  <AnimatePresence>
+                    {isExpanded && (
+                      <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden">
+                        <RuleDetails rule={{ hitCount: rule.stats.hitCount, hitSuccessRate: rule.stats.hitSuccessRate, noHitSuccessRate: rule.stats.noHitSuccessRate, effectPP: rule.stats.effectSizePP }} traceCount={traceCount} />
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+              )
+            })}
+          </>
+        )}
+
+        {/* 已停用折叠 */}
+        {hasRetired && (
+          <>
+            <div className="border-t border-stone-200/60 px-3.5 py-1.5 bg-stone-50/50">
+              <button
+                onClick={() => setShowRetired(!showRetired)}
+                className="text-xs text-stone-400 hover:text-stone-600 transition-colors"
+              >
+                {showRetired ? '收起已停用' : `+${retiredRules!.length} 已停用`}
+              </button>
+            </div>
+            {showRetired && retiredRules!.map((rule) => {
+              const hasDistillation = !!rule.distillation?.agentPrompt
+              const isDistilling = distillingId === rule.id
+              return (
+                <div key={rule.id} className="bg-stone-50/50 border-t border-stone-100/50 opacity-70">
+                  <div className="flex items-center gap-3 px-3.5 py-2 text-sm">
+                    <div className="flex-1 min-w-0">
+                      <span className="text-stone-400">{getRuleDisplayName(rule)}</span>
+                    </div>
+                    {hasDistillation ? (
+                      <span
+                        role="button"
+                        onClick={() => onRuleAction?.(rule.id, 'observe')}
+                        className="rounded-md bg-amber-50 px-2 py-1 text-xs font-medium text-amber-700 hover:bg-amber-100 shrink-0"
+                      >
+                        重新试用
+                      </span>
+                    ) : (
+                      <span
+                        role="button"
+                        onClick={() => !isDistilling && onDistillRule?.(rule)}
+                        className={cn("rounded-md bg-blue-50 px-2 py-1 text-xs font-medium text-blue-600 hover:bg-blue-100 shrink-0", isDistilling && "opacity-50 cursor-not-allowed")}
+                      >
+                        {isDistilling ? '分析中...' : '分析'}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
+          </>
+        )}
       </div>
+
+      {/* Distilled inline 提醒条 */}
+      {hasDistilled && (
+        <div className="mt-3 rounded-lg border border-blue-100 bg-blue-50/60 px-3 py-2 flex items-center gap-2">
+          <Lightbulb className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+          <span className="text-xs text-blue-700 flex-1">
+            有 <strong>{distilledRules!.length}</strong> 条已分析完的规则等待试用
+          </span>
+          {distilledRules!.map(rule => (
+            <span
+              key={rule.id}
+              role="button"
+              onClick={() => onRuleAction?.(rule.id, 'observe')}
+              className="rounded-md bg-amber-50 border border-amber-200 px-2 py-1 text-xs font-medium text-amber-700 hover:bg-amber-100 shrink-0"
+            >
+              试用「{getRuleDisplayName(rule)}」
+            </span>
+          ))}
+        </div>
+      )}
     </motion.div>
   )
 }
 
-// ---- 数据驱动发现规则 ----
-
-const LIFECYCLE_LABELS: Record<string, { text: string; color: string }> = {
-  candidate: { text: '候选', color: 'text-amber-600 bg-amber-50' },
-  validated: { text: '已验证', color: 'text-emerald-600 bg-emerald-50' },
-  retired: { text: '已禁用', color: 'text-stone-400 bg-stone-50' },
-}
+// ---- 数据驱动发现规则工具函数 ----
 
 /** 将负效应量转为用户友好的正面表述 */
 function formatEffect(effectPP: number, _hitSR: number, _noHitSR: number): { text: string; color: string } {
@@ -867,149 +1073,261 @@ function formatEffect(effectPP: number, _hitSR: number, _noHitSR: number): { tex
     // 命中时成功率更低 → 避免此模式可提升成功率
     return {
       text: `避免可提升 ${absPP.toFixed(1)}%`,
-      color: absPP >= 10 ? 'text-emerald-600 font-medium' : 'text-emerald-500',
+      color: absPP >= 10 ? 'bg-emerald-50/80 text-emerald-600 rounded-full px-3 py-1 text-xs font-medium' : 'bg-emerald-50/80 text-emerald-600 rounded-full px-3 py-1 text-xs font-medium',
     }
   }
   // 正效应（理论上不应该出现在这里，因为发现管线只产出负效应规则）
   return { text: `+${absPP.toFixed(1)}%`, color: 'text-stone-500' }
 }
 
-function DiscoveredRulesSection({ rules, discovering, onRunDiscovery, onToggleRule, tipMap }: {
-  rules: DiscoveredRuleDisplay[]
+function formatRuleCondition(rule: DiscoveredRuleDisplay): string {
+  const clause = rule.condition.clauses[0]
+  return clause ? `${clause.feature} ${clause.op} ${clause.value}` : rule.name
+}
+
+function getRuleDisplayName(rule: DiscoveredRuleDisplay): string {
+  return rule.distillation?.displayName || formatRuleCondition(rule)
+}
+
+// ---- 系统观察池（candidate 的新家） ----
+
+function EvidenceBar({ pValue }: { pValue: number }) {
+  const strength = pValue < 0.001 ? 'strong' : pValue < 0.01 ? 'moderate' : pValue < 0.05 ? 'weak' : 'insufficient'
+  const config = {
+    strong: { fill: 4, label: '强证据', color: 'bg-emerald-500', text: 'text-emerald-600' },
+    moderate: { fill: 3, label: '中等证据', color: 'bg-amber-500', text: 'text-amber-600' },
+    weak: { fill: 2, label: '弱证据', color: 'bg-orange-400', text: 'text-orange-500' },
+    insufficient: { fill: 1, label: '证据不足', color: 'bg-stone-300', text: 'text-stone-400' },
+  }[strength]
+
+  return (
+    <div className="flex items-center gap-1.5">
+      <div className="flex gap-0.5">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <div
+            key={i}
+            className={cn(
+              'w-2 h-1.5 rounded-sm',
+              i < config.fill ? config.color : 'bg-stone-200'
+            )}
+          />
+        ))}
+      </div>
+      <span className={cn('text-xs font-medium', config.text)}>
+        {config.label}
+      </span>
+      <span className="text-xs text-stone-300">
+        p={pValue < 0.001 ? '<0.001' : pValue.toFixed(3)}
+      </span>
+    </div>
+  )
+}
+
+function ObservationPool({ candidates, discovering, distillingId, onRunDiscovery, onDistillRule }: {
+  candidates: DiscoveredRuleDisplay[]
   discovering: boolean
+  distillingId: string | null
   onRunDiscovery: () => void
-  onToggleRule: (ruleId: string, currentLifecycle: string) => void
-  tipMap: Record<string, string>
+  onDistillRule: (rule: DiscoveredRuleDisplay) => void
 }) {
-  const [showRetired, setShowRetired] = useState(false)
-  const activeRules = rules.filter(r => r.lifecycle !== 'retired')
-  const retiredRules = rules.filter(r => r.lifecycle === 'retired')
-  const displayRules = showRetired ? rules : activeRules
+  const [expanded, setExpanded] = useState(false)
 
   return (
     <motion.div
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ delay: 0.15 }}
+      transition={{ delay: 0.2 }}
       className="mb-6"
     >
-      <div className="flex items-center justify-between mb-3">
+      {/* 折叠头 */}
+      <div
+        className="flex items-center justify-between px-3.5 py-2.5 rounded-2xl border border-white/40 bg-white/60 backdrop-blur-sm cursor-pointer hover:bg-white/80 transition-all duration-200"
+        onClick={() => setExpanded(!expanded)}
+      >
         <div className="flex items-center gap-2">
-          <Zap className="w-4 h-4 text-violet-500" />
-          <h3 className="font-semibold text-stone-700 text-sm">
-            数据驱动规则
-          </h3>
-          {rules.length > 0 && (
-            <span className="text-xs text-stone-400">
-              {activeRules.length} 条启用
-              {retiredRules.length > 0 && (
-                <button
-                  onClick={() => setShowRetired(!showRetired)}
-                  className="ml-1 text-stone-400 hover:text-stone-600 underline decoration-dotted"
-                >
-                  {showRetired ? '隐藏' : `+${retiredRules.length} 已禁用`}
-                </button>
-              )}
+          <Search className="w-3.5 h-3.5 text-stone-400" />
+          <span className="text-sm font-medium text-stone-600">系统观察</span>
+          {candidates.length > 0 && (
+            <span className="text-xs font-mono text-stone-400 bg-stone-100 px-1.5 py-0.5 rounded-full">
+              {candidates.length} 条
             </span>
           )}
         </div>
-        <button
-          onClick={onRunDiscovery}
-          disabled={discovering}
-          className={cn(
-            'flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors',
-            discovering
-              ? 'bg-stone-100 text-stone-400 cursor-not-allowed'
-              : 'bg-violet-50 text-violet-600 hover:bg-violet-100'
-          )}
-        >
-          {discovering ? (
-            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-          ) : (
-            <Activity className="w-3.5 h-3.5" />
-          )}
-          {discovering ? '发现中...' : '运行发现'}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={(e) => { e.stopPropagation(); onRunDiscovery() }}
+            disabled={discovering}
+            className={cn(
+              'flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-lg transition-colors',
+              discovering
+                ? 'bg-stone-100 text-stone-400 cursor-not-allowed'
+                : 'bg-violet-50 text-violet-600 hover:bg-violet-100'
+            )}
+          >
+            {discovering ? (
+              <Loader2 className="w-3 h-3 animate-spin" />
+            ) : (
+              <Activity className="w-3 h-3" />
+            )}
+            {discovering ? '发现中...' : '运行发现'}
+          </button>
+          <ChevronDown className={cn(
+            'w-4 h-4 text-stone-400 transition-transform',
+            expanded && 'rotate-180',
+          )} />
+        </div>
       </div>
 
-      {rules.length === 0 ? (
-        <div className="rounded-xl bg-stone-50/80 border border-stone-100 p-4 text-center">
-          <p className="text-sm text-stone-400">
-            尚未发现数据驱动规则。点击"运行发现"从历史 trace 中自动提取统计显著的规则。
-          </p>
-        </div>
-      ) : (
-        <div className="space-y-2">
-          {displayRules.map(rule => {
-            const lc = LIFECYCLE_LABELS[rule.lifecycle] || LIFECYCLE_LABELS.candidate
-            const clause = rule.condition.clauses[0]
-            const isEnabled = rule.lifecycle !== 'retired'
-            const effect = formatEffect(rule.stats.effectSizePP, rule.stats.hitSuccessRate, rule.stats.noHitSuccessRate)
-            const tip = tipMap[rule.id]
-
-            return (
-              <div
-                key={rule.id}
-                className={cn(
-                  'rounded-xl border p-3 transition-colors',
-                  isEnabled ? 'bg-emerald-50/60 border-emerald-200/50' : 'bg-stone-50/50 border-stone-100/50 opacity-60',
-                )}
-              >
-                <div className="flex items-center justify-between mb-1">
-                  <div className="flex items-center gap-2 min-w-0 flex-1">
-                    <span className={cn('text-[10px] font-medium px-1.5 py-0.5 rounded shrink-0', lc.color)}>
-                      {lc.text}
-                    </span>
-                    <span className={cn('text-sm font-medium truncate', isEnabled ? 'text-stone-700' : 'text-stone-400')}>
-                      {clause ? `${clause.feature} ${clause.op} ${clause.value}` : rule.name}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0 ml-2">
-                    {/* 效应量 — 正面表述 */}
-                    <span className={cn('text-xs whitespace-nowrap', effect.color)}>
-                      {effect.text}
-                    </span>
-                    {/* 开关按钮 */}
-                    <button
-                      onClick={() => onToggleRule?.(rule.id, rule.lifecycle)}
-                      className={cn(
-                        'relative w-9 h-5 rounded-full transition-colors shrink-0 border',
-                        isEnabled ? 'bg-emerald-500 border-emerald-600' : 'bg-stone-300 border-stone-400',
-                      )}
-                      title={isEnabled ? '点击禁用此规则' : '点击启用此规则'}
-                    >
-                      <span className={cn(
-                        'absolute top-[3px] w-[14px] h-[14px] rounded-full bg-white shadow transition-transform',
-                        isEnabled ? 'left-[18px]' : 'left-[2px]',
-                      )} />
-                    </button>
-                  </div>
-                </div>
-
-                {/* 通俗解释（LLM 生成） */}
-                {tip ? (
-                  <p className="text-xs text-stone-500 mb-1.5 leading-relaxed">{tip}</p>
-                ) : (
-                  <p className="text-xs text-stone-300 italic mb-1.5">说明生成中…</p>
-                )}
-
-                {/* 统计详情 */}
-                <div className="flex items-center gap-3 text-[11px] text-stone-400 mt-1">
-                  <span>命中 {rule.stats.hitCount} 次</span>
-                  <span className="text-stone-300">|</span>
-                  <span>命中成功率 {(rule.stats.hitSuccessRate * 100).toFixed(1)}%</span>
-                  <span>→</span>
-                  <span>未命中 {(rule.stats.noHitSuccessRate * 100).toFixed(1)}%</span>
-                  <span className="text-stone-300">|</span>
-                  <span>p={rule.stats.pValue < 0.001 ? '<0.001' : rule.stats.pValue.toFixed(3)}</span>
-                </div>
+      {/* 展开内容 */}
+      <AnimatePresence>
+        {expanded && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="overflow-hidden"
+          >
+            <div className="mt-2 space-y-2">
+              {/* 说明条 */}
+              <div className="rounded-lg border border-stone-100 bg-stone-50/80 px-3 py-2 text-xs text-stone-500 leading-relaxed">
+                这些不是规则，也不会影响 AI。它们只是系统从历史执行中发现的统计模式；分析后，才可能变成可试用规则。
               </div>
-            )
-          })}
-        </div>
-      )}
+
+              {candidates.length === 0 ? (
+                <div className="rounded-xl bg-stone-50/80 border border-stone-100 p-4 text-center">
+                  <p className="text-sm text-stone-400">
+                    尚未发现统计模式。点击"运行发现"从历史 trace 中自动提取。
+                  </p>
+                </div>
+              ) : (
+                candidates.map(rule => {
+                  const effect = formatEffect(rule.stats.effectSizePP, rule.stats.hitSuccessRate, rule.stats.noHitSuccessRate)
+                  const isDistilling = distillingId === rule.id
+                  return (
+                    <div
+                      key={rule.id}
+                      className="rounded-xl border border-white/40 bg-white/40 p-3 hover:bg-white/60 transition-all duration-200"
+                    >
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-sm font-medium text-stone-700">
+                          {formatRuleCondition(rule)}
+                        </span>
+                        <span className={cn('text-xs whitespace-nowrap', effect.color)}>
+                          {effect.text}
+                        </span>
+                      </div>
+
+                      {/* 证据强度 */}
+                      <EvidenceBar pValue={rule.stats.pValue} />
+
+                      {/* 统计详情 */}
+                      <div className="flex items-center gap-3 text-xs text-stone-400 mt-1.5">
+                        <span>样本 {rule.stats.sampleSize}</span>
+                        <span>命中 {rule.stats.hitCount} 次</span>
+                        <span>命中成功率 {(rule.stats.hitSuccessRate * 100).toFixed(0)}% vs 未命中 {(rule.stats.noHitSuccessRate * 100).toFixed(0)}%</span>
+                      </div>
+
+                      {/* 操作按钮 */}
+                      <div className="mt-2 flex justify-end">
+                        <button
+                          onClick={() => onDistillRule(rule)}
+                          disabled={isDistilling}
+                          className="inline-flex items-center gap-1 rounded-md bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-600 hover:bg-blue-100 disabled:opacity-50 transition-colors"
+                        >
+                          {isDistilling ? <Loader2 className="w-3 h-3 animate-spin" /> : <Lightbulb className="w-3 h-3" />}
+                          {isDistilling ? '分析中...' : '分析成可试用规则'}
+                        </button>
+                      </div>
+                    </div>
+                  )
+                })
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </motion.div>
   )
+}
+
+interface DistillationSample {
+  task: string
+  baseSequence: string
+  triggerStep: number | null
+  feature: string
+  featureValue: number | boolean | null
+  success: boolean
+  failureReason: string
+  toolCount: number
+}
+
+interface DistillationPayload {
+  displayName: string
+  userExplanation: string
+  agentPrompt: string
+  risk: string
+  evidenceSummary: string
+  distilledAt?: number
+  distilledBy?: string
+}
+
+function extractJsonObject<T>(text: string): T {
+  const cleaned = text
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/```$/i, '')
+    .trim()
+  const match = cleaned.match(/\{[\s\S]*\}/)
+  if (!match) throw new Error('LLM 未返回 JSON')
+  return JSON.parse(match[0]) as T
+}
+
+function formatSamplesForPrompt(title: string, samples: DistillationSample[]): string {
+  if (!samples.length) return `${title}: 无样本`
+  return `${title}:\n${samples.map((s, i) => (
+    `${i + 1}. 任务: ${s.task || '未记录'}\n` +
+    `   碱基序列: ${s.baseSequence || '无'}\n` +
+    `   触发位置: ${s.triggerStep ? `第 ${s.triggerStep} 步` : '未知'}，${s.feature}=${String(s.featureValue ?? '未知')}\n` +
+    `   终态: ${s.success ? '成功' : `失败${s.failureReason ? ` - ${s.failureReason}` : ''}`}，工具数: ${s.toolCount}`
+  )).join('\n')}`
+}
+
+function buildDistillationPrompt(rule: DiscoveredRuleDisplay, samples: {
+  hitFailures: DistillationSample[]
+  hitSuccesses: DistillationSample[]
+  successfulControls: DistillationSample[]
+}): string {
+  const clause = formatRuleCondition(rule)
+  const effectDesc = rule.stats.effectSizePP < 0
+    ? `命中时成功率比未命中低 ${Math.abs(rule.stats.effectSizePP).toFixed(1)} 个百分点`
+    : `命中时成功率比未命中高 ${rule.stats.effectSizePP.toFixed(1)} 个百分点`
+
+  return `你要把一条 AI Agent 执行规则从"统计阈值"蒸馏成可读、可执行的干预策略。
+
+规则统计:
+- 条件: ${clause}
+- 命中次数: ${rule.stats.hitCount}
+- 命中成功率: ${(rule.stats.hitSuccessRate * 100).toFixed(1)}%
+- 未命中成功率: ${(rule.stats.noHitSuccessRate * 100).toFixed(1)}%
+- 效应: ${effectDesc}
+- 原始提示模板: ${rule.action.promptTemplate}
+
+样本:
+${formatSamplesForPrompt('命中且失败', samples.hitFailures)}
+
+${formatSamplesForPrompt('命中但成功', samples.hitSuccesses)}
+
+${formatSamplesForPrompt('未命中且成功的对照', samples.successfulControls)}
+
+请输出严格 JSON，不要 Markdown，不要额外解释:
+{
+  "displayName": "8 字以内的人类可读名称",
+  "userExplanation": "一句 20-36 字中文，说明这个模式在提醒用户什么，不要出现碱基、序列、token 等术语",
+  "agentPrompt": "真正注入给 AI Agent 的中文提示。要具体告诉它停止什么、转向什么、下一步怎么做。可以保留 {feature_pct} 这类占位符，但不要写空话。",
+  "risk": "一句话说明误触风险",
+  "evidenceSummary": "一句话总结证据，包含命中次数和成功率差异"
+}`
 }
 
 // ---- 主组件 ----
@@ -1039,6 +1357,7 @@ export function BaseAnalysisPanel() {
   // ---- 规则发现状态 ----
   // ---- 规则发现状态 ----
   const [discovering, setDiscovering] = useState(false)
+  const [distillingId, setDistillingId] = useState<string | null>(null)
 
   // ---- 规则通俗解释 (tipMap) ----
   const [tipMap, setTipMap] = useState<Record<string, string>>({})
@@ -1173,27 +1492,6 @@ ${ruleList}
         stats: { tracesAnalyzed: number; newRulesFound: number }
       }
 
-      // 发现新规则后，先为新规则生成 LLM 说明
-      if (json.newRules.length > 0 && isLLMConfigured()) {
-        const newTipNeeds: Array<{ key: string; label: string; desc: string }> = []
-        for (const r of json.newRules) {
-          if (!tipMap[r.id]) {
-            const clause = r.condition.clauses[0]
-            const condStr = clause ? `${clause.feature} ${clause.op} ${clause.value}` : r.name
-            const effectDesc = r.stats.effectSizePP < 0
-              ? `命中时成功率降低 ${Math.abs(r.stats.effectSizePP)}pp（${(r.stats.hitSuccessRate * 100).toFixed(0)}% vs ${(r.stats.noHitSuccessRate * 100).toFixed(0)}%）`
-              : `命中时成功率提升 ${r.stats.effectSizePP}pp`
-            newTipNeeds.push({
-              key: r.id,
-              label: condStr,
-              desc: `统计发现规则: 当 ${condStr} 时，${effectDesc}。提示内容: ${r.action.promptTemplate.slice(0, 60)}`,
-            })
-          }
-        }
-        // 生成说明（异步但不阻塞展示）
-        generateTipsForRules(newTipNeeds, tipMap)
-      }
-
       // 更新 data 中的 discoveredRules
       if (data) {
         setData({ ...data, discoveredRules: json.existingRules })
@@ -1208,24 +1506,78 @@ ${ruleList}
     } finally {
       setDiscovering(false)
     }
-  }, [data, addToast, tipMap, generateTipsForRules])
+  }, [data, addToast])
 
-  // ---- 规则启用/禁用切换 ----
-  const handleToggleRule = useCallback(async (ruleId: string, currentLifecycle: string) => {
-    const action = currentLifecycle === 'retired' ? 'validate' : 'retire'
+  // ---- 数据驱动规则蒸馏 ----
+  const handleDistillRule = useCallback(async (rule: DiscoveredRuleDisplay) => {
+    if (!isLLMConfigured()) {
+      addToast({ type: 'error', title: '无法分析规则', message: '请先在设置中配置 LLM' })
+      return
+    }
+    setDistillingId(rule.id)
+    try {
+      const prepareRes = await fetch(`${SERVER_URL}/api/discovered-rules`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'distill_prepare', ruleId: rule.id, days: 90 }),
+      })
+      if (!prepareRes.ok) throw new Error(`HTTP ${prepareRes.status}`)
+      const prepared = await prepareRes.json() as {
+        rule: DiscoveredRuleDisplay
+        samples: {
+          hitFailures: DistillationSample[]
+          hitSuccesses: DistillationSample[]
+          successfulControls: DistillationSample[]
+        }
+      }
+
+      const result = await chat([
+        { role: 'system', content: '你是 AI Agent 执行模式的规则蒸馏专家。你只输出严格 JSON。' },
+        { role: 'user', content: buildDistillationPrompt(prepared.rule, prepared.samples) },
+      ])
+      const cfg = getLLMConfig()
+      const distillation = extractJsonObject<DistillationPayload>(result)
+      distillation.distilledAt = Date.now()
+      distillation.distilledBy = cfg.model || 'frontend-llm'
+
+      const saveRes = await fetch(`${SERVER_URL}/api/discovered-rules`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'save_distillation', ruleId: rule.id, distillation }),
+      })
+      if (!saveRes.ok) throw new Error(`HTTP ${saveRes.status}`)
+      const json = await saveRes.json() as { rules: DiscoveredRuleDisplay[] }
+      if (data) {
+        setData({ ...data, discoveredRules: json.rules })
+      }
+      setTipMap(prev => ({ ...prev, [rule.id]: distillation.userExplanation }))
+      addToast({ type: 'success', title: '规则已分析', message: distillation.displayName })
+    } catch (err) {
+      addToast({ type: 'error', title: '规则分析失败', message: err instanceof Error ? err.message : String(err) })
+    } finally {
+      setDistillingId(null)
+    }
+  }, [data, addToast])
+
+  // ---- 数据驱动规则生命周期切换 ----
+  const handleRuleAction = useCallback(async (ruleId: string, action: 'observe' | 'validate' | 'retire') => {
     try {
       const res = await fetch(`${SERVER_URL}/api/discovered-rules`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action, ruleId, reason: 'user_toggle' }),
+        body: JSON.stringify({ action, ruleId, reason: 'user_action' }),
       })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      if (!res.ok) {
+        const text = await res.text().catch(() => '')
+        throw new Error(text || `HTTP ${res.status}`)
+      }
       const json = await res.json() as { rules: DiscoveredRuleDisplay[] }
       if (data) {
         setData({ ...data, discoveredRules: json.rules })
       }
-      // 通知 Governor 实时重载规则配置
       baseSequenceGovernor.reload()
+      const title = action === 'observe' ? '已开始试用' : action === 'validate' ? '规则已验证' : '规则已停用'
+      addToast({ type: 'success', title })
     } catch (err) {
       addToast({ type: 'error', title: '切换失败', message: err instanceof Error ? err.message : String(err) })
     }
@@ -1278,7 +1630,7 @@ ${ruleList}
       }
     }
     for (const r of analysisData.discoveredRules || []) {
-      if (!cached[r.id]) {
+      if (!r.distillation?.userExplanation && r.lifecycle !== 'candidate' && !cached[r.id]) {
         const clause = r.condition.clauses[0]
         const condStr = clause ? `${clause.feature} ${clause.op} ${clause.value}` : r.name
         const effectDesc = r.stats.effectSizePP < 0
@@ -1397,6 +1749,14 @@ ${ruleList}
     [rules],
   )
 
+  // ---- 按 lifecycle 分组 discoveredRules（必须在 early return 之前） ----
+  const discoveredRules = data?.discoveredRules || []
+  const candidateRules = useMemo(() => discoveredRules.filter(r => r.lifecycle === 'candidate'), [discoveredRules])
+  const distilledRules = useMemo(() => discoveredRules.filter(r => r.lifecycle === 'distilled'), [discoveredRules])
+  const observingRules = useMemo(() => discoveredRules.filter(r => r.lifecycle === 'observing' && !!r.distillation?.agentPrompt), [discoveredRules])
+  const validatedRules = useMemo(() => discoveredRules.filter(r => r.lifecycle === 'validated' && !!r.distillation?.agentPrompt), [discoveredRules])
+  const retiredDiscoveredRules = useMemo(() => discoveredRules.filter(r => r.lifecycle === 'retired'), [discoveredRules])
+
   if (loading) {
     return (
       <div className="flex-1 flex items-center justify-center h-full">
@@ -1434,8 +1794,12 @@ ${ruleList}
     )
   }
 
+  // 运行中规则总数（用于摘要行）
+  const runtimeCount = (data.activeRules?.filter(r => r.status === 'active').length ?? 0)
+    + adoptedRules.length + observingRules.length + validatedRules.length
+
   return (
-    <div className="overflow-y-auto px-5 py-4 h-full">
+    <div className="overflow-y-auto px-5 py-4 h-full space-y-6">
       <HeroSection
         stats={data.baseStats}
         onRefresh={() => fetchAnalysis()}
@@ -1444,6 +1808,8 @@ ${ruleList}
         onModelChange={handleModelChange}
         onClickSuccessRate={() => setShowSuccessModal(true)}
         onClickTokens={() => setShowTokenModal(true)}
+        runtimeCount={runtimeCount}
+        observationCount={candidateRules.length}
       />
       <ActiveRulesTable
         activeRules={data.activeRules}
@@ -1452,13 +1818,20 @@ ${ruleList}
         onToggleRule={handleToggleLegacyRule}
         tipMap={tipMap}
         traceCount={data.baseStats.traceCount}
+        observingRules={observingRules}
+        validatedRules={validatedRules}
+        retiredRules={retiredDiscoveredRules}
+        onRuleAction={handleRuleAction}
+        distilledRules={distilledRules}
+        distillingId={distillingId}
+        onDistillRule={handleDistillRule}
       />
-      <DiscoveredRulesSection
-        rules={data.discoveredRules || []}
+      <ObservationPool
+        candidates={candidateRules}
         discovering={discovering}
+        distillingId={distillingId}
         onRunDiscovery={handleRunDiscovery}
-        onToggleRule={handleToggleRule}
-        tipMap={tipMap}
+        onDistillRule={handleDistillRule}
       />
       <CandidateRules
         suggestions={data.suggestions}

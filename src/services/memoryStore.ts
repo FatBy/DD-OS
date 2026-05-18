@@ -10,7 +10,7 @@
  * 后端实现在 duncrew-server.py，前端仅做 API 调用和结果后处理。
  */
 
-import type { MemorySearchResult } from '@/types'
+import type { MemorySearchResult, MemorySearchPurpose, MemorySupersedeParams } from '@/types'
 import { SEARCH_CONFIG } from '@/types'
 import { getServerUrl } from '@/utils/env'
 import { PROMOTION_PROMPT, parsePromotionResult } from '@/utils/memoryPromotion'
@@ -40,6 +40,14 @@ export interface MemorySearchParams {
   useMmr?: boolean
   /** 时间范围（仅返回该时间戳之后的结果） */
   since?: number
+  /**
+   * V10: 搜索调用目的
+   * - context_injection: 由 buildDynamicContext 注入上下文时的搜索（会触发命中计数 → 被动晋升）
+   * - user_query:        用户在 UI 中主动查询（不计命中，避免 UI 刷屏刷分）
+   * - dedup_check:       postExecutionConsolidator 的查重检索（不计命中）
+   * - internal:          其他内部调用（默认）
+   */
+  purpose?: MemorySearchPurpose
 }
 
 export interface MemoryStats {
@@ -278,6 +286,7 @@ class MemoryStoreService {
       minScore = SEARCH_CONFIG.DEFAULT_MIN_SCORE,
       useMmr = true,
       since,
+      purpose = 'internal',
     } = params
 
     try {
@@ -325,7 +334,14 @@ class MemoryStoreService {
       results = results.filter(r => r.score >= minScore)
 
       // 限制返回数量
-      return results.slice(0, maxResults)
+      const finalResults = results.slice(0, maxResults)
+
+      // V10: 只在 context_injection 场景下记录命中，用于 L1 被动晋升
+      if (purpose === 'context_injection' && finalResults.length > 0) {
+        this.notifyHits(finalResults)
+      }
+
+      return finalResults
     } catch (error: any) {
       console.warn('[MemoryStore] Search error:', error.message)
       return []
@@ -571,6 +587,146 @@ class MemoryStoreService {
     for (const bigram of bigramsA) if (bigramsB.has(bigram)) intersection++
     const union = bigramsA.size + bigramsB.size - intersection
     return union === 0 ? 0 : intersection / union
+  }
+
+  // ═══ V10: Supersede / Conflict / 命中回调 / Markdown 导出 ═══
+
+  /** 命中回调：search() 在 purpose=context_injection 时调用，用于 L1 被动晋升 */
+  private hitCallbacks: Array<(ids: string[]) => void | Promise<void>> = []
+
+  /** 订阅搜索命中事件（confidenceTracker 会订阅此事件推进被动晋升） */
+  onSearchHit(callback: (ids: string[]) => void | Promise<void>): () => void {
+    this.hitCallbacks.push(callback)
+    return () => {
+      this.hitCallbacks = this.hitCallbacks.filter(cb => cb !== callback)
+    }
+  }
+
+  private notifyHits(results: MemorySearchResult[]): void {
+    if (this.hitCallbacks.length === 0) return
+    // 只对 source='l1_memory' 或 'memory' 的结果记录命中
+    const ids = results
+      .filter(r => r.source === 'l1_memory' || r.source === 'memory')
+      .map(r => r.id)
+    if (ids.length === 0) return
+    for (const cb of this.hitCallbacks) {
+      try {
+        const result = cb(ids)
+        // BUG-4 fix: 捕获 async 回调的 rejection，防止 unhandled promise rejection
+        if (result && typeof (result as any).catch === 'function') {
+          ;(result as any).catch((err: any) =>
+            console.warn('[MemoryStore] onSearchHit async error:', err?.message),
+          )
+        }
+      } catch (error: any) {
+        console.warn('[MemoryStore] onSearchHit callback error:', error.message)
+      }
+    }
+  }
+
+  /**
+   * V10: 将旧记忆标记为被取代（supersede），可选同步写入新记忆。
+   *
+   * 使用场景：postExecutionConsolidator 的 LLM 输出 action=SUPERSEDE 时调用。
+   *
+   * @returns 若成功，返回新写入的记忆 id（若 params.newContent 为空则返回 null）
+   */
+  async supersede(params: MemorySupersedeParams): Promise<string | null> {
+    try {
+      const body = {
+        ...params,
+        mode: params.mode ?? 'supersede',
+      }
+      const res = await fetch(`${this.serverUrl}/api/memory/supersede`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      if (!res.ok) {
+        const text = await res.text().catch(() => '')
+        console.warn(`[MemoryStore] supersede failed: ${res.status} ${text}`)
+        return null
+      }
+      const data = await res.json()
+      return data.newId ?? null
+    } catch (error: any) {
+      console.warn('[MemoryStore] supersede error:', error.message)
+      return null
+    }
+  }
+
+  /** V10: 标记两条记忆为冲突（保留双方，等待后续信号解决） */
+  async markConflict(params: MemorySupersedeParams): Promise<string | null> {
+    return this.supersede({ ...params, mode: 'conflict' })
+  }
+
+  /**
+   * V10 / P3: 将当前记忆导出为 Markdown（人类可读的镜像视图）。
+   *
+   * 分组规则：按 category（preference / project / discovery / uncategorized）分章节。
+   * 每条记忆输出：
+   *   - [YYYY-MM-DD] content
+   *   - 可选：tags / confidence / dunId
+   *
+   * @param options.onlyActive 是否只导出 active 记忆（默认 true）
+   * @returns Markdown 字符串
+   */
+  async exportToMarkdown(options: { onlyActive?: boolean } = {}): Promise<string> {
+    const { onlyActive: _onlyActive = true } = options
+    try {
+      // 拉取全量（走通配符，后端已过滤 deleted_at；status 默认 active）
+      const res = await fetch(`${this.serverUrl}/api/memory/search?q=*&limit=500&hybrid=0`)
+      if (!res.ok) {
+        return `# DunCrew Memory Export\n\n_Export failed: HTTP ${res.status}_\n`
+      }
+      const rows: MemorySearchResult[] = await res.json()
+
+      // 按 category 分组
+      const groups: Record<string, MemorySearchResult[]> = {}
+      for (const row of rows) {
+        const category = (row.category || 'uncategorized').toString()
+        if (!groups[category]) groups[category] = []
+        groups[category].push(row)
+      }
+
+      const CATEGORY_TITLES: Record<string, string> = {
+        preference: '用户偏好 Preferences',
+        project: '项目上下文 Project Context',
+        project_context: '项目上下文 Project Context',
+        discovery: '发现与洞察 Discoveries',
+        uncategorized: '未分类 Uncategorized',
+      }
+
+      const lines: string[] = []
+      lines.push('# DunCrew Memory Export')
+      lines.push('')
+      lines.push(`_Exported at ${new Date().toISOString()}_  _Total: ${rows.length} entries_`)
+      lines.push('')
+
+      const orderedKeys = ['preference', 'project', 'project_context', 'discovery', 'uncategorized']
+      for (const key of orderedKeys) {
+        const entries = groups[key]
+        if (!entries || entries.length === 0) continue
+        lines.push(`## ${CATEGORY_TITLES[key] || key} (${entries.length})`)
+        lines.push('')
+        // 按时间倒序
+        entries.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))
+        for (const entry of entries) {
+          const date = entry.createdAt
+            ? new Date(entry.createdAt).toISOString().slice(0, 10)
+            : '----'
+          const content = (entry.content ?? entry.snippet ?? '').trim()
+          const tags = entry.tags?.length ? ` #${entry.tags.join(' #')}` : ''
+          const conf = typeof entry.confidence === 'number' ? ` _(conf: ${entry.confidence.toFixed(2)})_` : ''
+          const dun = entry.dunId ? ` _[dun: ${entry.dunId}]_` : ''
+          lines.push(`- **[${date}]** ${content}${tags}${conf}${dun}`)
+        }
+        lines.push('')
+      }
+      return lines.join('\n')
+    } catch (error: any) {
+      return `# DunCrew Memory Export\n\n_Export error: ${error.message}_\n`
+    }
   }
 
   // ═══ 软删除 (Phase 3.2) ═══

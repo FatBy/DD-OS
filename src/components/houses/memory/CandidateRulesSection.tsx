@@ -123,7 +123,7 @@ const SuggestionCard = forwardRef<HTMLDivElement, {
         'rounded-2xl border overflow-hidden',
         isWarning
           ? 'border-amber-200/80 bg-amber-50/30'
-          : 'border-stone-200/60 bg-white',
+          : 'border-white/40 bg-white/40 hover:bg-white/60 transition-all duration-200',
       )}
     >
       {/* 头部区域 */}
@@ -138,7 +138,7 @@ const SuggestionCard = forwardRef<HTMLDivElement, {
             <div className="flex items-center gap-2 flex-wrap">
               <span className="text-sm font-bold text-stone-700">{title}</span>
               {metrics.slice(0, 2).map(m => (
-                <span key={m.label} className="inline-flex items-center gap-1 text-[10px] font-mono px-1.5 py-0.5 rounded-md bg-stone-100 text-stone-500 border border-stone-100">
+                <span key={m.label} className="inline-flex items-center gap-1 text-xs font-mono px-1.5 py-0.5 rounded-md bg-stone-100 text-stone-500 border border-stone-100">
                   <span className="text-stone-400">{m.label}</span>
                   <span className="font-semibold">{m.value}</span>
                 </span>
@@ -160,7 +160,7 @@ const SuggestionCard = forwardRef<HTMLDivElement, {
                 onClick={(e) => { e.stopPropagation(); onAdopt(suggestion) }}
                 disabled={saving}
                 className={cn(
-                  'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors',
+                  'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium transition-colors',
                   saving
                     ? 'bg-stone-100 text-stone-400 cursor-not-allowed'
                     : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100',
@@ -172,7 +172,7 @@ const SuggestionCard = forwardRef<HTMLDivElement, {
               <button
                 onClick={(e) => { e.stopPropagation(); onDismiss(suggestion.id) }}
                 disabled={saving}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-stone-400 hover:text-red-500 hover:bg-red-50 transition-colors disabled:opacity-40"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium text-stone-400 hover:text-red-500 hover:bg-red-50/60 transition-colors disabled:opacity-40"
               >
                 <X className="w-3 h-3" />
                 忽略
@@ -182,7 +182,7 @@ const SuggestionCard = forwardRef<HTMLDivElement, {
           <div className="flex-1" />
           <button
             onClick={() => setExpanded(!expanded)}
-            className="inline-flex items-center gap-1 text-[10px] text-stone-400 hover:text-stone-600 transition-colors"
+            className="inline-flex items-center gap-1 text-xs text-stone-400 hover:text-stone-600 transition-colors"
           >
             <span>详情</span>
             <ChevronDown className={cn('w-3 h-3 transition-transform', expanded && 'rotate-180')} />
@@ -206,7 +206,7 @@ const SuggestionCard = forwardRef<HTMLDivElement, {
                 <div className="flex items-center gap-3 mt-2.5 pt-2 border-t border-stone-100/60">
                   {metrics.map(m => (
                     <div key={m.label} className="flex items-center gap-1.5">
-                      <span className="text-[10px] text-stone-400">{m.label}</span>
+                      <span className="text-xs text-stone-400">{m.label}</span>
                       <span className={cn(
                         'text-xs font-mono font-semibold',
                         m.label === '差异'
@@ -263,12 +263,12 @@ export function CandidateRules({
     >
       <div className="flex items-center gap-1.5 mb-2.5">
         <span className="text-stone-400"><Lightbulb className="w-3.5 h-3.5" /></span>
-        <h3 className="text-sm font-semibold text-stone-600 tracking-wide">候选规则</h3>
+        <h3 className="text-sm font-semibold text-stone-700 tracking-wide">候选规则</h3>
         <span className="text-xs font-mono text-stone-400 bg-stone-100 px-1.5 py-0.5 rounded-full ml-auto">
           {candidates.length}
         </span>
       </div>
-      <div className="space-y-2.5">
+      <div className="space-y-4">
         <AnimatePresence mode="popLayout">
           {candidates.map(s => (
             <SuggestionCard

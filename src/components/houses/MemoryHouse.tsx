@@ -7,6 +7,7 @@ import { BaseAnalysisPanel } from './memory/BaseAnalysisPanel'
 import { NexusGraph } from './memory/DunGraph'
 import { TemporalLens } from './memory/TemporalLens'
 import { MemoryStatusBar } from './memory/MemoryStatusBar'
+import { DiaryTab } from './memory/DiaryTab'
 
 export function MemoryHouse() {
   const data = useMemoryData()
@@ -24,7 +25,7 @@ export function MemoryHouse() {
   }, [data.loading, data.l0Count, data.traceCount, hasAutoSwitched])
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full bg-gradient-to-br from-emerald-50/30 via-white/20 to-stone-50/30 backdrop-blur-xl">
       {/* 顶部工具栏 */}
       <MemoryToolbar
         activeTab={activeTab}
@@ -37,7 +38,7 @@ export function MemoryHouse() {
       />
 
       {/* 主体三栏 */}
-      <div className="flex flex-1 min-h-0">
+      <div className="flex flex-1 min-h-0 [&>*]:border-white/30">
         {/* 左侧栏 */}
         <MemorySidebar
           l0Memories={data.l0Memories}
@@ -62,6 +63,9 @@ export function MemoryHouse() {
           )}
           {activeTab === 'graph' && (
             <NexusGraph nodes={data.graphNodes} edges={data.graphEdges} />
+          )}
+          {activeTab === 'diary' && (
+            <DiaryTab />
           )}
         </main>
 

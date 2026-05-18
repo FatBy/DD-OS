@@ -44,15 +44,15 @@ function Section({
 }) {
   const [open, setOpen] = useState(defaultOpen)
   return (
-    <div className="border-b border-stone-100 last:border-b-0">
+    <div className="border-b border-white/30 last:border-b-0">
       <button
         onClick={() => setOpen(!open)}
-        className="w-full flex items-center gap-2 px-4 py-2.5 text-xs font-semibold text-stone-600 hover:bg-stone-50 transition-colors"
+        className="w-full flex items-center gap-2 px-4 py-5 text-xs font-semibold text-stone-600 hover:bg-white/50 rounded-lg transition-colors"
       >
         {open ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
         {title}
         {count !== undefined && (
-          <span className="ml-auto text-[10px] font-mono text-stone-400">{count}</span>
+          <span className="ml-auto text-xs font-mono text-stone-400">{count}</span>
         )}
       </button>
       {open && <div className="px-4 pb-3">{children}</div>}
@@ -69,16 +69,16 @@ export function TemporalLens({ lensData, onClose }: TemporalLensProps) {
           animate={{ width: 320, opacity: 1 }}
           exit={{ width: 0, opacity: 0 }}
           transition={{ duration: 0.25, ease: 'easeInOut' }}
-          className="border-l border-stone-200/60 flex flex-col overflow-hidden shrink-0"
+          className="border-l border-white/30 bg-white/30 backdrop-blur-lg flex flex-col overflow-hidden shrink-0"
         >
           {/* 标题栏 */}
-          <div className="flex items-center justify-between px-4 py-3 border-b border-stone-200/60 shrink-0">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-white/30 shrink-0">
             <h4 className="text-xs font-semibold text-stone-700 tracking-wide">
               时空透视镜
             </h4>
             <button
               onClick={onClose}
-              className="p-1 rounded-lg text-stone-400 hover:text-stone-600 hover:bg-stone-100 transition-colors"
+              className="p-1 rounded-lg text-stone-400 hover:text-stone-600 hover:bg-white/50 transition-colors"
             >
               <X className="w-4 h-4" />
             </button>
@@ -104,7 +104,7 @@ export function TemporalLens({ lensData, onClose }: TemporalLensProps) {
                       {lensData.memory.tags.map(tag => (
                         <span
                           key={tag}
-                          className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-stone-100 text-stone-500"
+                          className="px-1.5 py-0.5 rounded-full text-xs font-mono bg-stone-100 text-stone-500"
                         >
                           #{tag}
                         </span>
@@ -113,7 +113,7 @@ export function TemporalLens({ lensData, onClose }: TemporalLensProps) {
                   )}
 
                   {/* 置信度 + 时间 */}
-                  <div className="flex items-center gap-3 text-[10px] font-mono text-stone-400">
+                  <div className="flex items-center gap-3 text-xs font-mono text-stone-400">
                     <div className="flex items-center gap-1.5 flex-1">
                       <span>置信度</span>
                       <div className="flex-1 h-1 rounded-full bg-stone-100 overflow-hidden">
@@ -132,18 +132,18 @@ export function TemporalLens({ lensData, onClose }: TemporalLensProps) {
               {/* L1 推演轨迹 */}
               <Section title="L1 推演轨迹" count={lensData.l1Entries.length}>
                 {lensData.l1Entries.length === 0 ? (
-                  <p className="text-[11px] text-stone-400 py-2">暂无 L1 推演数据</p>
+                  <p className="text-xs text-stone-400 py-2">暂无 L1 推演数据</p>
                 ) : (
                   <div className="space-y-2">
                     {lensData.l1Entries.map((entry: L1MemoryEntry) => (
                       <div
                         key={entry.id}
-                        className="p-2.5 rounded-lg bg-stone-50/80 border border-stone-100"
+                        className="p-3 rounded-xl bg-white/40 shadow-sm"
                       >
-                        <p className="text-[11px] text-stone-600 leading-relaxed line-clamp-3">
+                        <p className="text-xs text-stone-600 leading-relaxed line-clamp-3">
                           {entry.content.slice(0, 100)}
                         </p>
-                        <div className="mt-1.5 flex items-center gap-2 text-[10px] font-mono">
+                        <div className="mt-1.5 flex items-center gap-2 text-xs font-mono">
                           <div className="flex-1 h-1 rounded-full bg-stone-100 overflow-hidden">
                             <div
                               className="h-full rounded-full bg-amber-400"
@@ -154,7 +154,7 @@ export function TemporalLens({ lensData, onClose }: TemporalLensProps) {
                             {Math.round(entry.confidence * 100)}%
                           </span>
                           <span className={cn(
-                            'px-1 py-0.5 rounded text-[9px]',
+                            'px-1 py-0.5 rounded-full text-xs',
                             entry.promotedToL0
                               ? 'bg-emerald-100 text-emerald-600'
                               : 'bg-stone-100 text-stone-400',
@@ -171,7 +171,7 @@ export function TemporalLens({ lensData, onClose }: TemporalLensProps) {
               {/* 关联执行轨迹 */}
               <Section title="关联执行轨迹" count={lensData.relatedTraces.length}>
                 {lensData.relatedTraces.length === 0 ? (
-                  <p className="text-[11px] text-stone-400 py-2">暂无关联轨迹</p>
+                  <p className="text-xs text-stone-400 py-2">暂无关联轨迹</p>
                 ) : (
                   <div className="space-y-1.5">
                     {lensData.relatedTraces.map(trace => {
@@ -183,10 +183,10 @@ export function TemporalLens({ lensData, onClose }: TemporalLensProps) {
                         >
                           <Icon className="w-3.5 h-3.5 text-indigo-400 mt-0.5 shrink-0" />
                           <div className="flex-1 min-w-0">
-                            <p className="text-[11px] text-stone-600 line-clamp-2">
+                            <p className="text-xs text-stone-600 line-clamp-2">
                               {trace.summary.slice(0, 60)}
                             </p>
-                            <span className="text-[10px] font-mono text-stone-400">
+                            <span className="text-xs font-mono text-stone-400">
                               {relativeTime(trace.timestamp)}
                             </span>
                           </div>

@@ -23,6 +23,8 @@ import { KnowledgeDetailModal } from './KnowledgeDetailModal'
 // WSJ palette (shared with Modal)
 // ============================================
 
+const EMPTY_ENTITIES: WikiEntitySummary[] = []
+
 const INK = '#1a1a1a'
 const INK_LIGHT = '#4a4a4a'
 const INK_DIM = '#6b6b6b'
@@ -198,7 +200,7 @@ interface DunKnowledgeTabProps {
 
 export function DunKnowledgeTab({ dunId }: DunKnowledgeTabProps) {
   // Wiki 实体数据来自 Zustand Store（响应式：ingest 成功后自动刷新）
-  const entities = useStore(state => state.wikiEntitiesByDun[dunId] || [])
+  const entities = useStore(state => state.wikiEntitiesByDun[dunId] ?? EMPTY_ENTITIES)
   const storeLoading = useStore(state => state.wikiLoadingByDun[dunId] || false)
   const fetchWikiEntities = useStore(state => state.fetchWikiEntities)
 

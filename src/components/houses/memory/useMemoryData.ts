@@ -275,8 +275,10 @@ export function useMemoryData(): MemoryDataState {
       const batchResult = await confidenceTracker.getEntriesBatch(ids)
       if (mounted) {
         const mapped = new Map<string, { confidence: number }>()
-        for (const [k, v] of batchResult) {
-          mapped.set(k, { confidence: v.confidence })
+        if (batchResult) {
+          for (const [k, v] of batchResult) {
+            mapped.set(k, { confidence: v.confidence })
+          }
         }
         setTrackedEntriesMap(mapped)
       }

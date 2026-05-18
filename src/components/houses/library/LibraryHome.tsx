@@ -48,20 +48,22 @@ export function LibraryHome({
       <div className="px-8 pt-8 pb-12 max-w-[860px] mx-auto">
 
         {/* Masthead */}
-        <div className="text-center mb-8">
-          <div className="text-[10px] font-bold tracking-[2px] uppercase mb-1"
-               style={{ fontFamily: FONT_MONO, color: ACCENT }}>
-            DUNCREW LIBRARY
+        <div className="flex items-center justify-center mb-8">
+          <div className="text-center">
+            <div className="text-[10px] font-bold tracking-[2px] uppercase mb-1"
+                 style={{ fontFamily: FONT_MONO, color: ACCENT }}>
+              DUNCREW LIBRARY
+            </div>
+            <h1 className="text-[32px] font-bold leading-tight"
+                style={{ fontFamily: FONT_SERIF, color: INK }}>
+              知识图书馆
+            </h1>
+            {stats && (
+              <p className="text-[13px] mt-1" style={{ color: INK_DIM }}>
+                {stats.totalEntities} 实体 &middot; {stats.totalClaims} 断言 &middot; {stats.totalRelations} 关联
+              </p>
+            )}
           </div>
-          <h1 className="text-[32px] font-bold leading-tight"
-              style={{ fontFamily: FONT_SERIF, color: INK }}>
-            知识图书馆
-          </h1>
-          {stats && (
-            <p className="text-[13px] mt-1" style={{ color: INK_DIM }}>
-              {stats.totalEntities} 实体 &middot; {stats.totalClaims} 断言 &middot; {stats.totalRelations} 关联
-            </p>
-          )}
         </div>
 
         {/* 搜索栏 */}

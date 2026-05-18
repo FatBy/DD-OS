@@ -188,6 +188,16 @@ class DunScoringService {
     return initial
   }
 
+  /**
+   * 确保指定 Dun 的评分已从服务器加载到缓存中。
+   * 必须在 updateFromTrace / updateScore 之前调用，防止
+   * 内存缓存为空时 getOrCreate() 创建的初始评分覆盖数据库中的历史数据。
+   */
+  async ensureLoaded(dunId: string, serverUrl: string): Promise<void> {
+    if (this.scoringCache.has(dunId)) return
+    await this.loadFromServer(dunId, serverUrl)
+  }
+
   /** 获取所有 Dun 的评分摘要 */
   getAllScorings(): Array<{ dunId: string; scoring: DunScoring }> {
     return Array.from(this.scoringCache.entries()).map(([dunId, scoring]) => ({
@@ -238,7 +248,8 @@ class DunScoringService {
   /** 从后端加载 Dun 评分 */
   async loadFromServer(dunId: string, serverUrl: string): Promise<DunScoring | null> {
     try {
-      const res = await fetch(`${serverUrl}/api/dun/${encodeURIComponent(dunId)}/scoring`)
+      const url = `${serverUrl}/api/dun/${encodeURIComponent(dunId)}/scoring`
+      const res = await fetch(url)
       if (res.ok) {
         const raw = await res.json()
         if (!raw || typeof raw !== 'object') return null
@@ -247,7 +258,8 @@ class DunScoringService {
         return scoring
       }
       return null
-    } catch {
+    } catch (e) {
+      console.error(`[DunScoring] loadFromServer error for ${dunId}:`, e)
       return null
     }
   }

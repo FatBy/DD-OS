@@ -13,9 +13,9 @@ import type { GraphNode, GraphEdge } from './useMemoryData'
 const nodeColor: Record<GraphNode['type'], {
   fill: string; stroke: string; text: string
 }> = {
-  core: { fill: '#d1fae5', stroke: '#10b981', text: '#065f46' },
-  tag:  { fill: '#fef3c7', stroke: '#f59e0b', text: '#92400e' },
-  file: { fill: '#e0e7ff', stroke: '#6366f1', text: '#3730a3' },
+  core: { fill: '#ecfdf5', stroke: '#10b981', text: '#065f46' },
+  tag:  { fill: '#fffbeb', stroke: '#f59e0b', text: '#92400e' },
+  file: { fill: '#eef2ff', stroke: '#6366f1', text: '#3730a3' },
 }
 
 interface NexusGraphProps {
@@ -50,13 +50,13 @@ function distributeOnCircle(
 
 /** 内联 CSS 样式 —— 注入一次到 SVG 内部，用 CSS :hover 实现交互 */
 const svgStyles = `
-  .nexus-node { cursor: pointer; }
-  .nexus-node circle { transition: r 0.15s, stroke-width 0.15s; }
+  .nexus-node { cursor: pointer; transition: all 0.2s ease; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.1)); }
+  .nexus-node circle { transition: r 0.2s ease, stroke-width 0.2s ease, filter 0.2s ease; }
   .nexus-node:hover circle { stroke-width: 2.5; }
   .nexus-node:hover { transform-origin: center; }
   .nexus-node .node-weight { display: none; font-size: 10px; font-weight: 700; }
   .nexus-node:hover .node-weight { display: block; }
-  .nexus-edge { stroke: #d6d3d1; stroke-width: 0.8; opacity: 0.35; }
+  .nexus-edge { stroke: #d6d3d1; stroke-width: 1.5; opacity: 0.5; }
 `
 
 export function NexusGraph({ nodes, edges }: NexusGraphProps) {
@@ -164,7 +164,7 @@ export function NexusGraph({ nodes, edges }: NexusGraphProps) {
                 x={node.x} y={node.y + node.r + 12}
                 textAnchor="middle"
                 fill={colors.text}
-                fontSize={node.type === 'core' ? 11 : 9}
+                fontSize={node.type === 'core' ? 12 : 10}
                 fontWeight={node.type === 'core' ? 600 : 400}
                 fontFamily="system-ui, sans-serif"
               >
@@ -185,7 +185,7 @@ export function NexusGraph({ nodes, edges }: NexusGraphProps) {
       </svg>
 
       {/* 图例 */}
-      <div className="absolute bottom-4 right-4 flex items-center gap-4 text-[10px] text-stone-500">
+      <div className="absolute bottom-4 right-4 flex items-center gap-4 text-xs text-stone-500">
         {([
           ['core', '核心概念', '#10b981'],
           ['tag', '标签', '#f59e0b'],

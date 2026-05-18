@@ -5,10 +5,11 @@ import json
 import time
 import uuid
 import threading
+from datetime import datetime
 
 from server.state import _db_lock
 import server.state as _state
-from server.db import get_hybrid_engine
+from server.db import get_hybrid_engine, mark_superseded, mark_conflicted
 from server.constants import HAS_HYBRID_SEARCH
 try:
     from hybrid_search import index_memory_vectors
@@ -55,7 +56,8 @@ class MemoryMixin:
 
         for source_name, max_count in groups.items():
             max_count = min(int(max_count), 100)
-            sql = "SELECT * FROM memory WHERE source = ? AND deleted_at IS NULL"
+            # V10: status='active' 过滤，不返回 superseded/conflicted 记忆
+            sql = "SELECT * FROM memory WHERE source = ? AND deleted_at IS NULL AND status = 'active'"
             params: list = [source_name]
 
             if dun_id:
@@ -106,6 +108,8 @@ class MemoryMixin:
             db.commit()
 
         # V4: 异步生成向量索引
+        if HAS_HYBRID_SEARCH:
+            get_hybrid_engine()
         if HAS_HYBRID_SEARCH and _state._embedding_engine:
             threading.Thread(
                 target=index_memory_vectors,
@@ -135,6 +139,8 @@ class MemoryMixin:
             db.commit()
 
         # V4: 异步批量向量索引
+        if HAS_HYBRID_SEARCH:
+            get_hybrid_engine()
         if HAS_HYBRID_SEARCH and _state._embedding_engine:
             for mid, content in written_ids:
                 if content:
@@ -175,13 +181,14 @@ class MemoryMixin:
 
         # 降级: 原有 FTS5 逻辑
         if q:
-            # FTS5 搜索
+            # FTS5 搜索 — V10: 过滤 superseded/conflicted
             fts_sql = """
                 SELECT m.*, rank
                 FROM memory_fts fts
                 JOIN memory m ON m.rowid = fts.rowid
                 WHERE memory_fts MATCH ?
                 AND m.deleted_at IS NULL
+                AND m.status = 'active'
             """
             params: list = [q]
             if source:
@@ -202,8 +209,8 @@ class MemoryMixin:
             try:
                 rows = db.execute(fts_sql, params).fetchall()
             except Exception:
-                # FTS 查询失败时降级到 LIKE 搜索
-                like_sql = "SELECT * FROM memory WHERE content LIKE ? AND deleted_at IS NULL"
+                # FTS 查询失败时降级到 LIKE 搜索 — V10: 同步加 status 过滤
+                like_sql = "SELECT * FROM memory WHERE content LIKE ? AND deleted_at IS NULL AND status = 'active'"
                 like_params: list = [f"%{q}%"]
                 if dun_id:
                     if dun_id == '__system__':
@@ -218,7 +225,8 @@ class MemoryMixin:
                 like_params.append(limit)
                 rows = db.execute(like_sql, like_params).fetchall()
         else:
-            sql = "SELECT * FROM memory WHERE deleted_at IS NULL"
+            # V10: status='active' 过滤
+            sql = "SELECT * FROM memory WHERE deleted_at IS NULL AND status = 'active'"
             params = []
             if source:
                 sql += " AND source = ?"
@@ -250,19 +258,24 @@ class MemoryMixin:
     def handle_memory_stats(self):
         """GET /api/memory/stats"""
         db = self._get_db()
-        total = db.execute("SELECT COUNT(*) as cnt FROM memory WHERE deleted_at IS NULL").fetchone()['cnt']
+        # V10: 统计值仅反映 active 记忆（supersede/conflicted 视为历史，不计入 total）
+        total = db.execute("SELECT COUNT(*) as cnt FROM memory WHERE deleted_at IS NULL AND status = 'active'").fetchone()['cnt']
         by_source = {}
-        for row in db.execute("SELECT source, COUNT(*) as cnt FROM memory WHERE deleted_at IS NULL GROUP BY source").fetchall():
+        for row in db.execute("SELECT source, COUNT(*) as cnt FROM memory WHERE deleted_at IS NULL AND status = 'active' GROUP BY source").fetchall():
             by_source[row['source']] = row['cnt']
-        oldest = db.execute("SELECT MIN(created_at) as ts FROM memory WHERE deleted_at IS NULL").fetchone()['ts']
-        newest = db.execute("SELECT MAX(created_at) as ts FROM memory WHERE deleted_at IS NULL").fetchone()['ts']
+        oldest = db.execute("SELECT MIN(created_at) as ts FROM memory WHERE deleted_at IS NULL AND status = 'active'").fetchone()['ts']
+        newest = db.execute("SELECT MAX(created_at) as ts FROM memory WHERE deleted_at IS NULL AND status = 'active'").fetchone()['ts']
         self.send_json({'totalEntries': total, 'bySource': by_source, 'oldestEntry': oldest, 'newestEntry': newest})
 
     def handle_memory_by_dun(self, dun_id: str, limit: int):
         """GET /api/memory/dun/{dunId}?limit=20"""
         db = self._get_db()
-        rows = db.execute("SELECT * FROM memory WHERE dun_id = ? AND deleted_at IS NULL ORDER BY created_at DESC LIMIT ?",
-                          (dun_id, limit)).fetchall()
+        # V10: 过滤 superseded
+        rows = db.execute(
+            "SELECT * FROM memory WHERE dun_id = ? AND deleted_at IS NULL AND status = 'active' "
+            "ORDER BY created_at DESC LIMIT ?",
+            (dun_id, limit),
+        ).fetchall()
         results = [{
             'id': r['id'], 'source': r['source'], 'content': r['content'],
             'snippet': r['content'],
@@ -278,9 +291,11 @@ class MemoryMixin:
     def handle_compilable_duns(self):
         """GET /api/memory/compilable-duns - 返回有足够 exec_trace 数据可编译知识的 Dun 列表"""
         db = self._get_db()
+        # V10: 统计仅基于 active 记忆
         rows = db.execute(
             "SELECT dun_id, COUNT(*) as cnt FROM memory "
-            "WHERE source IN ('exec_trace', 'memory') AND deleted_at IS NULL AND dun_id IS NOT NULL "
+            "WHERE source IN ('exec_trace', 'memory') AND deleted_at IS NULL AND status = 'active' "
+            "AND dun_id IS NOT NULL "
             "GROUP BY dun_id HAVING cnt >= 2 ORDER BY cnt DESC"
         ).fetchall()
 
@@ -328,8 +343,10 @@ class MemoryMixin:
         half_life_ms = half_life_days * 86400 * 1000
 
         with _db_lock:
+            # V10: 只衰减 active 记忆，避免动到已归档的 superseded
             rows = db.execute(
-                "SELECT id, confidence, created_at FROM memory WHERE source = 'memory' AND confidence > ?",
+                "SELECT id, confidence, created_at FROM memory "
+                "WHERE source = 'memory' AND confidence > ? AND status = 'active' AND deleted_at IS NULL",
                 (min_confidence,)
             ).fetchall()
 
@@ -345,7 +362,7 @@ class MemoryMixin:
                 if new_confidence < min_confidence:
                     db.execute(
                         "UPDATE memory SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL",
-                        (datetime.now().isoformat(), row['id'])
+                        (now_ms, row['id'])
                     )
                     cleaned += 1
                 else:
@@ -356,6 +373,123 @@ class MemoryMixin:
             db.commit()
 
         self.send_json({'status': 'ok', 'updated': updated, 'cleaned': cleaned})
+
+    # ---- V10: Supersede / Conflict ----
+
+    def handle_memory_supersede(self, data: dict):
+        """POST /api/memory/supersede - 将旧记忆标记为被取代，并可选写入新记忆。
+
+        请求体：
+          {
+            "targetId": "mem-xxx",              // 必填，被取代的记忆 id
+            "newContent": "...",                // 可选，若提供则同步写入新记忆
+            "newTags": [...],                   // 可选
+            "newCategory": "preference",        // 可选
+            "newConfidence": 0.7,               // 可选
+            "source": "memory",                 // 可选，新记忆 source，默认 memory
+            "dunId": "...",                     // 可选
+            "reason": "用户偏好变化",          // 必填
+            "mode": "supersede" | "conflict"    // 默认 supersede
+          }
+
+        响应：
+          { "status": "ok", "targetId": "...", "newId": "..." | null, "mode": "supersede" }
+        """
+        db = self._get_db()
+        target_id = data.get('targetId')
+        reason = data.get('reason', '').strip()
+        mode = data.get('mode', 'supersede')
+        if not target_id:
+            self.send_error_json('targetId is required', 400)
+            return
+        if mode not in ('supersede', 'conflict'):
+            self.send_error_json("mode must be 'supersede' or 'conflict'", 400)
+            return
+        if not reason:
+            self.send_error_json('reason is required', 400)
+            return
+
+        now_ms = int(time.time() * 1000)
+
+        # 先确认 target 存在
+        row = db.execute(
+            "SELECT id, status FROM memory WHERE id = ? AND deleted_at IS NULL",
+            (target_id,),
+        ).fetchone()
+        if not row:
+            self.send_error_json(f'Memory {target_id} not found', 404)
+            return
+        if row['status'] != 'active':
+            self.send_error_json(
+                f'Memory {target_id} is already {row["status"]}',
+                409,
+            )
+            return
+
+        # 可选：写入新记忆
+        new_id: str | None = None
+        new_content = (data.get('newContent') or '').strip()
+        new_content_for_index: str | None = None
+        if new_content:
+            new_id = f"mem-{uuid.uuid4().hex[:12]}"
+            source = data.get('source', 'memory')
+            dun_id = data.get('dunId') or data.get('nexusId')
+            tags = json.dumps(data.get('newTags', []), ensure_ascii=False)
+            # 元数据里记录血统
+            metadata = json.dumps({
+                **(data.get('metadata') or {}),
+                'supersedes': target_id,
+                'supersede_reason': reason,
+            }, ensure_ascii=False)
+            category = data.get('newCategory', 'uncategorized')
+            confidence = float(data.get('newConfidence', 0.6))
+            with _db_lock:
+                db.execute(
+                    "INSERT INTO memory (id, source, content, dun_id, tags, metadata, created_at, category, confidence, status) "
+                    "VALUES (?,?,?,?,?,?,?,?,?, 'active')",
+                    (new_id, source, new_content, dun_id, tags, metadata, now_ms, category, confidence),
+                )
+                db.commit()
+            new_content_for_index = new_content
+
+        # 标记 target 为 superseded / conflicted
+        try:
+            if mode == 'supersede':
+                ok = mark_superseded(db, 'memory', target_id, new_id, reason, now_ms)
+            else:
+                # conflict 模式要求 newId（冲突对方），若没有新内容则不合法
+                if not new_id:
+                    self.send_error_json('conflict mode requires newContent to identify the conflicting record', 400)
+                    return
+                ok = mark_conflicted(db, 'memory', target_id, new_id, reason, now_ms)
+                # BUG-1 fix: 双边标记 — 新记忆也要标记为 conflicted，
+                # 否则旧记忆被过滤而新记忆可见，等同于 supersede 而非 conflict
+                if ok and new_id:
+                    mark_conflicted(db, 'memory', new_id, target_id, reason, now_ms)
+        except ValueError as e:
+            self.send_error_json(str(e), 400)
+            return
+
+        if not ok:
+            self.send_error_json(f'Failed to {mode} memory {target_id}', 500)
+            return
+
+        # 为新记忆异步建向量索引
+        if new_id and new_content_for_index and HAS_HYBRID_SEARCH:
+            get_hybrid_engine()
+        if new_id and new_content_for_index and HAS_HYBRID_SEARCH and _state._embedding_engine:
+            threading.Thread(
+                target=index_memory_vectors,
+                args=(db, new_id, new_content_for_index, _state._embedding_engine, _db_lock),
+                daemon=True,
+            ).start()
+
+        self.send_json({
+            'status': 'ok',
+            'targetId': target_id,
+            'newId': new_id,
+            'mode': mode,
+        })
 
     # ---- Scoring ----
 
@@ -400,6 +534,8 @@ class MemoryMixin:
                 db.commit()
 
             # V4: 异步生成向量索引
+            if HAS_HYBRID_SEARCH:
+                get_hybrid_engine()
             if HAS_HYBRID_SEARCH and _state._embedding_engine:
                 threading.Thread(
                     target=index_memory_vectors,
@@ -447,12 +583,14 @@ class MemoryMixin:
         # ---- 路径 1: SQLite FTS5 搜索 (高优先级) ----
         try:
             db = self._get_db()
+            # V10: 过滤 superseded/conflicted
             fts_sql = """
                 SELECT m.*, rank
                 FROM memory_fts fts
                 JOIN memory m ON m.rowid = fts.rowid
                 WHERE memory_fts MATCH ?
                 AND m.deleted_at IS NULL
+                AND m.status = 'active'
             """
             params: list = [query]
             if dun_id:
@@ -464,8 +602,8 @@ class MemoryMixin:
             try:
                 rows = db.execute(fts_sql, params).fetchall()
             except Exception:
-                # FTS 语法错误时降级 LIKE
-                like_sql = "SELECT * FROM memory WHERE content LIKE ? AND deleted_at IS NULL"
+                # FTS 语法错误时降级 LIKE — V10: 同步加 status 过滤
+                like_sql = "SELECT * FROM memory WHERE content LIKE ? AND deleted_at IS NULL AND status = 'active'"
                 like_params: list = [f"%{query}%"]
                 if dun_id:
                     like_sql += " AND dun_id = ?"

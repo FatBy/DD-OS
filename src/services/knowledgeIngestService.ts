@@ -500,6 +500,62 @@ class KnowledgeIngestService {
     return false
   }
 
+  // ============================================
+  // V10: Claim Supersede / Conflict（与 memory 对齐）
+  // ============================================
+
+  /**
+   * 将旧 Claim 标记为被新 Claim 取代。调用前新 Claim 应已通过 /api/wiki/ingest 写入。
+   *
+   * @param oldClaimId  被取代的 claim id
+   * @param newClaimId  新 claim id（可空，例如用户手动归档）
+   * @param reason      取代原因（必填）
+   */
+  async supersedeClaim(
+    oldClaimId: string,
+    newClaimId: string | null,
+    reason: string,
+  ): Promise<boolean> {
+    try {
+      const res = await fetch(`${this.serverUrl}/api/wiki/claim/supersede`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          old_claim_id: oldClaimId,
+          new_claim_id: newClaimId,
+          reason,
+        }),
+      })
+      return res.ok
+    } catch (error: any) {
+      console.warn('[KnowledgeIngest] supersedeClaim error:', error.message)
+      return false
+    }
+  }
+
+  /** 将两条 Claim 标记为冲突（复用已有路由，但增加 reason 字段） */
+  async conflictClaims(
+    claimIdA: string,
+    claimIdB: string,
+    reason: string,
+  ): Promise<boolean> {
+    try {
+      const res = await fetch(`${this.serverUrl}/api/wiki/claim/conflict`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          claim_id_a: claimIdA,
+          claim_id_b: claimIdB,
+          reason,
+        }),
+      })
+      return res.ok
+    } catch (error: any) {
+      console.warn('[KnowledgeIngest] conflictClaims error:', error.message)
+      return false
+    }
+  }
+
   /** 简单关键词匹配：找到与新认知最相关的 Entity */
   private findMostRelevantEntity(
     text: string,

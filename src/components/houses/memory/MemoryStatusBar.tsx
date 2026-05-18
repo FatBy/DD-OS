@@ -10,9 +10,9 @@ export function MemoryStatusBar({
   solidificationPercent,
 }: MemoryStatusBarProps) {
   return (
-    <div className="h-10 flex items-center justify-between px-5 border-t border-stone-200/60 shrink-0">
+    <div className="h-10 flex items-center justify-between px-5 bg-white/50 backdrop-blur-lg border-t border-white/40 shrink-0">
       {/* 左侧统计 */}
-      <span className="text-[11px] font-mono text-stone-400">
+      <span className="text-xs text-stone-500">
         {l0Count} 条核心记忆 · {traceCount} 条轨迹 · {solidificationPercent}% 固化
       </span>
 
@@ -20,7 +20,7 @@ export function MemoryStatusBar({
       <div className="flex items-center gap-2">
         <div className="w-24 h-1.5 rounded-full bg-stone-100 overflow-hidden">
           <div
-            className="h-full rounded-full bg-amber-400 transition-all duration-500"
+            className="h-full rounded-full bg-gradient-to-r from-emerald-400/80 to-emerald-500/80 transition-all duration-500"
             style={{ width: `${solidificationPercent}%` }}
           />
         </div>

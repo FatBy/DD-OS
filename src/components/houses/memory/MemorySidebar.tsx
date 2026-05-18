@@ -4,10 +4,10 @@ import { cn } from '@/utils/cn'
 import type { L0MemoryCard, NeuronStats, TraceEntry } from './useMemoryData'
 
 const CATEGORY_CONFIG = {
-  discovery:       { label: '行为准则',   icon: Lightbulb,  color: 'text-amber-500', bar: 'bg-amber-400' },
-  preference:      { label: '偏好共识',   icon: Heart,      color: 'text-rose-500',  bar: 'bg-rose-400' },
-  project_context: { label: '环境上下文', icon: FolderOpen,  color: 'text-blue-500',  bar: 'bg-blue-400' },
-  uncategorized:   { label: '观察备忘',   icon: HelpCircle,  color: 'text-stone-400', bar: 'bg-stone-400' },
+  discovery:       { label: '行为准则',   icon: Lightbulb,  color: 'text-amber-500', bar: 'bg-gradient-to-r from-amber-300 to-amber-400' },
+  preference:      { label: '偏好共识',   icon: Heart,      color: 'text-rose-500',  bar: 'bg-gradient-to-r from-rose-300 to-rose-400' },
+  project_context: { label: '环境上下文', icon: FolderOpen,  color: 'text-blue-500',  bar: 'bg-gradient-to-r from-blue-300 to-blue-400' },
+  uncategorized:   { label: '观察备忘',   icon: HelpCircle,  color: 'text-stone-400', bar: 'bg-gradient-to-r from-stone-300 to-stone-400' },
 } as const
 
 type CategoryKey = keyof typeof CATEGORY_CONFIG
@@ -95,9 +95,9 @@ export function MemorySidebar({
   }, [l0Memories])
 
   return (
-    <div className="w-56 border-r border-stone-200/60 flex flex-col shrink-0">
+    <div className="w-56 border-r border-white/40 flex flex-col shrink-0 bg-white/30 backdrop-blur-lg">
       {/* 标题 */}
-      <div className="px-4 py-3 flex items-center gap-2 border-b border-stone-100">
+      <div className="px-4 py-4 flex items-center gap-2 border-b border-white/40">
         {l0Memories.length > 0 ? (
           <TrendingUp className="w-4 h-4 text-emerald-500" />
         ) : (
@@ -106,7 +106,7 @@ export function MemorySidebar({
         <h4 className="text-xs font-semibold text-stone-700 tracking-wide">
           {l0Memories.length > 0 ? '记忆概览' : '执行概览'}
         </h4>
-        <span className="ml-auto text-[10px] font-mono text-stone-400">
+        <span className="ml-auto text-xs font-mono text-stone-400">
           {l0Memories.length > 0 ? l0Memories.length : traces.length}
         </span>
       </div>
@@ -116,8 +116,8 @@ export function MemorySidebar({
         {l0Memories.length > 0 ? (
           <>
             {/* 分类分布 */}
-            <div className="px-4 py-3 space-y-2">
-              <span className="text-[10px] font-mono text-stone-400 uppercase tracking-wider">
+            <div className="px-4 py-4 space-y-2">
+              <span className="text-xs font-semibold text-stone-400 uppercase tracking-wider">
                 分类分布
               </span>
               {CATEGORY_ORDER.map(cat => {
@@ -130,7 +130,7 @@ export function MemorySidebar({
                   <div key={cat} className="flex items-center gap-2">
                     <Icon className={cn('w-3.5 h-3.5 shrink-0', config.color)} />
                     <span className="text-xs text-stone-600 flex-1 truncate">{config.label}</span>
-                    <span className="text-[10px] font-mono text-stone-400">{count}</span>
+                    <span className="text-xs font-mono text-stone-400">{count}</span>
                     <div className="w-10 h-1 rounded-full bg-stone-100 overflow-hidden shrink-0">
                       <div
                         className={cn('h-full rounded-full', config.bar)}
@@ -143,30 +143,30 @@ export function MemorySidebar({
             </div>
 
             {/* 置信度分布 */}
-            <div className="px-4 py-3 border-t border-stone-100 space-y-2">
-              <span className="text-[10px] font-mono text-stone-400 uppercase tracking-wider">
+            <div className="px-4 py-4 border-t border-white/40 space-y-2">
+              <span className="text-xs font-semibold text-stone-400 uppercase tracking-wider">
                 置信度分布
               </span>
               <div className="flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-emerald-400 shrink-0" />
+                <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 shrink-0 shadow-sm shadow-emerald-400/50" />
                 <span className="text-xs text-stone-600 flex-1">高 (&ge;70%)</span>
                 <span className="text-xs font-mono text-stone-500">{confidenceDistribution.high}</span>
               </div>
               <div className="flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-amber-400 shrink-0" />
+                <span className="w-2.5 h-2.5 rounded-full bg-amber-400 shrink-0" />
                 <span className="text-xs text-stone-600 flex-1">中 (40-70%)</span>
                 <span className="text-xs font-mono text-stone-500">{confidenceDistribution.medium}</span>
               </div>
               <div className="flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-stone-300 shrink-0" />
+                <span className="w-2.5 h-2.5 rounded-full bg-stone-300 shrink-0" />
                 <span className="text-xs text-stone-600 flex-1">低 (&lt;40%)</span>
                 <span className="text-xs font-mono text-stone-500">{confidenceDistribution.low}</span>
               </div>
             </div>
 
             {/* 最近更新 */}
-            <div className="px-4 py-3 border-t border-stone-100">
-              <span className="text-[10px] font-mono text-stone-400 uppercase tracking-wider">
+            <div className="px-4 py-4 border-t border-white/40">
+              <span className="text-xs font-semibold text-stone-400 uppercase tracking-wider">
                 最近更新
               </span>
               <div className="mt-2 space-y-1">
@@ -177,10 +177,10 @@ export function MemorySidebar({
                       key={mem.id}
                       onClick={() => onSelectMemory(isSelected ? null : mem.id)}
                       className={cn(
-                        'w-full text-left px-2 py-1.5 rounded-lg text-xs truncate transition-colors',
+                        'w-full text-left px-2 py-1.5 rounded-xl text-xs truncate transition-colors',
                         isSelected
-                          ? 'bg-emerald-50 text-emerald-700 font-medium'
-                          : 'text-stone-600 hover:bg-stone-50',
+                          ? 'bg-emerald-50/60 border-l-2 border-emerald-400 text-emerald-700 font-medium'
+                          : 'text-stone-600 hover:bg-white/50',
                       )}
                     >
                       {extractTitle(mem.content, mem.snippet)}
@@ -193,7 +193,7 @@ export function MemorySidebar({
         ) : traces.length > 0 ? (
           /* L0 为空时展示最近执行轨迹摘要 */
           <div className="px-2 pb-2 space-y-1">
-            <div className="px-3 py-1.5 text-[10px] font-mono text-stone-400 uppercase tracking-wider">
+            <div className="px-3 py-1.5 text-xs font-semibold text-stone-400 uppercase tracking-wider">
               最近操作
             </div>
             {traces.slice(0, 15).map(trace => (
@@ -211,7 +211,7 @@ export function MemorySidebar({
                       {trace.dunLabel}
                     </span>
                   )}
-                  <span className="text-[10px] font-mono text-stone-400 ml-auto">
+                  <span className="text-xs font-mono text-stone-400 ml-auto">
                     {relativeTime(trace.timestamp)}
                   </span>
                 </div>
@@ -226,40 +226,47 @@ export function MemorySidebar({
       </div>
 
       {/* 神经元统计面板 */}
-      <div className="border-t border-stone-200/60 p-4 shrink-0">
+      <div className="border-t border-white/40 px-4 py-4 shrink-0">
         <div className="flex items-center gap-3">
           {/* 环形进度图 */}
           <div className="relative w-[76px] h-[76px] shrink-0">
             <svg className="w-full h-full -rotate-90" viewBox="0 0 76 76">
+              <defs>
+                <linearGradient id="ring-gradient" x1="0%" y1="0%" x2="100%" y2="0%">
+                  <stop offset="0%" stopColor="#34d399" />
+                  <stop offset="100%" stopColor="#059669" />
+                </linearGradient>
+              </defs>
               <circle
                 cx="38" cy="38" r={radius}
-                fill="none" stroke="#f5f5f4" strokeWidth="5"
+                fill="none" stroke="#e5e7eb" strokeWidth="5"
               />
               <circle
                 cx="38" cy="38" r={radius}
-                fill="none" stroke="#f59e0b" strokeWidth="5"
+                fill="none" stroke="url(#ring-gradient)" strokeWidth="5"
                 strokeLinecap="round"
                 strokeDasharray={circumference}
                 strokeDashoffset={dashOffset}
                 className="transition-all duration-700"
               />
             </svg>
-            <div className="absolute inset-0 flex items-center justify-center">
-              <span className="text-sm font-bold text-stone-700 tabular-nums">
+            <div className="absolute inset-0 flex flex-col items-center justify-center">
+              <span className="text-lg font-bold text-stone-800 tabular-nums">
                 {solidificationPercent}%
               </span>
+              <span className="text-xs text-stone-500">固化率</span>
             </div>
           </div>
 
           {/* 数值 */}
-          <div className="space-y-1.5 text-[11px]">
+          <div className="space-y-1.5 text-xs">
             <div>
               <span className="text-stone-400">已固化</span>
               <p className="font-mono font-semibold text-stone-700">{promotedCount}/{totalL1}</p>
             </div>
             <div>
               <span className="text-stone-400">平均置信度</span>
-              <p className="font-mono font-semibold text-amber-600">
+              <p className="font-mono font-semibold text-emerald-600">
                 {Math.round(averageConfidence * 100)}%
               </p>
             </div>

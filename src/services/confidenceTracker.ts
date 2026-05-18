@@ -22,7 +22,7 @@
  */
 
 import type { ConfidenceSignal, L1MemoryEntry } from '@/types'
-import { CONFIDENCE_SIGNALS, L0_PROMOTION_CONFIG } from '@/types'
+import { CONFIDENCE_SIGNALS, L0_PROMOTION_CONFIG, PASSIVE_PROMOTION_CONFIG } from '@/types'
 import { memoryStore } from './memoryStore'
 import { chatBackground, isLLMConfigured } from './llmService'
 import { PROMOTION_PROMPT, parsePromotionResult, classifyMemoryContent } from '@/utils/memoryPromotion'
@@ -44,15 +44,29 @@ class ConfidenceTrackerService {
   private _skipPersist = false
   /** 初始化完成 Promise（加载 + 迁移），所有关键方法前 await */
   private readyPromise: Promise<void>
+  /** V10: 命中订阅取消函数（构造时订阅 memoryStore.onSearchHit） */
+  private unsubscribeHit: (() => void) | null = null
 
   constructor() {
     this.readyPromise = this.initialize()
+    // V10: 订阅 memoryStore 的搜索命中事件，驱动被动晋升
+    this.unsubscribeHit = memoryStore.onSearchHit((ids) => {
+      void this.recordSearchHit(ids)
+    })
   }
 
   /** 串联加载 + 迁移两个异步操作 */
   private async initialize(): Promise<void> {
     await this.loadFromStorage()
     await this.migrateToBackend()
+  }
+
+  /** 组件/测试销毁时调用，解除命中订阅 */
+  dispose(): void {
+    if (this.unsubscribeHit) {
+      this.unsubscribeHit()
+      this.unsubscribeHit = null
+    }
   }
 
   // ═══ 持久化 ═══
@@ -233,6 +247,89 @@ class ConfidenceTrackerService {
       source: 'repeated_success',
       timestamp: Date.now(),
     })
+  }
+
+  // ═══ V10: 被动晋升通道（搜索命中计数） ═══
+
+  /**
+   * 记录一批记忆的搜索命中。由 memoryStore.onSearchHit 回调触发。
+   *
+   * 去抖规则：同一 memoryId 在 HIT_DEBOUNCE_MS 内多次命中只计一次，避免刷分。
+   * 触发被动晋升：命中后若满足条件（存活 >=7 天 + 命中 >=3 次 + 近期无负面信号），
+   * 追加 passive_hit 信号。达到 promotion threshold 时会被 evaluatePromotions 捕获。
+   */
+  async recordSearchHit(memoryIds: string[]): Promise<void> {
+    await this.readyPromise
+    if (memoryIds.length === 0) return
+
+    const now = Date.now()
+    const debounceMs = PASSIVE_PROMOTION_CONFIG.HIT_DEBOUNCE_MS
+    let changed = 0
+
+    this._skipPersist = true
+    try {
+      for (const id of memoryIds) {
+        const entry = this.trackedEntries.get(id)
+        if (!entry) continue
+
+        // 去抖：同一条目在 debounceMs 内的多次命中只记一次
+        if (entry.lastHitAt && now - entry.lastHitAt < debounceMs) {
+          continue
+        }
+        entry.hitCount = (entry.hitCount ?? 0) + 1
+        entry.lastHitAt = now
+        entry.updatedAt = now
+        changed += 1
+
+        // 尝试被动晋升
+        await this._tryPassivePromotion(entry, now)
+      }
+    } finally {
+      this._skipPersist = false
+    }
+
+    if (changed > 0) {
+      this.saveToStorage()
+    }
+  }
+
+  /**
+   * 被动晋升判定：满足以下条件时，追加一次 passive_hit 信号。
+   *  - 条目存活 >= MIN_AGE_DAYS
+   *  - hitCount >= MIN_HIT_COUNT
+   *  - 近 NO_NEGATIVE_WINDOW_DAYS 天内无 human_negative / system_failure 信号
+   *  - 尚未晋升
+   *
+   * 每个条目只累加 passive_hit 信号，是否最终晋升由 evaluatePromotions / promoteToL0 统一处理。
+   */
+  private async _tryPassivePromotion(entry: L1MemoryEntry, now: number): Promise<void> {
+    if (entry.promotedToL0) return
+    if ((entry.hitCount ?? 0) < PASSIVE_PROMOTION_CONFIG.MIN_HIT_COUNT) return
+
+    const ageMs = now - entry.createdAt
+    const minAgeMs = PASSIVE_PROMOTION_CONFIG.MIN_AGE_DAYS * 24 * 60 * 60 * 1000
+    if (ageMs < minAgeMs) return
+
+    // 近期无负面信号检查
+    const negativeWindowMs = PASSIVE_PROMOTION_CONFIG.NO_NEGATIVE_WINDOW_DAYS * 24 * 60 * 60 * 1000
+    const hasRecentNegative = entry.signals.some(sig =>
+      now - sig.timestamp < negativeWindowMs
+      && (sig.type === 'system_failure' || (sig.type === 'human_feedback' && sig.delta < 0)),
+    )
+    if (hasRecentNegative) return
+
+    // 限制：每个条目最多累加 3 个 passive_hit 信号，避免无限刷分
+    const existingPassiveHits = entry.signals.filter(s => s.type === 'passive_hit').length
+    if (existingPassiveHits >= 3) return
+
+    entry.signals.push({
+      type: 'passive_hit',
+      delta: PASSIVE_PROMOTION_CONFIG.HIT_SIGNAL_DELTA,
+      source: `passive_hit_${entry.hitCount}`,
+      timestamp: now,
+    })
+    entry.confidence = Math.max(0, Math.min(1, entry.confidence + PASSIVE_PROMOTION_CONFIG.HIT_SIGNAL_DELTA))
+    entry.updatedAt = now
   }
 
   // ═══ 晋升评估 ═══

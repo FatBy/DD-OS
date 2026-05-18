@@ -12,6 +12,7 @@ import time
 import uuid
 
 from server.state import _db_lock
+from server.db import get_hybrid_engine, mark_superseded, mark_conflicted
 
 # 条件导入 wiki 向量搜索函数
 HAS_WIKI_SEARCH = False
@@ -507,10 +508,11 @@ class WikiMixin:
     def handle_wiki_claim_conflict(self, data: dict):
         """POST /api/wiki/claim/conflict
         标记两条 Claim 为冲突状态。
-        data: { "claim_id_a": "xxx", "claim_id_b": "yyy" }
+        data: { "claim_id_a": "xxx", "claim_id_b": "yyy", "reason": "optional" }
         """
         cid_a = data.get('claim_id_a')
         cid_b = data.get('claim_id_b')
+        reason = data.get('reason', 'claims in semantic conflict')
         if not cid_a or not cid_b:
             self.send_error_json('Missing claim_id_a or claim_id_b', 400)
             return
@@ -518,19 +520,81 @@ class WikiMixin:
         db = self._get_db()
         now = _now_ms()
         try:
+            # BUG-3 fix: 改用共享 mark_conflicted()，自带 status='active' 守卫
+            ok_a = mark_conflicted(db, 'wiki_claim', cid_a, cid_b, reason, now)
+            ok_b = mark_conflicted(db, 'wiki_claim', cid_b, cid_a, reason, now)
+            if not ok_a and not ok_b:
+                self.send_error_json('Both claims are already non-active', 409)
+                return
+            self.send_json({'status': 'ok', 'claimA': cid_a, 'claimB': cid_b})
+        except (ValueError, Exception) as e:
+            self.send_error_json(f'Failed to mark conflict: {e}', 500)
+
+    # ============================================
+    # V10: Claim Supersede — 补齐 wiki_claim 的 superseded 写入路径
+    # ============================================
+
+    def handle_wiki_claim_supersede(self, data: dict):
+        """POST /api/wiki/claim/supersede
+        将旧 Claim 标记为被新 Claim 取代。
+
+        data: {
+          "old_claim_id": "clm-xxx",   // 必填，被取代的 claim
+          "new_claim_id": "clm-yyy",   // 可选，新 claim 的 id（若已存在）
+          "reason": "事实更新"         // 必填
+        }
+
+        注意：此接口只改 status，不新建 claim。若要写入新 claim，调用方先通过
+        /api/wiki/ingest 建好新 claim，再调用此接口绑定 supersede 关系。
+        """
+        old_id = data.get('old_claim_id')
+        new_id = data.get('new_claim_id')  # 可空
+        reason = (data.get('reason') or '').strip()
+        if not old_id:
+            self.send_error_json('old_claim_id is required', 400)
+            return
+        if not reason:
+            self.send_error_json('reason is required', 400)
+            return
+
+        db = self._get_db()
+        now = _now_ms()
+
+        # 确认 old 存在且为 active
+        row = db.execute(
+            "SELECT id, status FROM wiki_claim WHERE id = ?", (old_id,)
+        ).fetchone()
+        if not row:
+            self.send_error_json(f'Claim {old_id} not found', 404)
+            return
+        if row['status'] != 'active':
+            self.send_error_json(
+                f'Claim {old_id} is already {row["status"]}', 409,
+            )
+            return
+
+        try:
+            # 复用通用函数
+            ok = mark_superseded(db, 'wiki_claim', old_id, new_id, reason, now)
+            if not ok:
+                self.send_error_json(f'Failed to supersede claim {old_id}', 500)
+                return
+            # 同步刷新 updated_at（mark_superseded 不管这个字段）
             with _db_lock:
                 db.execute(
-                    "UPDATE wiki_claim SET status = 'conflicted', conflict_with = ?, updated_at = ? WHERE id = ?",
-                    (cid_b, now, cid_a)
-                )
-                db.execute(
-                    "UPDATE wiki_claim SET status = 'conflicted', conflict_with = ?, updated_at = ? WHERE id = ?",
-                    (cid_a, now, cid_b)
+                    "UPDATE wiki_claim SET updated_at = ? WHERE id = ?",
+                    (now, old_id),
                 )
                 db.commit()
-            self.send_json({'status': 'ok', 'claimA': cid_a, 'claimB': cid_b})
-        except Exception as e:
-            self.send_error_json(f'Failed to mark conflict: {e}', 500)
+        except ValueError as e:
+            self.send_error_json(str(e), 400)
+            return
+
+        self.send_json({
+            'status': 'ok',
+            'oldClaimId': old_id,
+            'newClaimId': new_id,
+        })
 
     # ============================================
     # Entity 文本渲染 — 供 ReAct 上下文注入
@@ -670,6 +734,7 @@ class WikiMixin:
         # 尝试向量搜索
         if HAS_WIKI_SEARCH:
             import server.state as _st
+            get_hybrid_engine()
             if _st._embedding_engine and _st._embedding_engine.available:
                 results = search_wiki_vectors(
                     db, q, _st._embedding_engine,
@@ -762,6 +827,7 @@ class WikiMixin:
 
         if HAS_WIKI_SEARCH:
             import server.state as _st
+            get_hybrid_engine()
             if _st._embedding_engine and _st._embedding_engine.available:
                 results = search_wiki_vectors(
                     db, q, _st._embedding_engine,
@@ -928,6 +994,7 @@ class WikiMixin:
             return
 
         import server.state as _st
+        get_hybrid_engine()
         if not _st._embedding_engine or not _st._embedding_engine.available:
             self.send_error_json('Embedding engine not available', 503)
             return
@@ -942,6 +1009,7 @@ class WikiMixin:
             return
 
         import server.state as _st
+        get_hybrid_engine()
         if not _st._embedding_engine or not _st._embedding_engine.available:
             return
 
@@ -995,6 +1063,7 @@ class WikiMixin:
         results: list[dict] = []
         if HAS_WIKI_SEARCH:
             import server.state as _st
+            get_hybrid_engine()
             if _st._embedding_engine and _st._embedding_engine.available:
                 results = search_wiki_vectors(
                     db, query, _st._embedding_engine,

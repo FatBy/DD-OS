@@ -7,13 +7,85 @@
  *   V (Verify)  - Agent is checking the result of a previous action
  *   X (Explore) - Agent is exploring unknown territory
  *
- * Note: P is fundamentally a reasoning-level classification that cannot be
- * reliably inferred from tool calls alone. It must be assigned by the LLM
- * itself (via reasoning or function-call metadata). This classifier handles
- * E/V/X and defaults to E when no V/X signal is detected.
+ * V10 Instrument 优先：
+ *   确定性事件/规则覆盖 80%+ 的碱基判定，ML 只处理尾部模糊 case。
+ *   分类流程分为两层：
+ *     Layer 1 — 确定性规则层 (fast path)：显式事件 + 确定性模式匹配
+ *     Layer 2 — 原有逻辑层 (fallback)：上下文 + 名称推断
  *
  * SYNC: 此分类器逻辑必须与 openclaw-extension/src/gene-pool.ts 保持同步
  */
+
+// ============================================
+// V10: 事件接口类型
+// ============================================
+
+/** P 碱基显式事件（由 LLM 或系统显式发出） */
+export interface PlanEvent {
+  eventType: 'planning'
+  base: 'P'
+  source: 'explicit_meta'
+  summary: string
+  scope: 'local' | 'global'
+  confidence: 1.0
+  triggerContext: 'task_start' | 'mid_execution' | 'after_failure' | 'user_request'
+}
+
+/** V 碱基显式事件（验证操作的显式声明） */
+export interface VerificationEvent {
+  eventType: 'verification'
+  base: 'V'
+  source: 'explicit_meta'
+  target: string
+  method: string
+  referencesArtifact: string  // 验证的具体文件路径
+}
+
+// ============================================
+// V10: 增强分类结果类型
+// ============================================
+
+/** 分类来源标记 — 表明分类依据 */
+export type ClassificationSource =
+  | 'rule'            // 确定性规则命中
+  | 'tool'           // 工具参数推断
+  | 'meta'           // 显式元数据事件
+  | 'human'          // 人工标注
+  | 'model'          // ML 模型推断（未来）
+  | 'context'        // 上下文状态推断（原有逻辑）
+
+/** 增强分类结果 — 包含 confidence 和 source */
+export interface EnhancedClassification {
+  base: 'E' | 'P' | 'V' | 'X'
+  confidence: number         // 0.0 - 1.0
+  source: ClassificationSource
+  /** 匹配的规则名称（用于审计和调试） */
+  ruleName?: string
+}
+
+/** V10: 增强分类输入 — 支持显式事件和因果链 */
+export interface EnhancedClassificationInput {
+  /** 显式 PlanEvent（由上游注入） */
+  planEvent?: PlanEvent
+  /** 显式 VerificationEvent（由上游注入） */
+  verificationEvent?: VerificationEvent
+  /** 当前步骤引用的 artifact 路径 */
+  referencesArtifact?: string
+  /** 因果链：引用的上游步骤 ID 列表 */
+  causedBy?: string[]
+  /** 最近 10 步的历史（用于因果判定） */
+  recentSteps?: RecentStep[]
+}
+
+/** 最近步骤的简化表示（用于因果判定） */
+export interface RecentStep {
+  id: string
+  base: 'E' | 'P' | 'V' | 'X'
+  toolName: string
+  /** 该步骤操作的 artifact 路径 */
+  referencesArtifact?: string
+  order: number
+}
 
 // ============================================
 // Tool categories (白名单 — 精确分类)
@@ -30,6 +102,12 @@ const EXPLORE_TOOLS = new Set([
 
 const WRITE_TOOLS = new Set([
   'writeFile', 'appendFile', 'deleteFile', 'renameFile',
+])
+
+/** V10: 天然探索类工具 — 独立于 shell 命令的判定 */
+const INHERENT_EXPLORE_TOOLS = new Set([
+  'webSearch', 'webFetch', 'listDir', 'findFile',
+  'searchText', 'searchFiles', 'search_files',
 ])
 
 const VERIFY_CMD_PATTERNS = [
@@ -70,6 +148,10 @@ export interface BaseClassifierCtx {
   recentWrites: Array<{ resource: string; order: number }>
   /** Previous tool call entry */
   lastEntry: { name: string; status: 'success' | 'error'; order: number } | null
+  /** V10: 所有已出现过的工具名称（用于 first-occurrence X 判定） */
+  seenTools: Set<string>
+  /** V10: 所有已出现过的路径（用于 first-occurrence X 判定） */
+  seenPaths: Set<string>
 }
 
 export function createBaseClassifierCtx(): BaseClassifierCtx {
@@ -77,6 +159,8 @@ export function createBaseClassifierCtx(): BaseClassifierCtx {
     successfulResources: new Set(),
     recentWrites: [],
     lastEntry: null,
+    seenTools: new Set(),
+    seenPaths: new Set(),
   }
 }
 
@@ -130,20 +214,194 @@ function inferIntentFromArgs(args: Record<string, unknown>): 'read' | 'write' | 
 }
 
 // ============================================
-// Classification
+// V10: 确定性判定 — V 碱基因果判定函数
 // ============================================
 
 /**
- * Classify a tool call into E/V/X based on context.
- * P must be assigned externally (by LLM metadata).
+ * 基于因果链判定当前步骤是否为 V (Verify)。
  *
- * Priority chain:
- *   1. V checks (highest priority — verification patterns)
- *   2. X checks (known read tools + explore tools + shell explore commands)
- *   3. Unknown tool fallback (param shape → name pattern)
- *   4. E (default)
+ * 规则：
+ * - 当前步骤引用了某个 artifact (referencesArtifact)
+ * - 最近步骤中存在对同一 artifact 的写入 (base='E')
+ * - 如果 causedBy 明确指向该 write → 高置信 (0.90)
+ * - 仅同 path 但无显式因果 → 中置信 (0.70)
  */
-export function classifyBaseType(
+export function classifyVerification(
+  referencesArtifact: string | undefined,
+  causedBy: string[] | undefined,
+  recentSteps: RecentStep[],
+): { isV: boolean; confidence: number } {
+  if (!referencesArtifact) return { isV: false, confidence: 0 }
+
+  const normalizedTarget = normalizePath(referencesArtifact)
+
+  const samePathWrite = recentSteps.find(s =>
+    s.base === 'E' &&
+    s.referencesArtifact &&
+    normalizePath(s.referencesArtifact) === normalizedTarget
+  )
+  if (!samePathWrite) return { isV: false, confidence: 0 }
+
+  // 有 causedBy 指向该 write → 高置信
+  if (causedBy?.includes(samePathWrite.id)) {
+    return { isV: true, confidence: 0.90 }
+  }
+  // 仅同 path 但无显式因果 → 中置信（可能只是继续使用文件）
+  return { isV: true, confidence: 0.70 }
+}
+
+// ============================================
+// V10: 确定性规则层 (Layer 1 — Fast Path)
+// ============================================
+
+/**
+ * 增强分类：确定性规则层 + 原有逻辑层。
+ *
+ * Priority chain (确定性规则，从高到低):
+ *   1. 显式 VerificationEvent → V (confidence: 1.00)
+ *   2. 显式 PlanEvent → P (confidence: 1.00)
+ *   3. runCmd 包含 test/lint/tsc/eslint → V (confidence: 0.95)
+ *   4. write 后同 path readFile + causedBy → V (confidence: 0.90)
+ *   5. write 后同 path readFile（无 causedBy） → V (confidence: 0.70)
+ *   6. webSearch/listDir/findFile 天然探索类 → X (confidence: 0.92)
+ *   7. 本任务首次出现的 tool 或 path → X (confidence: 0.88)
+ *   8. 写入/副作用类工具且非紧跟 V → E (confidence: 0.90)
+ *   9. 原有逻辑 fallback → confidence: 0.60
+ */
+export function classifyBaseTypeEnhanced(
+  toolName: string,
+  args: Record<string, unknown>,
+  _status: 'success' | 'error',
+  ctx: BaseClassifierCtx,
+  enhanced?: EnhancedClassificationInput,
+): EnhancedClassification {
+  const resource = extractResource(toolName, args)
+
+  // ================================================
+  // Layer 1: 确定性规则层 (Instrument 优先)
+  // ================================================
+
+  // Rule 1: 显式 VerificationEvent → V (最高优先)
+  if (enhanced?.verificationEvent) {
+    return {
+      base: 'V',
+      confidence: 1.0,
+      source: 'meta',
+      ruleName: 'explicit_verification_event',
+    }
+  }
+
+  // Rule 2: 显式 PlanEvent → P (最高优先)
+  if (enhanced?.planEvent) {
+    return {
+      base: 'P',
+      confidence: 1.0,
+      source: 'meta',
+      ruleName: 'explicit_plan_event',
+    }
+  }
+
+  // Rule 3: runCmd 包含 test/lint/tsc/eslint → V (confidence: 0.95)
+  if (toolName === 'runCmd') {
+    const cmd = String(args.command || args.cmd || '')
+    if (VERIFY_CMD_PATTERNS.some(p => p.test(cmd))) {
+      return {
+        base: 'V',
+        confidence: 0.95,
+        source: 'rule',
+        ruleName: 'verify_cmd_pattern',
+      }
+    }
+  }
+
+  // Rule 4 & 5: write 后同 path readFile (因果链判定)
+  if (enhanced?.recentSteps && enhanced.referencesArtifact) {
+    const vResult = classifyVerification(
+      enhanced.referencesArtifact,
+      enhanced.causedBy,
+      enhanced.recentSteps,
+    )
+    if (vResult.isV) {
+      return {
+        base: 'V',
+        confidence: vResult.confidence,
+        source: 'rule',
+        ruleName: vResult.confidence >= 0.90
+          ? 'write_then_read_with_causedBy'
+          : 'write_then_read_same_path',
+      }
+    }
+  }
+
+  // Rule 6: webSearch/listDir/findFile 天然探索类 → X (confidence: 0.92)
+  if (INHERENT_EXPLORE_TOOLS.has(toolName)) {
+    return {
+      base: 'X',
+      confidence: 0.92,
+      source: 'rule',
+      ruleName: 'inherent_explore_tool',
+    }
+  }
+
+  // Rule 7: 本任务首次出现的 tool 或 path → X (confidence: 0.88)
+  const isFirstToolOccurrence = !ctx.seenTools.has(toolName)
+  const isFirstPathOccurrence = resource ? !ctx.seenPaths.has(resource) : false
+  if (isFirstToolOccurrence || isFirstPathOccurrence) {
+    // 排除写入工具（首次写入是 E 不是 X）
+    if (!WRITE_TOOLS.has(toolName) && toolName !== 'runCmd') {
+      return {
+        base: 'X',
+        confidence: 0.88,
+        source: 'rule',
+        ruleName: 'first_occurrence_tool_or_path',
+      }
+    }
+    // runCmd 首次出现但不是 verify 命令 — 检查是否是探索命令
+    if (toolName === 'runCmd') {
+      const cmd = String(args.command || args.cmd || '').trim()
+      if (EXPLORE_CMD_PATTERNS.some(p => p.test(cmd))) {
+        return {
+          base: 'X',
+          confidence: 0.88,
+          source: 'rule',
+          ruleName: 'first_occurrence_explore_cmd',
+        }
+      }
+    }
+  }
+
+  // Rule 8: 写入/副作用类工具且非紧跟 V 验证 → E (confidence: 0.90)
+  if (WRITE_TOOLS.has(toolName)) {
+    return {
+      base: 'E',
+      confidence: 0.90,
+      source: 'rule',
+      ruleName: 'write_tool_execute',
+    }
+  }
+
+  // ================================================
+  // Layer 2: 原有逻辑层 (Fallback)
+  // ================================================
+
+  const fallbackBase = classifyBaseTypeFallback(toolName, args, _status, ctx)
+  return {
+    base: fallbackBase,
+    confidence: 0.60,
+    source: 'context',
+    ruleName: 'legacy_fallback',
+  }
+}
+
+// ============================================
+// Layer 2: 原有分类逻辑 (Fallback)
+// ============================================
+
+/**
+ * 原有分类逻辑，作为确定性规则未命中时的兜底。
+ * 保持原有行为不变。
+ */
+function classifyBaseTypeFallback(
   toolName: string,
   args: Record<string, unknown>,
   _status: 'success' | 'error',
@@ -211,6 +469,36 @@ export function classifyBaseType(
   return 'E'
 }
 
+// ============================================
+// 向后兼容：原有接口
+// ============================================
+
+/**
+ * Classify a tool call into E/V/X based on context.
+ * P must be assigned externally (by LLM metadata).
+ *
+ * 向后兼容接口 — 内部委托给 classifyBaseTypeEnhanced。
+ * 新代码建议使用 classifyBaseTypeEnhanced 获取 confidence/source。
+ *
+ * Priority chain:
+ *   1. V checks (highest priority — verification patterns)
+ *   2. X checks (known read tools + explore tools + shell explore commands)
+ *   3. Unknown tool fallback (param shape → name pattern)
+ *   4. E (default)
+ */
+export function classifyBaseType(
+  toolName: string,
+  args: Record<string, unknown>,
+  _status: 'success' | 'error',
+  ctx: BaseClassifierCtx,
+  enhanced?: EnhancedClassificationInput,
+): 'E' | 'V' | 'X' {
+  const result = classifyBaseTypeEnhanced(toolName, args, _status, ctx, enhanced)
+  // P 碱基由 detectPBase 系统单独处理，此处如果命中 P 事件则降级为 E
+  if (result.base === 'P') return 'E'
+  return result.base
+}
+
 /**
  * Update classifier context after a tool call completes.
  * Must be called AFTER classifyBaseType for the same entry.
@@ -233,11 +521,31 @@ export function updateBaseClassifierCtx(
   }
 
   ctx.lastEntry = { name: toolName, status, order }
+
+  // V10: 记录已出现的工具和路径
+  ctx.seenTools.add(toolName)
+  if (resource) {
+    ctx.seenPaths.add(resource)
+  }
 }
 
 // ============================================
-// Phase 3: P 碱基自动检测
+// V10: P 碱基增强检测（优先级链 + confidence）
 // ============================================
+
+/** P 碱基增强检测结果 */
+export interface PDetectionResult {
+  detected: boolean
+  source: PBaseDetectionSourceV10
+  confidence: number
+}
+
+/** V10: P 碱基检测来源（扩展版） */
+export type PBaseDetectionSourceV10 =
+  | 'explicit_event'       // 显式 PlanEvent (confidence: 1.0)
+  | 'llm_meta'            // _meta.planStep (confidence: 0.9)
+  | 'reasoning_content'   // reasoning 关键词 (confidence: 0.6-0.8)
+  | 'tool_inference'      // 工具参数推断 (confidence: 0.4-0.6)
 
 /**
  * 推理链中的计划关键词模式（中英文混合）
@@ -322,6 +630,85 @@ export function detectPBase(
   if (fromMeta) return fromMeta
 
   return detectPlanFromReasoning(reasoningContent)
+}
+
+/**
+ * V10 增强版 P 碱基检测 — 带优先级链和 confidence。
+ *
+ * 优先级链：
+ *   1. 显式 PlanEvent (confidence: 1.0, source: explicit_event) — 最高优先
+ *   2. _meta.planStep (confidence: 0.9, source: llm_meta)
+ *   3. reasoning_content 关键词 (confidence: 0.6-0.8, source: reasoning_content) — 降权保留
+ *   4. 工具参数推断 (confidence: 0.4-0.6, source: tool_inference) — 最低
+ */
+export function detectPBaseEnhanced(
+  toolCallArgs?: Record<string, unknown>,
+  reasoningContent?: string | null,
+  planEvent?: PlanEvent,
+): PDetectionResult {
+  // Priority 1: 显式 PlanEvent
+  if (planEvent) {
+    return {
+      detected: true,
+      source: 'explicit_event',
+      confidence: 1.0,
+    }
+  }
+
+  // Priority 2: _meta.planStep
+  if (toolCallArgs) {
+    const meta = toolCallArgs._meta
+    if (meta && typeof meta === 'object' && (meta as Record<string, unknown>).planStep) {
+      return {
+        detected: true,
+        source: 'llm_meta',
+        confidence: 0.9,
+      }
+    }
+  }
+
+  // Priority 3: reasoning_content 关键词匹配
+  if (reasoningContent && reasoningContent.length >= 30) {
+    // 强信号：多个关键词匹配
+    let matchCount = 0
+    for (const pattern of PLAN_KEYWORD_PATTERNS) {
+      if (pattern.test(reasoningContent)) {
+        matchCount++
+      }
+    }
+    if (matchCount >= 2) {
+      return {
+        detected: true,
+        source: 'reasoning_content',
+        confidence: 0.80,
+      }
+    }
+    if (matchCount === 1) {
+      return {
+        detected: true,
+        source: 'reasoning_content',
+        confidence: 0.65,
+      }
+    }
+  }
+
+  // Priority 4: 工具参数推断（计划相关的工具调用模式）
+  if (toolCallArgs) {
+    const hasTaskDecomposition = !!(toolCallArgs.subtasks || toolCallArgs.steps || toolCallArgs.plan)
+    if (hasTaskDecomposition) {
+      return {
+        detected: true,
+        source: 'tool_inference',
+        confidence: 0.50,
+      }
+    }
+  }
+
+  return {
+    detected: false,
+    source: 'tool_inference',
+    confidence: 0,
+  }
 }
 
 // ============================================

@@ -18,7 +18,10 @@ import re
 import sqlite3
 import threading
 import time
+import urllib.error
+import urllib.request
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 import numpy as np
 
@@ -30,6 +33,24 @@ try:
     _ort_available = True
 except ImportError:
     pass
+
+
+def _normalize_vectors(vectors: list[list[float]] | np.ndarray) -> np.ndarray:
+    arr = np.asarray(vectors, dtype=np.float32)
+    if arr.ndim == 1:
+        arr = arr.reshape(1, -1)
+    if arr.size == 0:
+        return np.array([], dtype=np.float32)
+    norms = np.linalg.norm(arr, axis=1, keepdims=True)
+    norms = np.clip(norms, a_min=1e-12, a_max=None)
+    return arr / norms
+
+
+def _embedding_endpoint(base_url: str) -> str:
+    url = base_url.rstrip('/')
+    url = re.sub(r'/chat/completions$', '', url)
+    url = re.sub(r'/v1$', '', url)
+    return f'{url}/v1/embeddings'
 
 
 # ============================================
@@ -92,6 +113,14 @@ class EmbeddingEngine:
     @property
     def dimension(self) -> int:
         return self._dimension
+
+    @property
+    def fingerprint(self) -> str:
+        return 'local::bge-large-zh-v1.5-onnx-int8'
+
+    @property
+    def accepts_legacy_vectors(self) -> bool:
+        return True
 
     def _ensure_loaded(self):
         if self._session is not None:
@@ -188,6 +217,103 @@ class EmbeddingEngine:
             return np.array([])
         with self._lock:
             return self._run_inference([BGE_QUERY_INSTRUCTION + query])[0]
+
+    def shutdown(self):
+        with self._lock:
+            if self._session is not None:
+                self._session = None
+                self._tokenizer = None
+                self._available = False
+                import gc
+                gc.collect()
+                print("[EmbeddingEngine] Model unloaded")
+
+
+class OpenAICompatibleEmbeddingEngine:
+    """Embedding engine backed by the configured OpenAI-compatible /v1/embeddings API."""
+
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        model: str,
+        timeout: float = 60,
+        batch_size: int = 10,
+    ):
+        self._base_url = base_url.rstrip('/')
+        self._endpoint = _embedding_endpoint(base_url)
+        self._api_key = api_key
+        self._model = model
+        self._timeout = timeout
+        self._batch_size = max(1, batch_size)
+        self._dimension = 0
+        self._lock = threading.Lock()
+        self._available = bool(self._base_url and self._api_key and self._model)
+
+    @property
+    def available(self) -> bool:
+        return self._available
+
+    @property
+    def dimension(self) -> int:
+        return self._dimension
+
+    @property
+    def fingerprint(self) -> str:
+        parsed = urlparse(self._base_url)
+        host = (parsed.netloc or self._base_url).lower()
+        path = parsed.path.rstrip('/').lower()
+        return f'external::{host}{path}::{self._model}'
+
+    @property
+    def accepts_legacy_vectors(self) -> bool:
+        return False
+
+    def _request_embeddings(self, texts: list[str]) -> list[list[float]]:
+        headers = {'Content-Type': 'application/json'}
+        if self._api_key:
+            headers['Authorization'] = f'Bearer {self._api_key}'
+        body = json.dumps({'model': self._model, 'input': texts}).encode('utf-8')
+        req = urllib.request.Request(self._endpoint, data=body, headers=headers, method='POST')
+        try:
+            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+                payload = json.loads(resp.read().decode('utf-8'))
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode('utf-8', errors='ignore')[:300]
+            raise RuntimeError(f'Embedding API error {e.code}: {detail}') from e
+
+        items = payload.get('data') or []
+        if not isinstance(items, list):
+            raise RuntimeError('Embedding API returned invalid data')
+        if all(isinstance(item, dict) and 'index' in item for item in items):
+            items = sorted(items, key=lambda item: item.get('index', 0))
+        vectors = [item.get('embedding') for item in items if isinstance(item, dict)]
+        if len(vectors) != len(texts):
+            raise RuntimeError(f'Embedding API returned {len(vectors)} vectors for {len(texts)} texts')
+        return vectors
+
+    def encode(self, texts: list[str], batch_size: int | None = None) -> np.ndarray:
+        if not self._available or not texts:
+            return np.array([])
+        effective_batch = max(1, min(batch_size or self._batch_size, self._batch_size))
+        vectors: list[list[float]] = []
+        with self._lock:
+            for i in range(0, len(texts), effective_batch):
+                batch = texts[i:i + effective_batch]
+                vectors.extend(self._request_embeddings(batch))
+        arr = _normalize_vectors(vectors)
+        if arr.size > 0:
+            self._dimension = int(arr.shape[1])
+        return arr
+
+    def encode_query(self, query: str) -> np.ndarray:
+        vectors = self.encode([query], batch_size=1)
+        if vectors.size == 0:
+            return np.array([])
+        return vectors[0]
+
+    def shutdown(self):
+        self._available = False
 
 
 # ============================================
@@ -349,6 +475,18 @@ def smart_chunk(
 # 向量存储 (SQLite BLOB)
 # ============================================
 
+def _engine_fingerprint(embedding_engine: Any) -> str:
+    return getattr(embedding_engine, 'fingerprint', 'unknown')
+
+
+def _fingerprint_where(alias: str, embedding_engine: Any) -> tuple[str, list]:
+    fp = _engine_fingerprint(embedding_engine)
+    col = f'{alias}.embedding_fingerprint'
+    if getattr(embedding_engine, 'accepts_legacy_vectors', False):
+        return f" AND ({col} = ? OR {col} IS NULL OR {col} = '')", [fp]
+    return f" AND {col} = ?", [fp]
+
+
 def ensure_vector_table(conn: sqlite3.Connection):
     """创建向量存储表 (如果不存在)"""
     conn.executescript("""
@@ -359,11 +497,22 @@ def ensure_vector_table(conn: sqlite3.Connection):
             chunk_content TEXT DEFAULT '',
             start_line INTEGER DEFAULT 0,
             end_line INTEGER DEFAULT 0,
+            embedding_model TEXT DEFAULT '',
+            embedding_fingerprint TEXT DEFAULT '',
             created_at INTEGER NOT NULL,
             PRIMARY KEY (memory_id, chunk_seq)
         );
         CREATE INDEX IF NOT EXISTS idx_mv_memory ON memory_vectors(memory_id);
     """)
+    for col, definition in [
+        ('embedding_model', "TEXT DEFAULT ''"),
+        ('embedding_fingerprint', "TEXT DEFAULT ''"),
+    ]:
+        try:
+            conn.execute(f"SELECT {col} FROM memory_vectors LIMIT 1")
+        except sqlite3.OperationalError:
+            conn.execute(f"ALTER TABLE memory_vectors ADD COLUMN {col} {definition}")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mv_fingerprint ON memory_vectors(embedding_fingerprint)")
     conn.commit()
 
 
@@ -389,16 +538,62 @@ def index_memory_vectors(
         return 0
 
     now = int(time.time() * 1000)
+    fingerprint = _engine_fingerprint(embedding_engine)
+    model_name = getattr(embedding_engine, '_model', None) or getattr(embedding_engine, 'MODEL_DIR_NAME', None) or fingerprint
     with db_lock:
         conn.execute("DELETE FROM memory_vectors WHERE memory_id = ?", (memory_id,))
         for i, (chunk, vec) in enumerate(zip(chunks, vectors)):
             blob = vec.astype(np.float32).tobytes()
             conn.execute(
-                "INSERT INTO memory_vectors (memory_id, chunk_seq, embedding, chunk_content, start_line, end_line, created_at) VALUES (?,?,?,?,?,?,?)",
-                (memory_id, i, blob, chunk['content'], chunk['start_line'], chunk['end_line'], now),
+                "INSERT INTO memory_vectors (memory_id, chunk_seq, embedding, chunk_content, start_line, end_line, embedding_model, embedding_fingerprint, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                (memory_id, i, blob, chunk['content'], chunk['start_line'], chunk['end_line'], model_name, fingerprint, now),
             )
         conn.commit()
-    return len(chunks)
+        return len(chunks)
+
+
+def reindex_all_memory_vectors(
+    conn: sqlite3.Connection,
+    embedding_engine: EmbeddingEngine,
+    db_lock: threading.Lock,
+) -> int:
+    """Rebuild memory vector rows for the currently configured embedding engine."""
+    if not embedding_engine.available:
+        return 0
+
+    with db_lock:
+        rows = conn.execute(
+            "SELECT id, content FROM memory WHERE deleted_at IS NULL AND status = 'active' AND content != ''"
+        ).fetchall()
+
+    chunk_rows: list[tuple[str, int, dict]] = []
+    texts: list[str] = []
+    for row in rows:
+        chunks = smart_chunk(row['content'])
+        for i, chunk in enumerate(chunks):
+            chunk_rows.append((row['id'], i, chunk))
+            texts.append(chunk['content'])
+
+    if not texts:
+        return 0
+
+    vectors = embedding_engine.encode(texts, batch_size=32)
+    if len(vectors) == 0:
+        return 0
+
+    now = int(time.time() * 1000)
+    fingerprint = _engine_fingerprint(embedding_engine)
+    model_name = getattr(embedding_engine, '_model', None) or getattr(embedding_engine, 'MODEL_DIR_NAME', None) or fingerprint
+    with db_lock:
+        conn.execute("DELETE FROM memory_vectors")
+        for (memory_id, chunk_seq, chunk), vec in zip(chunk_rows, vectors):
+            blob = vec.astype(np.float32).tobytes()
+            conn.execute(
+                "INSERT INTO memory_vectors (memory_id, chunk_seq, embedding, chunk_content, start_line, end_line, embedding_model, embedding_fingerprint, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                (memory_id, chunk_seq, blob, chunk['content'], chunk['start_line'], chunk['end_line'], model_name, fingerprint, now),
+            )
+        conn.commit()
+    return len({memory_id for memory_id, _, _ in chunk_rows})
 
 
 # ============================================
@@ -527,12 +722,14 @@ class HybridSearchEngine:
         self, conn: sqlite3.Connection, query: str,
         dun_id: str | None, limit: int,
     ) -> list[dict]:
-        """FTS5 关键词检索"""
+        """FTS5 关键词检索（V10: 过滤 superseded/conflicted + deleted_at）"""
         fts_sql = """
             SELECT m.*, rank
             FROM memory_fts fts
             JOIN memory m ON m.rowid = fts.rowid
             WHERE memory_fts MATCH ?
+            AND m.deleted_at IS NULL
+            AND m.status = 'active'
         """
         params: list = [query]
         if dun_id:
@@ -544,8 +741,8 @@ class HybridSearchEngine:
         try:
             rows = conn.execute(fts_sql, params).fetchall()
         except Exception:
-            # FTS 语法错误降级 LIKE
-            like_sql = "SELECT * FROM memory WHERE content LIKE ?"
+            # FTS 语法错误降级 LIKE — V10: 同步加 status 过滤
+            like_sql = "SELECT * FROM memory WHERE content LIKE ? AND deleted_at IS NULL AND status = 'active'"
             like_params: list = [f"%{query}%"]
             if dun_id:
                 like_sql += " AND dun_id = ?"
@@ -573,17 +770,25 @@ class HybridSearchEngine:
         self, conn: sqlite3.Connection, query: str,
         dun_id: str | None, limit: int,
     ) -> list[dict]:
-        """向量相似度检索"""
+        """向量相似度检索（V10: 过滤 superseded/conflicted + deleted_at）"""
         query_vec = self.embedding.encode_query(query)
         if query_vec.size == 0:
             return []
 
-        # 读取向量表
-        vec_sql = "SELECT mv.memory_id, mv.embedding, mv.chunk_content, m.content, m.source, m.dun_id, m.tags, m.created_at FROM memory_vectors mv JOIN memory m ON m.id = mv.memory_id"
+        # 读取向量表 — V10: WHERE 过滤 status + deleted_at
+        vec_sql = (
+            "SELECT mv.memory_id, mv.embedding, mv.chunk_content, "
+            "m.content, m.source, m.dun_id, m.tags, m.created_at "
+            "FROM memory_vectors mv JOIN memory m ON m.id = mv.memory_id "
+            "WHERE m.deleted_at IS NULL AND m.status = 'active'"
+        )
         params: list = []
         if dun_id:
-            vec_sql += " WHERE m.dun_id = ?"
+            vec_sql += " AND m.dun_id = ?"
             params.append(dun_id)
+        fp_sql, fp_params = _fingerprint_where('mv', self.embedding)
+        vec_sql += fp_sql
+        params.extend(fp_params)
 
         try:
             rows = conn.execute(vec_sql, params).fetchall()
@@ -738,12 +943,14 @@ def index_wiki_entity_vector(
         return 0
 
     now = int(time.time() * 1000)
+    fingerprint = _engine_fingerprint(embedding_engine)
+    model_name = getattr(embedding_engine, '_model', None) or getattr(embedding_engine, 'MODEL_DIR_NAME', None) or fingerprint
     with db_lock:
         conn.execute("DELETE FROM wiki_vectors WHERE entity_id = ?", (entity_id,))
         blob = vectors[0].astype(np.float32).tobytes()
         conn.execute(
-            "INSERT INTO wiki_vectors (entity_id, chunk_seq, embedding, chunk_content, created_at) VALUES (?,?,?,?,?)",
-            (entity_id, 0, blob, text[:500], now),
+            "INSERT INTO wiki_vectors (entity_id, chunk_seq, embedding, chunk_content, embedding_model, embedding_fingerprint, created_at) VALUES (?,?,?,?,?,?,?)",
+            (entity_id, 0, blob, text[:500], model_name, fingerprint, now),
         )
         conn.commit()
     return 1
@@ -786,6 +993,9 @@ def search_wiki_vectors(
             WHERE e.dun_id IS NULL AND e.status = 'active'
         """
         params = []
+    fp_sql, fp_params = _fingerprint_where('wv', embedding_engine)
+    sql += fp_sql
+    params.extend(fp_params)
 
     try:
         rows = conn.execute(sql, params).fetchall()
@@ -873,14 +1083,16 @@ def reindex_all_wiki_vectors(
         return 0
 
     now = int(time.time() * 1000)
+    fingerprint = _engine_fingerprint(embedding_engine)
+    model_name = getattr(embedding_engine, '_model', None) or getattr(embedding_engine, 'MODEL_DIR_NAME', None) or fingerprint
     with db_lock:
         # 清空旧索引
         conn.execute("DELETE FROM wiki_vectors")
         for i, (eid, vec) in enumerate(zip(batch_ids, vectors)):
             blob = vec.astype(np.float32).tobytes()
             conn.execute(
-                "INSERT INTO wiki_vectors (entity_id, chunk_seq, embedding, chunk_content, created_at) VALUES (?,?,?,?,?)",
-                (eid, 0, blob, batch_texts[i][:500], now),
+                "INSERT INTO wiki_vectors (entity_id, chunk_seq, embedding, chunk_content, embedding_model, embedding_fingerprint, created_at) VALUES (?,?,?,?,?,?,?)",
+                (eid, 0, blob, batch_texts[i][:500], model_name, fingerprint, now),
             )
         conn.commit()
         indexed = len(batch_ids)

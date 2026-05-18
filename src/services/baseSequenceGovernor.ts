@@ -28,6 +28,17 @@ import { extractFeaturesV2, matchCondition, interpolateTemplate } from './featur
 // 类型定义
 // ============================================
 
+const RUNTIME_DISCOVERED_LIFECYCLES = new Set<DiscoveredRule['lifecycle']>(['observing', 'validated'])
+
+function getRuntimePrompt(rule: DiscoveredRule): string | null {
+  const prompt = rule.distillation?.agentPrompt?.trim()
+  return prompt || null
+}
+
+function isRuntimeDiscoveredRule(rule: DiscoveredRule): boolean {
+  return RUNTIME_DISCOVERED_LIFECYCLES.has(rule.lifecycle) && getRuntimePrompt(rule) !== null
+}
+
 /** 碱基序列条目（与 types.ts 中 BaseSequenceEntry 兼容的最小子集） */
 interface BaseEntry {
   base: BaseType
@@ -386,8 +397,9 @@ export function evaluateWithRules(
   const triggeredRules: string[] = []
   const injections: string[] = []
 
-  // 仅评估未退休的规则
-  const activeRules = rules.filter(r => r.lifecycle !== 'retired')
+  // V9: 仅 observing / validated 且已蒸馏出 agentPrompt 的规则参与运行时干预。
+  // candidate/distilled 只在 UI 展示，不影响 Agent。
+  const activeRules = rules.filter(isRuntimeDiscoveredRule)
 
   // 收集所有命中的规则
   const hits: Array<{ rule: DiscoveredRule }> = []
@@ -402,7 +414,11 @@ export function evaluateWithRules(
     hits.sort((a, b) => Math.abs(b.rule.stats.effectSizePP) - Math.abs(a.rule.stats.effectSizePP))
     const strongest = hits[0]
     triggeredRules.push(strongest.rule.id)
-    injections.push(interpolateTemplate(strongest.rule.action.promptTemplate, features))
+    const template = getRuntimePrompt(strongest.rule)
+    if (template) {
+      const prefix = strongest.rule.lifecycle === 'observing' ? '[实验观察] ' : ''
+      injections.push(prefix + interpolateTemplate(template, features))
+    }
   }
 
   // 将 V2 特征映射回旧版 FeatureSnapshot（兼容 InterventionRecord）
@@ -876,6 +892,13 @@ export function adaptDiscoveredRules(
 // Governor 单例服务
 // ============================================
 
+// V10: 规则层级分类
+// Safety: 阻止不可逆损害的规则
+const SAFETY_RULES = new Set(['consecutive_x_brake', 'step_length_fuse'])
+// Hard Behavior: 关键 artifact 操作后的强验证规则
+const HARD_BEHAVIOR_RULES = new Set(['diversity_collapse'])
+// 其余规则默认为 Soft Behavior: switch_rate_warning, late_planning_warning, missing_verification, explore_dominance
+
 class BaseSequenceGovernor {
   private stats: GovernorStats = createEmptyStats()
   private serverUrl = ''
@@ -884,6 +907,28 @@ class BaseSequenceGovernor {
   private disabledLegacyRules: Set<string> = new Set()
   /** 数据发现的规则（从后端 /api/discovered-rules 加载） */
   private discoveredRules: DiscoveredRule[] = []
+  /** V10: Soft Behavior 开关（Control Track 关闭此开关仅保留 Safety + Hard） */
+  private softBehaviorEnabled: boolean = true
+  /** V10 Task 3: Shadow 记录——当 Soft Behavior 关闭时，记录 Soft 规则的虚拟触发结果 */
+  private _shadowRecord: import('@/types').ControlTrackShadow | null = null
+
+  /** V10: 获取 Soft Behavior 开关状态 */
+  public isSoftBehaviorEnabled(): boolean {
+    return this.softBehaviorEnabled
+  }
+
+  /** V10: 设置 Soft Behavior 开关状态 */
+  public setSoftBehaviorEnabled(enabled: boolean): void {
+    this.softBehaviorEnabled = enabled
+    // 开启时清空 shadow 记录
+    if (enabled) this._shadowRecord = null
+    console.log(`[Governor] Soft Behavior ${enabled ? 'enabled' : 'disabled'}`)
+  }
+
+  /** V10 Task 3: 获取 Shadow 记录（Control 组 shadow 运行 Soft 规则的结果） */
+  public getShadowRecord(): import('@/types').ControlTrackShadow | null {
+    return this._shadowRecord
+  }
 
   /**
    * 初始化：设置后端 URL，加载统计数据 + 规则配置。
@@ -926,8 +971,8 @@ class BaseSequenceGovernor {
     }
 
     const legacyActive = 7 - this.disabledLegacyRules.size
-    const discoveredActive = this.discoveredRules.filter(r => r.lifecycle !== 'retired').length
-    console.log(`[Governor] Rules loaded: ${legacyActive} legacy active, ${discoveredActive} discovered active`)
+    const discoveredActive = this.discoveredRules.filter(isRuntimeDiscoveredRule).length
+    console.log(`[Governor] Rules loaded: ${legacyActive} legacy active, ${discoveredActive} discovered runtime-active`)
   }
 
   /**
@@ -948,8 +993,35 @@ class BaseSequenceGovernor {
    * V8: 可选接受 BaseLedger，利用 LedgerFacts 避免重复干预
    */
   evaluate(entries: BaseEntry[], ledger?: { facts?: { failedApproaches?: string[] } }): GovernorSignal {
-    // 路径 1: Legacy 规则（受用户 UI 开关控制）
-    const legacySignal = evaluateSequence(entries, this.stats.thresholds, this.disabledLegacyRules)
+    // V10: 当 Soft Behavior 关闭时，将 Soft 规则加入禁用集合（仅保留 Safety + Hard）
+    let effectiveDisabledRules = this.disabledLegacyRules
+    const ALL_LEGACY_RULES = ['consecutive_x_brake', 'step_length_fuse', 'switch_rate_warning', 'diversity_collapse', 'late_planning_warning', 'missing_verification', 'explore_dominance']
+    if (!this.softBehaviorEnabled) {
+      effectiveDisabledRules = new Set(this.disabledLegacyRules)
+      // 过滤掉所有非 Safety/Hard 的规则
+      for (const rule of ALL_LEGACY_RULES) {
+        if (!SAFETY_RULES.has(rule) && !HARD_BEHAVIOR_RULES.has(rule)) {
+          effectiveDisabledRules.add(rule)
+        }
+      }
+
+      // V10 Task 3: Shadow 评估 — 用完整规则集评估一次，记录 Soft 规则是否会触发
+      const shadowSignal = evaluateSequence(entries, this.stats.thresholds, this.disabledLegacyRules)
+      // 找出 shadow 中触发了但 effective 中被过滤掉的 Soft 规则
+      const softOnlyRules = shadowSignal.triggeredRules.filter(
+        r => !SAFETY_RULES.has(r) && !HARD_BEHAVIOR_RULES.has(r)
+      )
+      if (softOnlyRules.length > 0) {
+        this._shadowRecord = {
+          wouldHaveSoftIntervened: true,
+          wouldHaveInterventionType: softOnlyRules[0],
+          wouldHaveInterventionStep: entries.length,
+        }
+      }
+    }
+
+    // 路径 1: Legacy 规则（受用户 UI 开关控制 + V10 Soft Behavior 开关）
+    const legacySignal = evaluateSequence(entries, this.stats.thresholds, effectiveDisabledRules)
 
     // 路径 2: 数据发现规则（受 lifecycle 控制，evaluateWithRules 内部过滤 retired）
     let discoveredSignal: GovernorSignal | null = null
@@ -1016,7 +1088,7 @@ class BaseSequenceGovernor {
     const shouldAdapt = updateStats(
       this.stats, baseSequence, success, interventions,
       // 将 discovered rules 的活跃 ID 传入，确保 A/B 统计覆盖动态规则
-      this.discoveredRules.filter(r => r.lifecycle !== 'retired').map(r => r.id),
+      this.discoveredRules.filter(isRuntimeDiscoveredRule).map(r => r.id),
     )
 
     if (shouldAdapt) {
@@ -1313,6 +1385,29 @@ export function deriveStrategies(stats: GovernorStats): string[] {
 
   // 干预效果优先，分桶模式补充
   return [...interventionStrategies, ...bucketStrategies].slice(0, 5)
+}
+
+// ============================================
+// V10 Task 3: Control Track 分组函数
+// ============================================
+
+/** 简单确定性哈希（同一 taskContent 永远分到同一组） */
+function simpleHash(str: string): number {
+  let hash = 0
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i)
+    hash = ((hash << 5) - hash) + char
+    hash |= 0
+  }
+  return Math.abs(hash)
+}
+
+/**
+ * 判断任务是否属于 Control Track（20% 固定分组）。
+ * 基于 task 内容的确定性哈希，不使用随机数。
+ */
+export function isControlTrack(taskContent: string): boolean {
+  return simpleHash(taskContent) % 5 === 0
 }
 
 /** 全局单例 */

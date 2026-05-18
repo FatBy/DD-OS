@@ -16,6 +16,7 @@ import type {
   LedgerMilestone,
   LedgerMilestoneType,
   ExecTraceToolCall,
+  LedgerFacts,
 } from '@/types'
 import { extractFeaturesV2 } from './featureRegistry'
 
@@ -92,6 +93,48 @@ function extractFailureSummary(tool: ExecTraceToolCall): string | null {
 }
 
 // ============================================
+// Phase 1: subObjectives 提取 (P 碱基 reasoning)
+// ============================================
+
+/** 最大子目标数量 */
+const MAX_SUB_OBJECTIVES = 5
+
+/**
+ * 从 P 碱基的 reasoning 摘要中提取子目标。
+ * 只保留最可靠的两种模式（编号列表 + 无序列表），
+ * 丢掉 "先...然后..." 等口语模式（误伤率高于收益）。
+ */
+function extractSubGoalsFromReasoning(reasoning: string): string[] {
+  // 模式 1: 编号列表 + 步骤标记
+  const numbered = /(?:^|\n)\s*(?:\d+[.)、]|第[一二三四五六七八九十]+步[：:]?|步骤\s*\d+[：:])\s*(.+?)(?=\n|$)/g
+  // 模式 2: 无序列表
+  const bulleted = /(?:^|\n)\s*[-*]\s+(.+?)(?=\n|$)/g
+
+  const goals = new Set<string>()
+  for (const pattern of [numbered, bulleted]) {
+    let m
+    while ((m = pattern.exec(reasoning)) !== null) {
+      const g = m[1]?.trim().replace(/[。；，,.;]+$/, '')  // 去尾部标点
+      if (g && g.length >= 6 && g.length <= 80 && !isStopPhrase(g)) {
+        goals.add(normalizeGoal(g))
+      }
+    }
+  }
+  return Array.from(goals).slice(0, MAX_SUB_OBJECTIVES)
+}
+
+/** 过滤无动作信息的短语 */
+function isStopPhrase(s: string): boolean {
+  const stops = ['完成', '结束', '成功', '失败', '确认', '总结', '然后呢', '先别急']
+  return stops.some(stop => s === stop || (s.length < 8 && s.includes(stop)))
+}
+
+/** 归一化: 去前导标点、省略号、多余空格 */
+function normalizeGoal(s: string): string {
+  return s.replace(/^[、：:.\s]+/, '').replace(/\.{2,}|…+$/, '').trim()
+}
+
+// ============================================
 // BaseLedgerService
 // ============================================
 
@@ -147,6 +190,20 @@ class BaseLedgerService {
     ledger.features = extractFeaturesV2(ledger.entries)
     ledger.updatedAt = Date.now()
     this.touchAccess(runId)
+
+    // Phase 1: P 碱基时提取 subObjectives（激活 sub_objective_split 规则）
+    if (entry.base === 'P' && entry.reasoningSummary) {
+      const subGoals = extractSubGoalsFromReasoning(entry.reasoningSummary)
+      for (const goal of subGoals) {
+        if (!ledger.facts.subObjectives.includes(goal)) {
+          ledger.facts.subObjectives.push(goal)
+        }
+      }
+      // 限制总数
+      if (ledger.facts.subObjectives.length > MAX_SUB_OBJECTIVES) {
+        ledger.facts.subObjectives = ledger.facts.subObjectives.slice(-MAX_SUB_OBJECTIVES)
+      }
+    }
   }
 
   /** 记录里程碑事件 */
@@ -281,6 +338,41 @@ class BaseLedgerService {
 
     // 重新计算特征
     parent.features = extractFeaturesV2(parent.entries)
+    parent.updatedAt = Date.now()
+  }
+
+  /**
+   * Phase 2: 仅合并子 Agent 的 facts 到父 Ledger（不合并碱基 entries）
+   *
+   * 子 Agent 的碱基序列作为独立 trace 保存（trace 里有 parentRunId 关联），
+   * 不混入父序列，避免污染马尔可夫统计。
+   *
+   * v5 类型安全: 签名直接接受 LedgerFacts，避免调用方构造 `{ facts: ... } as BaseLedger` hack。
+   */
+  mergeFactsOnly(parentRunId: string, childFacts: LedgerFacts): void {
+    const parent = this.ledgers.get(parentRunId)
+    if (!parent) return
+
+    for (const action of childFacts.completedActions) {
+      parent.facts.completedActions.push(action)
+    }
+    if (parent.facts.completedActions.length > MAX_COMPLETED_ACTIONS) {
+      parent.facts.completedActions = parent.facts.completedActions.slice(-MAX_COMPLETED_ACTIONS)
+    }
+
+    for (const r of childFacts.discoveredResources) {
+      if (!parent.facts.discoveredResources.includes(r)) {
+        parent.facts.discoveredResources.push(r)
+      }
+    }
+
+    for (const f of childFacts.failedApproaches) {
+      parent.facts.failedApproaches.push(f)
+    }
+    if (parent.facts.failedApproaches.length > MAX_FAILED_APPROACHES) {
+      parent.facts.failedApproaches = parent.facts.failedApproaches.slice(-MAX_FAILED_APPROACHES)
+    }
+
     parent.updatedAt = Date.now()
   }
 

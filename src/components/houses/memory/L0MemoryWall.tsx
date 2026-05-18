@@ -124,7 +124,7 @@ export function L0MemoryWall({
   const showAll = expanded || totalCount <= DEFAULT_VISIBLE_COUNT
 
   return (
-    <div className="p-6 overflow-y-auto h-full space-y-8">
+    <div className="p-6 overflow-y-auto h-full space-y-6">
       {groupedMemories.map(({ category, items }) => {
         const config = CATEGORY_CONFIG[category]
         const CategoryIcon = config.icon
@@ -137,10 +137,16 @@ export function L0MemoryWall({
         return (
           <div key={category}>
             {/* 分组标题 */}
-            <div className="flex items-center gap-2 mb-4 pb-2 border-b border-stone-100">
+            <div className={cn(
+              'flex items-center gap-2 mb-4 rounded-xl px-3 py-2',
+              category === 'discovery' && 'bg-gradient-to-r from-amber-50/50 to-transparent',
+              category === 'preference' && 'bg-gradient-to-r from-rose-50/50 to-transparent',
+              category === 'project_context' && 'bg-gradient-to-r from-blue-50/50 to-transparent',
+              category === 'uncategorized' && 'bg-gradient-to-r from-stone-50/50 to-transparent',
+            )}>
               <CategoryIcon className={cn('w-4 h-4', config.color)} />
               <span className="text-sm font-semibold text-stone-700">{config.label}</span>
-              <span className="text-xs font-mono text-stone-400 bg-stone-100 px-1.5 py-0.5 rounded">
+              <span className="text-xs font-mono text-stone-400 bg-white/60 px-1.5 py-0.5 rounded-full">
                 {items.length}
               </span>
             </div>
@@ -161,23 +167,23 @@ export function L0MemoryWall({
                     transition={{ delay: idx * 0.03, duration: 0.25 }}
                     onClick={() => onSelectMemory(isSelected ? null : mem.id)}
                     className={cn(
-                      'group relative p-4 rounded-xl cursor-pointer transition-all duration-200',
-                      'bg-white border',
-                      'hover:shadow-md',
+                      'group relative p-4 rounded-2xl cursor-pointer transition-all duration-300',
+                      'bg-white/60 backdrop-blur-sm border border-white/40 shadow-sm',
+                      'hover:bg-white/80 hover:shadow-lg hover:shadow-emerald-500/5 hover:-translate-y-0.5',
                       isSelected
-                        ? 'border-emerald-300 ring-1 ring-emerald-300/40'
-                        : 'border-stone-200/80 hover:border-stone-300',
+                        ? 'bg-emerald-50/40 border-emerald-400/60 ring-2 ring-emerald-400/20 shadow-emerald-500/10'
+                        : '',
                     )}
                   >
                     {/* 顶部：Dun 标签 + 时间 + 置信度圆点 */}
                     <div className="flex items-center gap-2 mb-3">
                       <div className="flex items-center gap-2 flex-1 min-w-0">
                         {mem.dunLabel && (
-                          <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-50 text-emerald-600 truncate">
+                          <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-50 text-emerald-600 truncate">
                             {mem.dunLabel}
                           </span>
                         )}
-                        <span className="text-[10px] font-mono text-stone-400 shrink-0">
+                        <span className="text-xs font-mono text-stone-400 shrink-0">
                           {relativeTime(mem.createdAt)}
                         </span>
                       </div>
@@ -210,13 +216,13 @@ export function L0MemoryWall({
                         {visibleTags.slice(0, 3).map(tag => (
                           <span
                             key={tag}
-                            className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-stone-100 text-stone-500"
+                            className="px-2 py-0.5 rounded-full text-xs font-mono bg-stone-100 text-stone-500"
                           >
                             #{tag}
                           </span>
                         ))}
                         {visibleTags.length > 3 && (
-                          <span className="text-[10px] text-stone-400">+{visibleTags.length - 3}</span>
+                          <span className="text-xs text-stone-400">+{visibleTags.length - 3}</span>
                         )}
                       </div>
                     )}
