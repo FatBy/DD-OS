@@ -18,6 +18,21 @@ strategy: |
   4. 结合古籍原文进行深度解读
   5. 给出趋吉避凶的实用建议
 
+# v2 obligations: evidence-aware validation 必有证据(契约式,非流程式)
+obligations:
+  - id: explicit-paipan-steps
+    description: 排盘 / 起卦过程必须显式列出步骤(干支 / 神煞 / 卦象推演),不能只给结论
+    evidenceType: reasoning_trace
+    evidenceMatcher: 输出或 trace 含完整排盘步骤,reasoning_marker 中可见推演链路
+  - id: cite-classics
+    description: 解读必须引用经典古籍原文(《周易》/《滴天髓》/《渊海子平》等)
+    evidenceType: semantic
+    evidenceMatcher: 输出含至少 1 处明确的古籍原文引用并标注出处
+  - id: positive-guidance
+    description: 必须给出趋吉避凶的实用建议,不可只论凶吉而无引导
+    evidenceType: semantic
+    evidenceMatcher: 输出含至少 1 条具体可行动的正向建议
+
 skill_dependencies:
   - structured-reasoning
   - deep-research

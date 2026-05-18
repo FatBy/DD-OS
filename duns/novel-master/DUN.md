@@ -18,6 +18,21 @@ strategy: |
   4. 输出章节大纲，用户确认后逐章撰写
   5. 每章结束后回顾伏笔和节奏，保持前后一致性
 
+# v2 obligations: evidence-aware validation 必有证据(契约式,非流程式)
+obligations:
+  - id: world-and-character-bible
+    description: 输出必须含明确的世界观设定与主要人物档案(动机 / 关系 / 性格)
+    evidenceType: semantic
+    evidenceMatcher: 输出含至少 1 段世界观要素描述且至少 1 个主角的多维档案
+  - id: outline-before-prose
+    description: 大纲先于章节正文产出(显式推理步骤),不可直接写正文
+    evidenceType: reasoning_trace
+    evidenceMatcher: trace 中可见 outline / 大纲 / 章节列表类 reasoning_marker 早于正文段落
+  - id: consistency-check
+    description: 涉及多章 / 多场景时必须显式核查伏笔与角色一致性
+    evidenceType: evidence_completeness
+    evidenceMatcher: 输出或 trace 中含至少 1 处对前文伏笔 / 角色设定一致性的显式校验
+
 skill_dependencies:
   - prose
   - diverse-ideation

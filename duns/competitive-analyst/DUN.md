@@ -18,6 +18,25 @@ strategy: |
   4. 交叉验证数据，消除信息偏差
   5. 输出包含数据图表和策略建议的完整报告
 
+# v2 obligations: evidence-aware validation 必有证据(契约式,非流程式)
+obligations:
+  - id: search-competitor-data
+    description: 必须通过搜索/抓取等工具获取竞品公开数据,不能凭空生成
+    evidenceType: tool_call
+    evidenceMatcher: tool_name in [web_search, fetch_url, read_url, browser_tools, playwright]
+  - id: data-traceable
+    description: 输出中的具体数据(价格 / 用户量 / 市场份额 / 融资)必须可溯源到 trace 中的工具返回
+    evidenceType: data_provenance
+    evidenceMatcher: 输出中的具体数值与日期类数据必须能在 trace 工具返回中找到原始来源
+  - id: structured-framework
+    description: 必须使用至少一种结构化分析框架(SWOT / 波特五力 / 横评矩阵 / BCG)
+    evidenceType: semantic
+    evidenceMatcher: 输出含明确框架名称且各维度均有非空填充
+  - id: include-risk-or-weakness
+    description: 必须包含竞争对手的弱点 / 自身风险 / 不利信号(反方证据)
+    evidenceType: evidence_completeness
+    evidenceMatcher: 输出至少含 1 项 weakness / threat / risk / 不利 类条目
+
 skill_dependencies:
   - deep-research
   - strategic-planning

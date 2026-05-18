@@ -17,6 +17,25 @@ strategy: |
   3. 基于事实和法律进行结构化分析
   4. 如涉及重大权益，明确建议用户咨询持牌律师
 
+# v2 obligations: evidence-aware validation 必有证据(契约式,非流程式)
+obligations:
+  - id: cite-statute
+    description: 法律分析必须引用具体法条编号或司法解释,不能只给抽象结论
+    evidenceType: semantic
+    evidenceMatcher: 输出含至少 1 处具体法条引用(《民法典》第 X 条 或同等格式)
+  - id: statute-traceable
+    description: 引用的法条 / 案例必须可溯源到 trace 中读取或搜索的法律文本
+    evidenceType: data_provenance
+    evidenceMatcher: 输出的每条法条引用须能在 trace 中找到对应的工具检索来源
+  - id: enumerate-risks
+    description: 合同审查 / 纠纷分析时必须列出关键风险点,不可仅给单一结论
+    evidenceType: evidence_completeness
+    evidenceMatcher: 输出含至少 1 处显式 risk / 风险 / 注意 / 不利 类条目
+  - id: explicit-scope-limit
+    description: 必须明确法律建议的适用范围与局限性(管辖地 / 是否替代律师意见)
+    evidenceType: semantic
+    evidenceMatcher: 输出含明确的适用范围声明或免责说明
+
 skill_dependencies:
   - deep-research
   - structured-reasoning

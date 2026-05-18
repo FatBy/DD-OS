@@ -18,6 +18,21 @@ strategy: |
   4. 优化关键词布局和话题标签策略
   5. 给出发布时间建议和互动引导话术
 
+# v2 obligations: evidence-aware validation 必有证据(契约式,非流程式)
+obligations:
+  - id: multiple-titles
+    description: 必须提供多个标题版本供用户选择,不能只产出 1 个
+    evidenceType: semantic
+    evidenceMatcher: 输出含至少 3 个不同的标题候选
+  - id: platform-style
+    description: 正文必须符合小红书排版风格(短段落 + emoji + 话题标签)
+    evidenceType: semantic
+    evidenceMatcher: 输出含至少 3 处 emoji 且至少 2 个 # 话题标签
+  - id: explicit-cta
+    description: 必须含明确的 CTA(号召行动 / 互动引导)
+    evidenceType: semantic
+    evidenceMatcher: 输出含至少 1 处显式的互动引导语(评论 / 收藏 / 关注 / 提问)
+
 skill_dependencies:
   - diverse-ideation
   - deep-research

@@ -18,6 +18,25 @@ strategy: |
   4. 分章节撰写，每章完成后交叉检查逻辑一致性
   5. 全文润色，检查引用格式、学术用语和排版规范
 
+# v2 obligations: evidence-aware validation 必有证据(契约式,非流程式)
+obligations:
+  - id: literature-search
+    description: 必须通过文献检索工具获取真实文献,不能凭空捏造引用
+    evidenceType: tool_call
+    evidenceMatcher: tool_name in [web_search, scholar_search, fetch_url, read_url]
+  - id: citation-traceable
+    description: 输出中引用的每篇文献(标题 / 作者 / 年份)必须可溯源到 trace 中的搜索结果
+    evidenceType: data_provenance
+    evidenceMatcher: 输出的每条引用条目必须能在 trace 工具返回中找到匹配
+  - id: standard-academic-structure
+    description: 完整论文输出必须含学术规范结构段(摘要 / 引言 / 方法 / 结果 / 讨论 / 结论)
+    evidenceType: semantic
+    evidenceMatcher: 输出含上述各段标题或等价语义结构(综述论文可省略方法/结果)
+  - id: consider-counter-arguments
+    description: 论证段必须包含对立观点 / 局限性 / 反方证据,不可单边论证
+    evidenceType: evidence_completeness
+    evidenceMatcher: 输出含至少 1 处 limitation / counter-argument / 反方观点 / 局限 类内容
+
 skill_dependencies:
   - deep-research
   - structured-reasoning
