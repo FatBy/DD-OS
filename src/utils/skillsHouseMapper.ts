@@ -275,7 +275,17 @@ export function mapSkillToUIModel(
 ): UISkillModel {
   // 计算缺失依赖
   const missingReqs: string[] = []
-  const requiredEnvs = skill.requires?.env ?? []
+  // 防御:某些来源(社区/旧版 SKILL.md)的 env 可能含非字符串元素,
+  // 直接 toUpperCase / 索引查找会炸,统一过滤为字符串。
+  const rawEnvs = skill.requires?.env ?? []
+  const requiredEnvs: string[] = Array.isArray(rawEnvs)
+    ? rawEnvs.filter((e): e is string => typeof e === 'string' && e.length > 0)
+    : []
+  if (Array.isArray(rawEnvs) && rawEnvs.length !== requiredEnvs.length) {
+    console.warn(
+      `[skillsHouseMapper] ${skill.name}: requires.env 含 ${rawEnvs.length - requiredEnvs.length} 个非字符串项,已过滤`,
+    )
+  }
   const currentEnv = envValues ?? {}
   for (const env of requiredEnvs) {
     if (!currentEnv[env]) {
