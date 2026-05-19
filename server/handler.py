@@ -36,6 +36,9 @@ from server.handlers.dun_tools import DunToolsMixin
 from server.handlers.rule_discovery import RuleDiscoveryMixin
 from server.handlers.wiki import WikiMixin
 from server.handlers.study import StudyMixin
+from server.handlers.episodes import EpisodesMixin
+from server.handlers.shadows import ShadowsMixin
+from server.handlers.patches import PatchesMixin
 
 
 class ClawdDataHandler(
@@ -44,6 +47,7 @@ class ClawdDataHandler(
     DunsMixin, MCPMixin, ClawHubMixin, TracesMixin,
     ProxyMixin, BrowserToolsMixin, DunToolsMixin,
     RuleDiscoveryMixin, WikiMixin, StudyMixin,
+    EpisodesMixin, ShadowsMixin, PatchesMixin,
     BaseHTTPRequestHandler
 ):
     clawd_path = None
@@ -349,6 +353,18 @@ class ClawdDataHandler(
                 self.handle_study_session_get(sid)
             else:
                 self.send_error_json(f'Invalid study session path: {path}', 400)
+        # Episodes API (GET)
+        elif path.startswith('/api/episodes/'):
+            dun_id = path[len('/api/episodes/'):]
+            self.handle_episodes_query(dun_id, query)
+        # Shadows API (GET)
+        elif path.startswith('/api/shadows/') and path.endswith('/pool'):
+            dun_id = path[len('/api/shadows/'):-len('/pool')]
+            self.handle_shadows_pool_get(dun_id)
+        # Patches API (GET)
+        elif path.startswith('/api/patches/'):
+            dun_id = path[len('/api/patches/'):]
+            self.handle_patches_query(dun_id, query)
         elif path.startswith('/data/'):
             # 前端数据读取 API
             key = path[6:]  # strip '/data/'
@@ -579,6 +595,23 @@ class ClawdDataHandler(
                 self.handle_study_section_update(sid, sec_id, data)
             else:
                 self.send_error_json(f'Invalid study section path: {path}', 400)
+        # Episodes API (POST)
+        elif path.startswith('/api/episodes/'):
+            dun_id = path[len('/api/episodes/'):]
+            self.handle_episodes_save(dun_id, data)
+        # Shadows API (POST)
+        elif path.startswith('/api/shadows/') and path.endswith('/create'):
+            dun_id = path[len('/api/shadows/'):-len('/create')]
+            self.handle_shadows_create(dun_id, data)
+        elif path.startswith('/api/shadows/') and path.endswith('/promote'):
+            dun_id = path[len('/api/shadows/'):-len('/promote')]
+            self.handle_shadows_promote(dun_id, data)
+        # Patches API (POST)
+        elif path == '/api/patches/quarantine':
+            self.handle_patches_quarantine(data)
+        elif path.startswith('/api/patches/'):
+            dun_id = path[len('/api/patches/'):]
+            self.handle_patches_save(dun_id, data)
         else:
             self.send_error_json(f'Unknown endpoint: {path}', 404)
     
