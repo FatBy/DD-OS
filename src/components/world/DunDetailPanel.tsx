@@ -66,7 +66,7 @@ import {
 import { getServerUrl } from '@/utils/env'
 import { formatTime } from '@/utils/formatTime'
 import { cn } from '@/utils/cn'
-import type { DunEntity, DunExperience, DunLLMBinding, DunScoring, TaskItem } from '@/types'
+import type { DunEntity, DunExperience, DunLLMBinding, DunScoring, SopEpisode, TaskItem } from '@/types'
 import { SCORE_TIER_COLORS, getScoreTier } from '@/types'
 import { DunKnowledgeTab } from './DunKnowledgeTab'
 
@@ -317,6 +317,39 @@ function DetailShell({
   )
 }
 
+// ── Episode cache (per-dun, 5min TTL) ─────────────────────────────────
+// 激活 dunProfileService 的 validated/statistical 通道：MVP 阶段 Wilson + 三档证据
+// 等级只有在能拿到 SopEpisode[] 时才能产出 validated 级别的能力声明。
+const EPISODE_CACHE_TTL_MS = 5 * 60 * 1000
+const episodeCache = new Map<string, { episodes: SopEpisode[]; loadedAt: number }>()
+
+async function loadDunEpisodes(dunId: string, signal?: AbortSignal): Promise<SopEpisode[]> {
+  const cached = episodeCache.get(dunId)
+  if (cached && Date.now() - cached.loadedAt < EPISODE_CACHE_TTL_MS) {
+    return cached.episodes
+  }
+  try {
+    const res = await fetch(`${getServerUrl()}/api/episodes/${dunId}?months=3`, { signal })
+    if (!res.ok) {
+      console.warn(`[DunDetailPanel] /api/episodes/${dunId} returned ${res.status}`)
+      return []
+    }
+    const data = await res.json()
+    const episodes = Array.isArray(data) ? (data as SopEpisode[]) : []
+    episodeCache.set(dunId, { episodes, loadedAt: Date.now() })
+    return episodes
+  } catch (err) {
+    if ((err as { name?: string })?.name === 'AbortError') return []
+    console.warn('[DunDetailPanel] Failed to load episodes:', err)
+    return []
+  }
+}
+
+export function invalidateDunEpisodeCache(dunId?: string) {
+  if (dunId) episodeCache.delete(dunId)
+  else episodeCache.clear()
+}
+
 export function DunDetailPanel() {
   const dunPanelOpen = useStore((s) => s.dunPanelOpen)
   const selectedDunForPanel = useStore((s) => s.selectedDunForPanel)
@@ -441,15 +474,29 @@ export function DunDetailPanel() {
     return dunManager.getDunArtifacts(dun.id)
   }, [dun?.id, experiences.length, scoring?.lastUpdated])
 
+  const [episodes, setEpisodes] = useState<SopEpisode[]>([])
+
+  useEffect(() => {
+    if (!dun?.id) {
+      setEpisodes([])
+      return
+    }
+    const controller = new AbortController()
+    loadDunEpisodes(dun.id, controller.signal).then(eps => {
+      if (!controller.signal.aborted) setEpisodes(eps)
+    })
+    return () => controller.abort()
+  }, [dun?.id])
+
   const abilitySummary = useMemo<DunAbilitySummary | null>(() => {
     if (!dun) return null
-    return buildAbilitySummary({ dun, scoring, experiences, artifacts })
-  }, [artifacts, dun, experiences, scoring])
+    return buildAbilitySummary({ dun, scoring, experiences, artifacts, episodes })
+  }, [artifacts, dun, episodes, experiences, scoring])
 
   const growthProfile = useMemo(() => {
     if (!dun) return null
-    return buildGrowthProfile({ dun, scoring, experiences, artifacts })
-  }, [artifacts, dun, experiences, scoring])
+    return buildGrowthProfile({ dun, scoring, experiences, artifacts, episodes })
+  }, [artifacts, dun, episodes, experiences, scoring])
 
   const executionState = useMemo(() => {
     if (!dun) return { state: 'idle' as const, source: 'none' as const }
