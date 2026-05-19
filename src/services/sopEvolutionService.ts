@@ -15,6 +15,8 @@
 import { getServerUrl } from '@/utils/env'
 import { simpleChatBackground } from '@/services/llmService'
 import type { SimpleChatMessage } from '@/services/llmService'
+import type { SopPatch } from '@/types'
+import { createShadowSop } from '@/services/shadowRouter'
 
 // ============================================
 // Types
@@ -112,7 +114,6 @@ export interface ToolTrace {
 
 const EVO = {
   EMA_ALPHA: 0.3,
-  MIN_EXECUTIONS_FOR_HINTS: 3,
   MIN_SUCCESSES_FOR_GOLDEN_PATH: 5,
   GOLDEN_PATH_COOLDOWN_MS: 600_000,
   MAX_RECENT_TRACES: 10,
@@ -382,14 +383,6 @@ class SOPEvolutionService {
 
   /** 供 buildDynamicContext() 调用 — 返回所有 SOP 进化 hints */
   async getContextHints(dunId: string): Promise<string | null> {
-    // 快速前置检查：无执行数据的 Dun 不需要任何 SOP hints
-    // loadSOPFitness 有内存缓存，命中缓存时 0ms；未命中时走 readFile（2s 超时）
-    const fitness = await this.loadSOPFitness(dunId)
-    if (fitness.totalExecutions < EVO.MIN_EXECUTIONS_FOR_HINTS) {
-      // 执行次数不足，后续的 hints/rewrite/goldenPath 全都不会产出内容，直接跳过
-      return null
-    }
-
     const [hints, rewriteReq, gp] = await Promise.all([
       this.buildSOPImprovementHints(dunId),
       this.buildSOPRewriteRequest(dunId),
@@ -404,7 +397,6 @@ class SOPEvolutionService {
 
   private async buildSOPImprovementHints(dunId: string): Promise<string | null> {
     const data = await this.loadSOPFitness(dunId)
-    if (data.totalExecutions < EVO.MIN_EXECUTIONS_FOR_HINTS) return null
 
     let shouldInject = false
     if (data.ema < 0.6) shouldInject = true
@@ -599,7 +591,8 @@ class SOPEvolutionService {
   }
 
   /** 检测 LLM 输出中的 <SOP_REWRITE> 标签并写回 DUN.md
-   *  改写前先将旧版 SOP 保存到 sop-history */
+   *  改写前先将旧版 SOP 保存到 sop-history
+   *  @deprecated 由 postExecutionConsolidator Phase 3 + submitPatch 替代 */
   async detectAndApplyRewrite(llmOutput: string, dunId: string): Promise<{
     rewritten: boolean
     newSopContent?: string
@@ -1183,6 +1176,51 @@ Rules:
       JSON.stringify(summary, null, 2),
     )
     console.log(`[SOPEvolution] GoldenPathSummary written from Consolidator for ${dunId} (action: ${sopFeedback.action})`)
+  }
+
+  // ═══ SOP Patch 提交 ═══
+
+  /**
+   * 提交 SOP Patch → 创建 ShadowSOP 进行 A/B 测试
+   * 不再写 pending 队列，而是直接创建 shadow 进入路由
+   */
+  async submitPatch(patch: SopPatch): Promise<{ accepted: boolean; shadowSopId?: string; reason?: string }> {
+    // 基本结构校验
+    if (!patch || !patch.targetSopId || !patch.sectionAnchor || !patch.operation) {
+      return { accepted: false, reason: 'Invalid patch structure' }
+    }
+
+    const dunId = patch.targetSopId
+
+    // 读取当前 main SOP 内容
+    const mainSopText = await this.readFile(this.dunFilePath(dunId, 'DUN.md'))
+    if (!mainSopText) {
+      return { accepted: false, reason: 'Failed to read main SOP for shadow creation' }
+    }
+
+    // 创建 ShadowSOP（通过 shadowRouter）
+    try {
+      const shadowSopId = await createShadowSop(dunId, patch, mainSopText)
+
+      // 更新 patch status
+      patch.status = 'shadow_active'
+      patch.statusHistory.push({
+        status: 'shadow_active',
+        at: new Date().toISOString(),
+        reason: `Shadow SOP created: ${shadowSopId}`,
+        by: 'auto',
+      })
+
+      // 持久化 patch 记录（用于审计追踪）
+      const patchPath = `duns/${dunId}/sop_patches/${patch.patchId}.json`
+      await this.writeFile(patchPath, JSON.stringify(patch, null, 2))
+
+      console.log(`[SOPEvolution] Patch ${patch.patchId} → Shadow SOP ${shadowSopId} created for ${dunId}`)
+      return { accepted: true, shadowSopId, reason: 'Shadow SOP created and active' }
+    } catch (err) {
+      console.error(`[SOPEvolution] Failed to create shadow SOP:`, err)
+      return { accepted: false, reason: `Shadow creation failed: ${err instanceof Error ? err.message : String(err)}` }
+    }
   }
 }
 
