@@ -474,6 +474,24 @@ export function DunDetailPanel() {
       setUseCustomTemp(false)
     }
   }, [dun?.id, dun?.llmBinding, dunPanelOpen])
+
+  // LLM Binding: 当前选中的 Provider 对象
+  const selectedProvider = useMemo(() => {
+    if (!bindingProviderId) return null
+    return providers.find(p => p.id === bindingProviderId) ?? null
+  }, [providers, bindingProviderId])
+
+  // LLM Binding: 绑定状态摘要
+  const bindingStatus = useMemo(() => {
+    if (dun?.llmBinding) {
+      const binding = dun.llmBinding
+      const p = providers.find(pp => pp.id === binding.providerId)
+      const pLabel = p?.label || binding.providerId
+      const mLabel = p?.models.find(m => m.id === binding.modelId)?.name || binding.modelId
+      return { label: `${pLabel} / ${mLabel}`, isCustom: true }
+    }
+    return { label: '使用全局配置', isCustom: false }
+  }, [dun?.llmBinding, providers])
   
   if (!dun) return null
   
@@ -515,23 +533,6 @@ export function DunDetailPanel() {
     }
   }
   
-  // LLM Binding: 当前选中的 Provider 对象
-  const selectedProvider = useMemo(() => {
-    if (!bindingProviderId) return null
-    return providers.find(p => p.id === bindingProviderId) ?? null
-  }, [providers, bindingProviderId])
-
-  // LLM Binding: 绑定状态摘要
-  const bindingStatus = useMemo(() => {
-    if (dun.llmBinding) {
-      const p = providers.find(pp => pp.id === dun.llmBinding!.providerId)
-      const pLabel = p?.label || dun.llmBinding.providerId
-      const mLabel = p?.models.find(m => m.id === dun.llmBinding!.modelId)?.name || dun.llmBinding.modelId
-      return { label: `${pLabel} / ${mLabel}`, isCustom: true }
-    }
-    return { label: '使用全局配置', isCustom: false }
-  }, [dun.llmBinding, providers])
-
   // 保存 LLM Binding
   const handleSaveBinding = async () => {
     if (!dun) return
@@ -1127,90 +1128,6 @@ export function DunDetailPanel() {
                 </div>
               )}
 
-              {/* ==================== SOP Phase 结构化展示 ==================== */}
-              {(() => {
-                const sopPhases = dun.sopContent ? dunManager.parseSOP(dun.sopContent) : []
-                // 从 sopEvolutionData 读取 Phase 状态（如果有）
-                const phaseInsights: Array<{ phaseName: string; status: 'golden' | 'stable' | 'bottleneck'; insight: string }> = 
-                  (dun as any).sopEvolutionData?.goldenPathSummary?.phaseInsights || []
-                const isGoldenDun = (dun as any).sopEvolutionData?.isGolden === true
-
-                if (sopPhases.length > 0) {
-                  return (
-                    <div className="p-5 rounded-xl bg-white/[0.03] border border-white/[0.06]">
-                      <div className="flex items-center gap-2 mb-4">
-                        <BookOpen className="w-4 h-4" style={dynamicText} />
-                        <span className="text-xs font-mono text-stone-400 uppercase tracking-wider">
-                          SOP Phases
-                        </span>
-                        <span className="ml-auto text-xs font-mono text-stone-300">
-                          {dun.version || '1.0.0'}
-                        </span>
-                        {isGoldenDun && (
-                          <span className="text-xs font-mono font-semibold px-2 py-0.5 rounded-full bg-amber-400/15 text-amber-500 border border-amber-400/30">
-                            ✨ Golden
-                          </span>
-                        )}
-                      </div>
-                      <div className="space-y-2">
-                        {sopPhases.map((phase) => {
-                          const insight = phaseInsights.find(pi => 
-                            pi.phaseName === phase.name || 
-                            pi.phaseName === `Phase ${phase.index}`
-                          )
-                          const phaseStatus = insight?.status || 'stable'
-                          const statusConfig = {
-                            golden: { color: '#f59e0b', bg: 'bg-amber-500/10', border: 'border-amber-500/20', icon: '🏆', label: 'Golden' },
-                            stable: { color: '#22c55e', bg: 'bg-emerald-500/5', border: 'border-emerald-500/10', icon: '✅', label: 'Stable' },
-                            bottleneck: { color: '#f97316', bg: 'bg-orange-500/10', border: 'border-orange-500/20', icon: '⚠️', label: 'Bottleneck' },
-                          }
-                          const config = statusConfig[phaseStatus]
-
-                          return (
-                            <div 
-                              key={phase.index}
-                              className={cn(
-                                'p-3 rounded-lg border transition-colors',
-                                config.bg,
-                                config.border
-                              )}
-                            >
-                              <div className="flex items-center gap-2 mb-2">
-                                <span className="text-sm">{config.icon}</span>
-                                <span className="text-xs font-mono font-semibold text-stone-600">
-                                  Phase {phase.index}: {phase.name}
-                                </span>
-                                {insight && (
-                                  <span 
-                                    className="ml-auto text-[10px] font-mono px-1.5 py-0.5 rounded-full border"
-                                    style={{ color: config.color, borderColor: `${config.color}40`, backgroundColor: `${config.color}10` }}
-                                  >
-                                    {config.label}
-                                  </span>
-                                )}
-                              </div>
-                              <div className="space-y-1 pl-6">
-                                {phase.steps.map((step) => (
-                                  <p key={step.index} className="text-xs text-stone-500 leading-relaxed">
-                                    <span className="text-stone-400 font-mono mr-1">{step.index}.</span>
-                                    {step.text}
-                                  </p>
-                                ))}
-                              </div>
-                              {insight?.insight && (
-                                <p className="text-[11px] font-mono text-stone-400 mt-2 pl-6 italic">
-                                  💡 {insight.insight}
-                                </p>
-                              )}
-                            </div>
-                          )
-                        })}
-                      </div>
-                    </div>
-                  )
-                }
-                return null
-              })()}
 
               {/* ==================== SOP 完整内容 ==================== */}
               {dun.sopContent && (

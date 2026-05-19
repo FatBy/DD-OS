@@ -5,6 +5,7 @@
 
 import type { DunEntity, ToolInfo, ExecTrace, DunCapabilityInfo, DunArtifactInfo } from '@/types'
 import { genePoolService } from './genePoolService'
+import { routeSop } from '@/services/shadowRouter'
 
 // ---- DunStats 类型 (性能统计) ----
 
@@ -492,7 +493,8 @@ export class DunManagerService {
    * - 简单问答/闲聊 → false (light 模式)
    * - 任务指令 → true (full 模式)
    */
-  private isTaskIntent(query: string): boolean {
+  // 注: buildContext 已不再使用此方法（[设计 4.1] 解耦），保留供分析/统计等场景调用
+  public isTaskIntent(query: string): boolean {
     const trimmed = query.trim()
 
     // 短句且以问号结尾 → 大概率是问答
@@ -633,13 +635,18 @@ export class DunManagerService {
   // Dun 上下文 & 经验
   // ============================================
 
+  // 截断信号：buildContext 最近一次调用是否发生了 SOP 截断
+  public lastBuildContextMeta: { sopTruncatedAt?: string } | null = null
+
   async buildContext(dunId: string, userQuery: string): Promise<string | null> {
     if (!this.io) return null
+    // 重置截断信号
+    this.lastBuildContextMeta = null
     const duns = this.io.getDuns()
     const dun = duns?.get(dunId)
 
-    // 轻量意图检测：区分简单问答 vs 任务执行
-    const needsFullSOP = this.isTaskIntent(userQuery)
+    // [设计 4.1] 只要会话绑定了 SOP 就注入完整版，不再由 isTaskIntent 门控
+    // isTaskIntent() 保留用于其他场景（分析统计等），此处解耦。
 
     let sopContent = dun?.sopContent
 
@@ -655,21 +662,23 @@ export class DunManagerService {
       }
     }
 
-    // Light 模式：仅返回 Dun 身份 + 目标，不注入 SOP
-    if (!needsFullSOP) {
-      let ctx = `## 🌌 Active Dun: ${dun?.label || dunId}\n\n`
-      if (dun?.projectPath) {
-        ctx += `项目路径: ${dun.projectPath}\n`
+    // Shadow Routing: 尝试通过 shadowRouter 路由 SOP
+    if (sopContent) {
+      try {
+        const routeResult = await routeSop(dunId, userQuery)
+        if (routeResult.sopText) {
+          sopContent = routeResult.sopText
+          if (routeResult.isShadow) {
+            console.log(`[DunManager/buildContext] Shadow SOP routed: shadowId=${routeResult.shadowId}`)
+          }
+        }
+      } catch {
+        // Shadow routing 失败时 fallback 到原始 sopContent
       }
-      if (dun?.objective) {
-        ctx += `核心目标: ${dun.objective}\n`
-      }
-      if (dun?.flavorText) {
-        ctx += `职能: ${dun.flavorText}\n`
-      }
-      ctx += `\n（当前为简单问答模式，如需执行完整任务请明确指示）\n`
-      return ctx
     }
+
+    // [设计 4.1] Light 模式已移除 — 不再根据 isTaskIntent 跳过 SOP 注入。
+    // 只要有 sopContent 就走完整注入路径，无则返回 null。
 
     if (!sopContent) return null
 
@@ -700,9 +709,8 @@ export class DunManagerService {
     }
 
     // ===== v2: Strict SOP Directive =====
-    // SOP 是执行契约,不是参考资料。phase 列表保留用于结构化展示,
-    // 但措辞改为 strict — 强调遵循 metrics / obligations 而非"灵活参考"。
-    const phases = this.parseSOP(sopContent)
+    // [A2] phase 列表不再注入到 prompt 中。parseSOP() 保留供其他消费者使用，
+    // 但 buildContext 不再展示 phase / phase state machine / phase boundary。
 
     ctx += `### 📋 SOP 执行契约 (Strict)\n\n`
     const sopVersion = dun?.version || 'unversioned'
@@ -711,26 +719,17 @@ export class DunManagerService {
     ctx += `1. 在执行流程中体现 SOP 的关键步骤\n`
     ctx += `2. 满足"质量标准 (metrics)"中列出的所有条件\n`
     ctx += `3. 完成"obligations"中标注的所有动作,并在过程中留下证据(工具调用 / 引用 / 产出物)\n\n`
-
-    if (phases.length > 0) {
-      ctx += `**核心执行结构(供参考,具体动作以 obligations 为准):**\n\n`
-      for (const phase of phases) {
-        ctx += `- Phase ${phase.index}: ${phase.name}\n`
-        for (const step of phase.steps) {
-          ctx += `  ${step.index}. ${step.text}\n`
-        }
-      }
-      ctx += `\n`
-    }
     ctx += `---\n\n`
 
     // 注入 SOP 原文(8000 字符为 fail-loud 截断阈值)
     // v2: 超长 SOP 不再静默截断,记录告警以供 observability。真正的
     // "完整 SOP 不丢失"由独立 SOP context 分区(后续 PR)保证。
+    // [C9] 截断信号：超长 SOP 截断后设置 sopTruncatedAt 供调用方感知
     const MAX_SOP_INJECT_CHARS = 8000
     let trimmedSOP: string
     if (sopContent.length > MAX_SOP_INJECT_CHARS) {
       trimmedSOP = sopContent.slice(0, MAX_SOP_INJECT_CHARS) + '\n... [SOP 原文超长已截断]'
+      this.lastBuildContextMeta = { sopTruncatedAt: 'dun_manager_8000' }
       console.warn(
         `[DunManager/buildContext] SOP truncated at dun_manager_8000 layer — dunId=${dunId} originalChars=${sopContent.length} keptChars=${MAX_SOP_INJECT_CHARS}`,
       )

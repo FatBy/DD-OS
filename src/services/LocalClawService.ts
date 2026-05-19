@@ -13,7 +13,7 @@ import { resolveRunLLMConfig, assertRunConfigValid, toPartialLLMConfig, LLMNotCo
 import type { RunExecutionContext } from '@/types'
 import { backgroundQueue } from './backgroundQueue'
 import type { SimpleChatMessage, LLMStreamResult, VisionChatMessage, ClaudeToolEvent } from './llmService'
-import type { ExecutionStatus, OpenClawSkill, MemoryEntry, ToolInfo, ExecTrace, ExecTraceToolCall, ApprovalRequest, ExecutionStep, DunEntity, DunScoring, TaskCheckpoint, GeneMatch, L1MemoryEntry } from '@/types'
+import type { ExecutionStatus, OpenClawSkill, MemoryEntry, ToolInfo, ExecTrace, ExecTraceToolCall, ApprovalRequest, ExecutionStep, DunEntity, DunScoring, TaskCheckpoint, GeneMatch, L1MemoryEntry, SopEpisode } from '@/types'
 import { consolidatePostExecution } from './postExecutionConsolidator'
 import type { ConsolidationPayload } from './postExecutionConsolidator'
 import { parseSoulMd, type ParsedSoul } from '@/utils/soulParser'
@@ -39,6 +39,8 @@ import { baseSequenceGovernor, deriveStrategies, isControlTrack } from './baseSe
 import type { InterventionRecord } from './baseSequenceGovernor'
 import { baseLedgerService } from './baseLedgerService'
 import { transcriptaseEngine } from './transcriptaseEngine'
+import { recordEpisode } from './episodeRecorder'
+import { validateEpisode } from './evidenceValidator'
 import { gracefulAbortLanding } from './abortLanding'
 import { buildPluginContext } from './pluginBridge'
 import { childAgentManager } from './childAgentManager'
@@ -168,7 +170,8 @@ const CONFIG = {
   CACHE_TTL: 60000,            // 文件缓存有效期 (ms)
   // 弹性分区预算上限 (各分区互不侵占，未用满的空间可被后续分区利用)
   BUDGET_CAPS: {
-    identity: 2500,    // Soul + SOP + 规则 + 性能洞察
+    identity: 1500,    // Soul + 规则 + 性能洞察（纯身份/性格，不含 SOP）
+    sop: 5000,         // Dun SOP 独立分区（SOP 原文 + 阶段结构）
     memory: 3500,      // L0 记忆
     traces: 1500,      // exec_trace + 历史成功案例 (合并)
     skills: 2400,      // 技能清单 (名称+描述，不注入全文)
@@ -499,6 +502,9 @@ class LocalClawService {
 
   /** V4: 最近一次 buildDynamicContext 的注入元数据（由 trace 写入时消费） */
   private _lastInjectionMeta: import('@/types').ContextInjectionMeta | null = null
+
+  /** A4/C9: SOP 分区注入截断信号 — 当 dunCtx 超出 sop 预算被截断时为 true */
+  private _sopInjectionTruncated = false
 
 
   // 追踪执行过程中创建的文件 (用于在聊天中显示文件卡片)
@@ -1650,6 +1656,9 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
     const contextParts: string[] = []
     const queryLower = userQuery.toLowerCase()
 
+    // 重置 SOP 截断信号
+    this._sopInjectionTruncated = false
+
     /** 带超时的 fetch — 防止后端慢响应导致 buildDynamicContext 无限挂起 */
     const fetchWithTimeout = (input: RequestInfo, init?: RequestInit, timeoutMs = 8000): Promise<Response> => {
       const controller = new AbortController()
@@ -1661,7 +1670,7 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
     // 弹性分区预算：各分区独立上限，总预算兜底
     const budgetCaps = CONFIG.BUDGET_CAPS as Record<string, number>
     const partitionUsed: Record<string, number> = {
-      identity: 0, memory: 0, traces: 0, skills: 0, misc: 0,
+      identity: 0, sop: 0, memory: 0, traces: 0, skills: 0, misc: 0,
     }
     const totalBudget = CONFIG.CONTEXT_CHAR_BUDGET
     let totalUsed = 0
@@ -1738,12 +1747,16 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
     }
 
     // ===== 分区 1: identity =====
-    // 1.5 激活的 Dun SOP 注入 (Phase 4)
+    // 1.5 激活的 Dun — identity 只保留身份描述/规则/性能洞察，SOP 内容独立到 sop 分区
     const activeDunId = overrideDunId ?? this.getActiveDunId()
     if (activeDunId) {
+      // SOP 内容注入到独立 sop 分区
       const dunCtx = await dunManager.buildContext(activeDunId, queryLower)
       if (dunCtx) {
-        pushContext(dunCtx, 'identity')
+        if (!pushContext(dunCtx, 'sop')) {
+          this._sopInjectionTruncated = true
+          console.warn(`[LocalClaw/DynCtx] SOP partition budget exceeded, sopInjectionTruncated=true`)
+        }
       }
 
       // 1.5.1 SOP Evolution: 初始化 SOPTracker + 注入 hints/rewrite/golden-path
@@ -1774,7 +1787,9 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
         }, 6000)),
       ])
       if (sopHints) {
-        pushContext(sopHints, 'identity')
+        if (!pushContext(sopHints, 'sop')) {
+          this._sopInjectionTruncated = true
+        }
       }
     }
 
@@ -3086,15 +3101,6 @@ ${failedStepsSummary ? `之前失败的步骤:\n${failedStepsSummary}\n请避免
           }
           messages.push(assistantMsg)
 
-          // SOP Evolution: 检测工具调用轮次中 LLM 文本回复里夹带的 <SOP_REWRITE> 标签
-          // （Rewrite 请求注入后，LLM 可能在工具调用轮次中输出改写内容，而非最终回复）
-          if (content && content.includes('<SOP_REWRITE>')) {
-            const sopDunId = dunId || this.getActiveDunId()
-            if (sopDunId) {
-              sopEvolutionService.detectAndApplyRewrite(content, sopDunId)
-                .catch(err => console.warn('[LocalClaw/FC] Mid-loop SOP rewrite detection failed:', err))
-            }
-          }
 
           // 🔗 Skill Binding: 检测 LLM 文本中的 <BIND_SKILL> 标签并执行绑定
           if (content && content.includes('<BIND_SKILL>')) {
@@ -4298,7 +4304,7 @@ ${fcAcceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${d
     const lastTraceTool = traceTools.length > 0 ? traceTools[traceTools.length - 1] : null
 
     let successReason = ''
-    const runSuccess = (() => {
+    let runSuccess = (() => {
       if (wasAborted) { successReason = 'user_aborted'; return false }
       if (completionPath === 'truncation_fail' || completionPath === 'unrecoverable_error') {
         successReason = completionPath; return false
@@ -4331,6 +4337,60 @@ ${fcAcceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${d
       successReason = finalResponse ? 'fallback_has_response' : 'fallback_no_response'
       return !!finalResponse && !wasAborted
     })()
+
+    // V10/Task9: SOP 绑定会话 — 用 evidenceValidator 覆盖判定，validator 失败时保留 fallback
+    if (activeDunId) {
+      const duns = this.storeActions?.duns
+      const activeDun = duns?.get(activeDunId)
+      if (activeDun?.sopContent && finalResponse) {
+        try {
+          const miniEpisode: SopEpisode = {
+            episodeId: `ep-${runId}`,
+            timestamp: new Date(runStartTime).toISOString(),
+            sessionId: runId,
+            goal: userPrompt.slice(0, 500),
+            sopId: activeDunId,
+            sopVersion: activeDun.version || 'unversioned',
+            isShadow: false,
+            promptSnapshot: {
+              fullPromptHash: '',
+              sopSectionInjected: '',
+              sopInjectionTruncated: this._sopInjectionTruncated,
+              truncationLayer: this._sopInjectionTruncated ? 'localclaw_partition' : null,
+              contextSizeChars: 0,
+              directiveMode: 'strict',
+            },
+            trace: traceTools.map(t => ({
+              ts: new Date().toISOString(),
+              kind: 'tool_call' as const,
+              payload: { name: t.name, args: t.args },
+            })),
+            output: finalResponse,
+            durationMs: Date.now() - runStartTime,
+            modelId: '',
+            tokenUsage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+            traceStats: {
+              toolCallCount: totalToolsCalled,
+              distinctTools: [...new Set(traceTools.map(t => t.name))],
+              toolFailures: traceErrorCount,
+              artifactCount: 0,
+              reasoningMarkerCount: 0,
+            },
+            outputFingerprint: {
+              contentHash: '',
+              hallucinationFlags: [],
+              structuralSignature: (finalResponse.length > 500) ? 'long_form' : 'short_form',
+            },
+          }
+          const validationResult = await validateEpisode(miniEpisode, activeDun.sopContent)
+          runSuccess = validationResult.passed
+          successReason = `sop_validator_${validationResult.passed ? 'passed' : 'failed'}_conf=${validationResult.confidence.toFixed(2)}`
+        } catch (err) {
+          // validator 失败 → 保留 fallback 判定
+          console.warn('[LocalClaw/FC] evidenceValidator.validateEpisode failed, using fallback:', err)
+        }
+      }
+    }
     let finalScoreChange = 0
 
     // P2: 保存执行追踪 (含 Observer 元数据)
@@ -4624,6 +4684,38 @@ ${fcAcceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${d
       durationMs: runDurationMs,
       scoreChange: finalScoreChange,
     })
+
+    // Episode Recording: 记录执行 episode 供 SOP 进化系统使用
+    if (activeDunId) {
+      try {
+        const duns = this.storeActions?.duns
+        const activeDunForEp = duns?.get(activeDunId)
+        recordEpisode({
+          dunId: activeDunId,
+          taskId: runId,
+          userQuery: userPrompt,
+          sopAnchorsHit: [],
+          toolCalls: traceTools.map(t => ({
+            name: t.name,
+            args: t.args,
+            result: t.result || '',
+            success: t.status === 'success',
+          })),
+          outcome: finalResponse || '',
+          evidenceRefs: [],
+          timestamp: runStartTime,
+          sopInjectionTruncated: this._sopInjectionTruncated,
+          isShadow: false,
+          sopId: activeDunId,
+          sopVersion: activeDunForEp?.version || 'unversioned',
+          tokenUsage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+          modelId: '',
+          contextSizeChars: 0,
+        }).catch(err => console.warn('[LocalClaw/FC] Episode recording failed:', err))
+      } catch (err) {
+        console.warn('[LocalClaw/FC] Episode recording failed:', err)
+      }
+    }
 
     return finalResponse || '任务执行完成，但未生成总结。'
     } finally {

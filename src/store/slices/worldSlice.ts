@@ -826,6 +826,18 @@ export const createWorldSlice: StateCreator<WorldSlice> = (set, get) => ({
               }
             }
           }
+
+          // ── 磁盘 SOP 权威修正 ──
+          // /duns 磁盘扫描直接读取 DUN.md，是 sopContent 的权威来源。
+          // shadow promote 后磁盘 SOP 已更新，必须覆盖 localStorage/store 中的旧版本。
+          for (const diskDun of diskDuns) {
+            if (!diskDun.sopContent) continue
+            const existing = mergedMap.get(diskDun.id)
+            if (existing && existing.sopContent !== diskDun.sopContent) {
+              mergedMap.set(diskDun.id, { ...existing, sopContent: diskDun.sopContent })
+              console.log(`[World] Disk SOP authority fix: ${diskDun.id} sopContent updated from disk`)
+            }
+          }
         }
       } catch (e) {
         console.warn('[World] Disk-scan dedup failed (non-critical):', e)
