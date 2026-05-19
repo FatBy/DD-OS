@@ -13,7 +13,10 @@
  * Phase 3 (APPLY)   - 原子化分发结果到各服务
  */
 
-import type { ExecTrace, DunScoring, L1MemoryEntry, MemorySearchResult, MemoryWriteAction } from '@/types'
+import type {
+  ExecTrace, DunScoring, L1MemoryEntry, MemorySearchResult, MemoryWriteAction,
+  SopEpisode, SopTraceEvent, SopTraceStats, SopOutputFingerprint, SopTokenUsage, SopPromptSnapshot,
+} from '@/types'
 import type { SimpleChatMessage } from './llmService'
 import { chatBackground } from './llmService'
 import { memoryStore } from './memoryStore'
@@ -21,6 +24,8 @@ import { knowledgeIngestService } from './knowledgeIngestService'
 import { confidenceTracker } from './confidenceTracker'
 import { sopEvolutionService } from './sopEvolutionService'
 import { dunScoringService } from './dunScoringService'
+import { validateEpisode } from './evidenceValidator'
+import { generatePatch } from './sopPatchGenerator'
 import { cleanThinkTags, classifyMemoryContent } from '@/utils/memoryPromotion'
 import { MEMORY_ACTION_INSTRUCTION } from './prompts'
 
@@ -61,6 +66,13 @@ export interface ConsolidationPayload {
    * LLM 看到这些后选择 NEW / SUPERSEDE / CONFLICT / SKIP
    */
   relatedMemories?: MemorySearchResult[]
+  /**
+   * D4: 由 LocalClawService 在调用 episodeRecorder.recordEpisode 后传入。
+   * 当存在时，patch 生成链路会从磁盘 episodes/{yyyymm}/{episodeId}.json
+   * 读取已落盘的统一 episode，避免双重生成不一致字段。
+   * 缺失时降级为 reconstructEpisodeFromPayload（仍以 directiveMode='strict' 构造）。
+   */
+  episodeId?: string
 }
 
 /**
@@ -119,6 +131,23 @@ const DEDUP_QUERY_MAX_CHARS = 200        // finalResponse 截取长度作为 que
 const DEDUP_MAX_RELATED = 5              // 注入 prompt 的相关记忆条数上限
 const DEDUP_SNIPPET_MAX = 200            // 每条相关记忆摘要长度
 const DEDUP_MIN_SCORE = 0.25             // 查重搜索的最低分数阈值
+
+// ============================================
+// SOP Patch 统计显著性门控
+// ============================================
+
+/** Patch 提交门控：同一 (dunId, sectionAnchor) 需累计 ≥3 条同方向 episode 信号后才提交 */
+const PATCH_SUBMIT_THRESHOLD = 3
+
+/**
+ * 内存计数器：key = `${dunId}::${sectionAnchor}`，value = 累计同方向信号数
+ * 达阈后提交并重置。进程重启后计数归零（轻量设计，避免重复提交）。
+ */
+const patchSignalCounters = new Map<string, number>()
+
+function patchCounterKey(dunId: string, sectionAnchor: string): string {
+  return `${dunId}::${sectionAnchor}`
+}
 
 // ============================================
 // System Prompt
@@ -457,6 +486,14 @@ async function applyResult(
       await sopEvolutionService.applyGoldenPathFromConsolidator(dunId, result.sopFeedback)
     }
 
+    // ── SOP Patch 生成链路：validateEpisode → generatePatch → submitPatch ──
+    // 失败不影响现有 detectRewrite/applyGoldenPath 流程
+    try {
+      await runPatchGenerationPipeline(payload)
+    } catch (patchErr) {
+      console.warn('[Consolidator] SOP patch pipeline failed (non-fatal):', patchErr)
+    }
+
     evolutionData = await sopEvolutionService.getEvolutionSnapshot(dunId) as Record<string, unknown>
   } catch (err) {
     console.warn('[Consolidator] SOP Evolution failed:', err)
@@ -629,6 +666,254 @@ async function applyResult(
   console.log(`[Consolidator] Applied: memories=${result.memories?.length ?? 0}, knowledge=${result.knowledge?.length ?? 0}, l0=${result.l0Promotions?.length ?? 0}, sop=${result.sopFeedback?.action ?? 'skip'}, score=${scoreChange > 0 ? '+' : ''}${scoreChange}`)
 
   return scoreChange
+}
+
+// ============================================
+// SOP Patch 生成管线（Phase 3 补充）
+// ============================================
+
+/** 从 traceTools 反推 SopTraceEvent 列表 */
+function buildSopTraceEvents(payload: ConsolidationPayload): SopTraceEvent[] {
+  const events: SopTraceEvent[] = []
+  const ts = new Date(payload.trace.timestamp || Date.now()).toISOString()
+  for (const t of payload.traceTools) {
+    // D4: 字段命名统一 — 只用 toolName，不再同时存 name + toolName
+    events.push({
+      ts,
+      kind: 'tool_call',
+      payload: { toolName: t.name, args: t.args || {} },
+    })
+    events.push({
+      ts,
+      kind: 'tool_result',
+      payload: {
+        toolName: t.name,
+        success: t.status === 'success',
+        resultPreview: (t.result || '').slice(0, 200),
+      },
+    })
+  }
+  return events
+}
+
+function buildSopTraceStats(payload: ConsolidationPayload): SopTraceStats {
+  const distinct = [...new Set(payload.traceTools.map(t => t.name))]
+  return {
+    toolCallCount: payload.traceTools.length,
+    distinctTools: distinct,
+    toolFailures: payload.traceTools.filter(t => t.status === 'error').length,
+    artifactCount: payload.traceTools.filter(t => OUTPUT_TOOLS.includes(t.name) && t.status === 'success').length,
+    reasoningMarkerCount: 0,
+  }
+}
+
+function buildSopOutputFingerprint(output: string): SopOutputFingerprint {
+  let hash = 5381
+  for (let i = 0; i < output.length; i++) {
+    hash = ((hash << 5) + hash) + output.charCodeAt(i)
+    hash = hash & hash
+  }
+  return {
+    contentHash: `djb2-${(hash >>> 0).toString(16)}`,
+    hallucinationFlags: [],
+    structuralSignature: output.length > 500 ? 'long_form' : 'short_form',
+  }
+}
+
+/** 从 payload 重建一个 SopEpisode，供 validateEpisode / generatePatch 使用（fallback 路径） */
+function reconstructEpisodeFromPayload(payload: ConsolidationPayload): SopEpisode | null {
+  if (!payload.finalResponse || payload.finalResponse.trim().length === 0) return null
+
+  const promptSnapshot: SopPromptSnapshot = {
+    fullPromptHash: '',
+    sopSectionInjected: '',
+    sopInjectionTruncated: false,
+    truncationLayer: null,
+    contextSizeChars: 0,
+    // A1 / D4: directiveMode 强制 'strict'，与 episodeRecorder 落盘语义保持一致
+    directiveMode: 'strict',
+  }
+
+  const tokenUsage: SopTokenUsage = {
+    promptTokens: 0,
+    completionTokens: 0,
+    totalTokens: 0,
+  }
+
+  // D4: 优先使用 payload.episodeId（与已落盘 episode 同一身份），
+  // 仅当 LocalClawService 未传入时才生成临时占位 ID。
+  const fallbackEpisodeId = payload.episodeId
+    || `ep-fallback-${payload.trace.id || Date.now()}`
+
+  const episode: SopEpisode = {
+    episodeId: fallbackEpisodeId,
+    timestamp: new Date(payload.trace.timestamp || Date.now()).toISOString(),
+    sessionId: payload.trace.id || `session-${Date.now()}`,
+
+    goal: payload.userPrompt,
+    goalSlice: payload.userPrompt.slice(0, 200),
+
+    sopId: payload.dunId,
+    sopVersion: 'current',
+    isShadow: false,
+
+    promptSnapshot,
+
+    trace: buildSopTraceEvents(payload),
+    output: payload.finalResponse,
+    durationMs: payload.trace.duration || 0,
+    modelId: payload.trace.llmModel || 'unknown',
+
+    tokenUsage,
+    traceStats: buildSopTraceStats(payload),
+    outputFingerprint: buildSopOutputFingerprint(payload.finalResponse),
+  }
+
+  return episode
+}
+
+// ============================================
+// D4: 从磁盘加载已落盘 episode（与 episodeRecorder 写入路径一致）
+// ============================================
+
+/** 与 episodeRecorder.formatYyyymm 保持一致的本地实现（避免跨模块循环依赖） */
+function formatEpisodeYyyymm(ts: number): string {
+  const d = new Date(ts)
+  const y = d.getFullYear()
+  const m = (d.getMonth() + 1).toString().padStart(2, '0')
+  return `${y}${m}`
+}
+
+/**
+ * D4: 通过后端 readFile 工具读取 episodeRecorder 已写入的 episode JSON。
+ * 路径格式：episodes/{yyyymm}/{episodeId}.json
+ * 月份分片优先取 episodeId 中嵌入的 timestamp，缺失时退化到 trace.timestamp。
+ */
+async function loadEpisodeFromDisk(
+  serverUrl: string,
+  episodeId: string,
+  traceTimestamp: number,
+): Promise<SopEpisode | null> {
+  if (!episodeId) return null
+
+  // episodeId 形态：ep-{dunId}-{timestampMs}-{rand4hex}
+  // dunId 可能含 '-'，但末两段始终是 timestamp 与 rand
+  let ts = traceTimestamp || Date.now()
+  const parts = episodeId.split('-')
+  if (parts.length >= 4) {
+    const candidate = Number(parts[parts.length - 2])
+    if (Number.isFinite(candidate) && candidate > 0) ts = candidate
+  }
+  const yyyymm = formatEpisodeYyyymm(ts)
+  const path = `episodes/${yyyymm}/${episodeId}.json`
+
+  try {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 3000)
+    const res = await fetch(`${serverUrl}/api/tools/execute`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'readFile', args: { path } }),
+      signal: controller.signal,
+    })
+    clearTimeout(timer)
+    if (!res.ok) return null
+    const data = await res.json()
+    if (!data || data.status === 'error') return null
+    const raw = typeof data.result === 'string' ? data.result : null
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as SopEpisode
+    // 最低字段校验：缺关键字段视为不可用
+    if (!parsed || typeof parsed !== 'object' || !parsed.episodeId || !parsed.output) {
+      return null
+    }
+    return parsed
+  } catch (err) {
+    console.warn('[Consolidator] loadEpisodeFromDisk failed:', err)
+    return null
+  }
+}
+
+/**
+ * SOP Patch 生成主流程：validateEpisode → generatePatch → 统计显著性门控 → submitPatch
+ * 任何环节失败都不会抑制 detectRewrite / applyGoldenPath 主路。
+ */
+async function runPatchGenerationPipeline(payload: ConsolidationPayload): Promise<void> {
+  if (!payload.sopContent || payload.sopContent.trim().length === 0) return
+
+  // D4: 优先从磁盘读取 episodeRecorder 已写入的 episode，
+  // 与 LocalClawService 共用同一 episodeId，杜绝双重 episode 不一致。
+  let episode: SopEpisode | null = null
+  if (payload.episodeId) {
+    episode = await loadEpisodeFromDisk(
+      payload.serverUrl,
+      payload.episodeId,
+      payload.trace.timestamp || Date.now(),
+    )
+    if (!episode) {
+      console.warn(
+        `[Consolidator] disk episode not found for ${payload.episodeId}, ` +
+        `falling back to in-memory reconstruction (directiveMode='strict')`,
+      )
+    }
+  }
+
+  // Fallback：未传入 episodeId 或读盘失败时，使用本地 minimal episode（directiveMode 仍为 'strict'）
+  if (!episode) {
+    episode = reconstructEpisodeFromPayload(payload)
+  }
+  if (!episode) return
+
+  // 1) validator
+  let validatorOutput
+  try {
+    validatorOutput = await validateEpisode(episode, payload.sopContent)
+  } catch (err) {
+    console.warn('[Consolidator] validateEpisode failed:', err)
+    return
+  }
+  if (!validatorOutput) return
+
+  // 2) generator
+  let patch
+  try {
+    patch = await generatePatch({
+      episode,
+      validatorOutput,
+      currentSop: payload.sopContent,
+    })
+  } catch (err) {
+    console.warn('[Consolidator] generatePatch failed:', err)
+    return
+  }
+  if (!patch) return
+
+  // 3) 统计显著性门控：同 (dunId, sectionAnchor) 信号需 ≥3 条同方向 episode 后才提交
+  const key = patchCounterKey(payload.dunId, patch.sectionAnchor)
+  const prev = patchSignalCounters.get(key) || 0
+  const next = prev + 1
+  patchSignalCounters.set(key, next)
+
+  if (next < PATCH_SUBMIT_THRESHOLD) {
+    console.log(
+      `[Consolidator] SOP patch signal accumulated (${next}/${PATCH_SUBMIT_THRESHOLD}) ` +
+      `for ${key}; not submitting yet`,
+    )
+    return
+  }
+
+  // 4) 达阈提交
+  try {
+    const res = await sopEvolutionService.submitPatch(patch)
+    if (res.accepted) {
+      console.log(`[Consolidator] SOP patch submitted: ${patch.patchId} (section=${patch.sectionAnchor})`)
+      patchSignalCounters.set(key, 0) // 重置计数器
+    } else {
+      console.warn(`[Consolidator] SOP patch rejected: ${res.reason}`)
+    }
+  } catch (err) {
+    console.warn('[Consolidator] submitPatch failed:', err)
+  }
 }
 
 // ============================================
