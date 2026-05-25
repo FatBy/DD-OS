@@ -35,6 +35,7 @@ _*.py
 _*.txt
 *.bak
 *.spec
+!duncrew-server.spec
 ~$*
 
 # Python
@@ -80,7 +81,6 @@ documents/
 # Temp docs/generated files not for repo
 QUEST_SOUL_GENERATION.md
 github-profile-README.md
-duncrew-server.spec
 docs/observer-insight-redesign.md
 
 # Landing/homepage (separate projects)
