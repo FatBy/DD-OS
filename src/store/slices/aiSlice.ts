@@ -1,5 +1,5 @@
 import type { StateCreator } from 'zustand'
-import type { ChatMessage, AISummary, LLMConfig, ViewType, ExecutionStatus, ApprovalRequest, MemoryEntry, JournalEntry, Conversation, ConversationMeta, ConversationType } from '@/types'
+import type { ChatMessage, AISummary, LLMConfig, ViewType, ExecutionStatus, ApprovalRequest, MemoryEntry, JournalEntry, Conversation, ConversationMeta, ConversationType, ProgressTab, ExecutionSummary } from '@/types'
 import { getLLMConfig, saveLLMConfig, isLLMConfigured, streamChat, chat } from '@/services/llmService'
 import { buildSummaryMessages, buildChatMessages, parseExecutionCommands, stripExecutionBlocks, buildJournalPrompt, parseJournalResult } from '@/services/contextBuilder'
 // 动态加载 LocalClawService，避免启动时拉入整个依赖图
@@ -87,6 +87,24 @@ const STORAGE_KEYS = {
 // 会话持久化函数 (后端 + localStorage 双写)
 // ============================================
 
+/**
+ * 持久化前剥离 Tab 的大字段（如 documentContent）。
+ * documentContent 可能很大（整个文档内容），不应进入持久化层；加载后按需重新获取。
+ */
+function cleanTabsForPersistence(tabs?: ProgressTab[]): ProgressTab[] | undefined {
+  if (!tabs) return tabs
+  return tabs.map(t => {
+    const { documentContent: _omit, ...rest } = t
+    return rest as ProgressTab
+  })
+}
+
+/** 在持久化前对 Conversation 做轻量清理（剥离 Tab 的大字段） */
+function sanitizeConvForPersistence(conv: Conversation): Conversation {
+  if (!conv.progressTabs || conv.progressTabs.length === 0) return conv
+  return { ...conv, progressTabs: cleanTabsForPersistence(conv.progressTabs) }
+}
+
 function loadConversationsFromLocalStorage(): Map<string, Conversation> {
   try {
     const data = localStorage.getItem(STORAGE_KEYS.CONVERSATIONS)
@@ -105,7 +123,7 @@ function persistConversations(conversations: Map<string, Conversation>) {
     const sorted = [...conversations.values()]
       .sort((a, b) => b.updatedAt - a.updatedAt)
     const cached = sorted.slice(0, LOCAL_CACHE_COUNT).map(c => ({
-      ...c,
+      ...sanitizeConvForPersistence(c),
       messages: c.messages.slice(-LOCAL_CACHE_MSG_LIMIT),
     }))
     localStorage.setItem(STORAGE_KEYS.CONVERSATIONS, JSON.stringify(cached))
@@ -124,9 +142,9 @@ function persistConversations(conversations: Map<string, Conversation>) {
     }))
     localServerService.setData('conversations_meta', metaList).catch(() => {})
     
-    // 写入每个对话的完整数据
+    // 写入每个对话的完整数据（剥离 Tab 大字段）
     for (const conv of sorted) {
-      localServerService.setData(`conv_${conv.id}`, conv).catch(() => {})
+      localServerService.setData(`conv_${conv.id}`, sanitizeConvForPersistence(conv)).catch(() => {})
     }
   } catch (e) {
     console.warn('[AI] Failed to persist conversations:', e)
@@ -149,15 +167,15 @@ function _executeMetaFlush(allConversations: Map<string, Conversation>) {
   localServerService.setData('conversations_meta', metaList).catch(() => {})
   
   const cached = sorted.slice(0, LOCAL_CACHE_COUNT).map(c => ({
-    ...c,
+    ...sanitizeConvForPersistence(c),
     messages: c.messages.slice(-LOCAL_CACHE_MSG_LIMIT),
   }))
   try { localStorage.setItem(STORAGE_KEYS.CONVERSATIONS, JSON.stringify(cached)) } catch {}
 }
 
 function persistSingleConversation(conv: Conversation, allConversations: Map<string, Conversation>) {
-  // 写入单个对话文件
-  localServerService.setData(`conv_${conv.id}`, conv).catch(() => {})
+  // 写入单个对话文件（剥离 Tab 大字段）
+  localServerService.setData(`conv_${conv.id}`, sanitizeConvForPersistence(conv)).catch(() => {})
   
   // 防抖更新元数据列表 (1s) - 每会话独立 timer
   if (_persistTimers.has(conv.id)) {
@@ -397,6 +415,16 @@ export interface AiSlice {
   _updateMessageInConv: (convId: string, msgId: string, updates: Partial<ChatMessage>) => void
   /** 执行ID -> 会话ID 映射，确保异步回调更新正确的会话 */
   _execConvMap: Map<string, string>
+
+  // Tab 管理 Actions
+  addProgressTab: (conversationId: string, tab: ProgressTab) => void
+  removeProgressTab: (conversationId: string, tabId: string) => void
+  setActiveProgressTab: (conversationId: string, tabId: string | null) => void
+  updateTabStatus: (conversationId: string, tabId: string, status: string) => void
+  updateProgressTabField: (conversationId: string, tabId: string, fields: Partial<ProgressTab>) => void
+  setTabSummary: (conversationId: string, tabId: string, summary: ExecutionSummary) => void
+  getActiveConversationTabs: () => ProgressTab[]
+  getActiveTabId: () => string | null
 }
 
 export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) => ({
@@ -576,9 +604,14 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
         const current = state.conversations.get(id)
         if (!current || current.messagesLoaded) return state
         const newConversations = new Map(state.conversations)
+        // 兼容旧数据：progressTabs 字段缺失时默认为空数组
+        const restoredTabs = fullConv.progressTabs ?? current.progressTabs ?? []
+        const restoredActiveTabId = fullConv.activeTabId ?? current.activeTabId
         newConversations.set(id, { 
           ...current, 
           messages: fullConv.messages || [],
+          progressTabs: restoredTabs,
+          activeTabId: restoredActiveTabId,
           messagesLoaded: true,
         })
         return { conversations: newConversations }
@@ -1144,6 +1177,16 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
           const traceId = clawSvc.lastTraceId || undefined
           // 替换占位消息为最终结果（无 execution 卡片，附带创建的文件列表）
           get()._updateMessageInConv(originConvId, execId, { content: result, execution: undefined, createdFiles, traceId })
+
+          // Task #4: 记忆沉淀 — 将执行摘要写入右侧面板 Tab
+          try {
+            const summary = clawSvc.lastExecutionSummary
+            if (summary) {
+              get().setTabSummary?.(originConvId, execId, summary)
+            }
+          } catch (e) {
+            console.warn('[aiSlice] Failed to set tab summary:', e)
+          }
           set((s) => ({
             chatStreaming: false,
             chatStreamContent: '',
@@ -1401,6 +1444,16 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
               executionStatuses: { ...state.executionStatuses, [execId]: finalStatus },
             }))
             persistExecutionStatuses(get().executionStatuses)
+
+            // Task #4: 记忆沉淀 — 将执行摘要写入右侧面板 Tab
+            try {
+              const summary = (await getLocalClawService()).lastExecutionSummary
+              if (summary) {
+                get().setTabSummary?.(originConvId, execId, summary)
+              }
+            } catch (e) {
+              console.warn('[aiSlice] Failed to set tab summary (cmd path):', e)
+            }
             
           } catch (err: any) {
             // 执行失败
@@ -1730,5 +1783,108 @@ export const createAiSlice: StateCreator<AiSlice, [], [], AiSlice> = (set, get) 
     } finally {
       fullState.setJournalLoading?.(false)
     }
+  },
+
+  // ============================================
+  // Tab 管理 Actions
+  // ============================================
+
+  addProgressTab: (conversationId, tab) => {
+    const conv = get().conversations.get(conversationId)
+    if (!conv) return
+    const tabs = [...(conv.progressTabs || []), tab]
+    // 超过 10 个时回收最早完成的
+    let finalTabs = tabs
+    if (tabs.length > 10) {
+      const doneTab = tabs.find(t => t.status === 'done' || t.status === 'terminated')
+      if (doneTab) {
+        finalTabs = tabs.filter(t => t.taskId !== doneTab.taskId)
+      } else {
+        finalTabs = tabs.slice(1) // 移除最旧的
+      }
+    }
+    const updated = { ...conv, progressTabs: finalTabs, activeTabId: tab.taskId }
+    set((state) => {
+      const newConversations = new Map(state.conversations)
+      newConversations.set(conversationId, updated)
+      return { conversations: newConversations }
+    })
+  },
+
+  removeProgressTab: (conversationId, tabId) => {
+    const conv = get().conversations.get(conversationId)
+    if (!conv) return
+    const tabs = (conv.progressTabs || []).filter(t => t.taskId !== tabId)
+    let activeTabId = conv.activeTabId
+    if (activeTabId === tabId) {
+      activeTabId = tabs.length > 0 ? tabs[tabs.length - 1].taskId : undefined
+    }
+    const updated = { ...conv, progressTabs: tabs, activeTabId }
+    set((state) => {
+      const newConversations = new Map(state.conversations)
+      newConversations.set(conversationId, updated)
+      return { conversations: newConversations }
+    })
+  },
+
+  setActiveProgressTab: (conversationId, tabId) => {
+    const conv = get().conversations.get(conversationId)
+    if (!conv) return
+    const updated = { ...conv, activeTabId: tabId ?? undefined }
+    set((state) => {
+      const newConversations = new Map(state.conversations)
+      newConversations.set(conversationId, updated)
+      return { conversations: newConversations }
+    })
+  },
+
+  updateTabStatus: (conversationId, tabId, status) => {
+    const conv = get().conversations.get(conversationId)
+    if (!conv) return
+    const tabs = (conv.progressTabs || []).map(t => t.taskId === tabId ? { ...t, status } : t)
+    const updated = { ...conv, progressTabs: tabs }
+    set((state) => {
+      const newConversations = new Map(state.conversations)
+      newConversations.set(conversationId, updated)
+      return { conversations: newConversations }
+    })
+  },
+
+  updateProgressTabField: (conversationId, tabId, fields) => {
+    const conv = get().conversations.get(conversationId)
+    if (!conv) return
+    const tabs = (conv.progressTabs || []).map(t => t.taskId === tabId ? { ...t, ...fields } : t)
+    const updated = { ...conv, progressTabs: tabs }
+    set((state) => {
+      const newConversations = new Map(state.conversations)
+      newConversations.set(conversationId, updated)
+      return { conversations: newConversations }
+    })
+  },
+
+  setTabSummary: (conversationId, tabId, summary) => {
+    const conv = get().conversations.get(conversationId)
+    if (!conv) return
+    const tabs = (conv.progressTabs || []).map(t => t.taskId === tabId ? { ...t, summary, status: 'done' } : t)
+    const updated = { ...conv, progressTabs: tabs }
+    set((state) => {
+      const newConversations = new Map(state.conversations)
+      newConversations.set(conversationId, updated)
+      return { conversations: newConversations }
+    })
+  },
+
+  getActiveConversationTabs: () => {
+    const convId = get().activeConversationId
+    if (!convId) return []
+    const conv = get().conversations.get(convId)
+    return conv?.progressTabs || []
+  },
+
+  getActiveTabId: () => {
+    const convId = get().activeConversationId
+    if (!convId) return null
+    const conv = get().conversations.get(convId)
+    return conv?.activeTabId ?? null
   },
 })

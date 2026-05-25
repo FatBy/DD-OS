@@ -15,7 +15,10 @@ import {
 import { useStore } from '@/store'
 import { parseExecutionSummary } from '@/services/executionSummaryParser'
 import type { ExecutionSummary } from '@/services/executionSummaryParser'
-import type { ExecutionStep, TaskItem } from '@/types'
+import type { ExecutionStep, TaskItem, ProgressTab } from '@/types'
+import { ExecutionStepList } from './ExecutionStepList'
+import { ExecutionSummaryCard } from './ExecutionSummaryCard'
+import { MemoryDepositCard } from './MemoryDepositCard'
 
 // ============================================
 // Props
@@ -24,14 +27,18 @@ import type { ExecutionStep, TaskItem } from '@/types'
 interface ExecutionProgressPanelProps {
   taskId?: string
   onClose?: () => void
+  /** 当前 Tab 数据，包含新版结构化 summary（执行完成后）*/
+  tab?: ProgressTab
 }
 
 // ============================================
 // 主组件
 // ============================================
 
-export function ExecutionProgressPanel({ taskId, onClose }: ExecutionProgressPanelProps) {
+export function ExecutionProgressPanel({ taskId, onClose, tab }: ExecutionProgressPanelProps) {
   const activeExecutions = useStore((s) => s.activeExecutions)
+  // 完成态下，步骤列表默认折叠，可手动展开
+  const [stepsCollapsed, setStepsCollapsed] = useState(true)
 
   const task: TaskItem | undefined = useMemo(() => {
     if (taskId) return activeExecutions.find(t => t.id === taskId)
@@ -54,6 +61,15 @@ export function ExecutionProgressPanel({ taskId, onClose }: ExecutionProgressPan
   const isExecuting = task.status === 'executing' || task.status === 'retrying'
   const isDone = task.status === 'done' || task.status === 'terminated' || task.status === 'error'
 
+  // 是否走新版三区块渲染（仅在完成且 tab.summary 存在时）
+  const hasTabSummary = isDone && !!tab?.summary
+  const tabSummary = tab?.summary
+  // 计算耗时：completedAt - openedAt
+  const summaryDuration = useMemo(() => {
+    if (!tabSummary || !tab) return 0
+    return Math.max(0, tabSummary.completedAt - tab.openedAt)
+  }, [tabSummary, tab])
+
   return (
     <div className="flex flex-col h-full bg-gray-50/50 border-l border-gray-100 overflow-hidden">
       {/* Header */}
@@ -61,8 +77,31 @@ export function ExecutionProgressPanel({ taskId, onClose }: ExecutionProgressPan
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto">
+        {/* 执行中：实时步骤流（保留原有路径） */}
         {isExecuting && <StepStream steps={task.executionSteps ?? []} />}
-        {isDone && <StructuredSummary task={task} />}
+
+        {/* 完成 + 新版 summary：三区块渲染 */}
+        {hasTabSummary && tabSummary && (
+          <>
+            {/* 区块1：执行步骤列表（默认折叠，可展开） */}
+            <ExecutionStepList
+              steps={task.executionSteps ?? []}
+              isCollapsed={stepsCollapsed}
+              onToggleCollapse={() => setStepsCollapsed(v => !v)}
+            />
+            {/* 区块2：完成摘要 */}
+            <ExecutionSummaryCard summary={tabSummary} duration={summaryDuration} />
+            {/* 区块3：记忆沉淀 */}
+            {tabSummary.memoryDeposits && tabSummary.memoryDeposits.length > 0 && (
+              <MemoryDepositCard deposits={tabSummary.memoryDeposits} />
+            )}
+          </>
+        )}
+
+        {/* 完成但无新版 summary：走旧版结构化摘要（兼容旧数据） */}
+        {isDone && !hasTabSummary && <StructuredSummary task={task} />}
+
+        {/* 其他兜底状态 */}
         {!isExecuting && !isDone && <StepStream steps={task.executionSteps ?? []} />}
       </div>
     </div>

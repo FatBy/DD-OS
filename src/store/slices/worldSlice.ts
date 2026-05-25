@@ -332,8 +332,8 @@ export const createWorldSlice: StateCreator<WorldSlice> = (set, get) => ({
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(binding ? {
-        provider_id: binding.providerId,
-        model_id: binding.modelId,
+        providerId: binding.providerId,
+        modelId: binding.modelId,
         ...(binding.temperature != null ? { temperature: binding.temperature } : {}),
       } : null),
     })

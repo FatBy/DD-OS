@@ -1,248 +1,238 @@
-"""DunCrew Server - Constants and Feature Flags"""
+"""DunCrew Server - Constants and Feature Flags."""
 from __future__ import annotations
 
 import os
-import sys
 import platform
+import re
+import sys
 from pathlib import Path
 
-# PyYAML (skill-executor/parser.py 已依赖)
+
+def _env_flag(name: str) -> bool:
+    value = os.getenv(name, '')
+    return value.strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+LIGHT_MODE = _env_flag('DUNCREW_LIGHT')
+
+
+def feature_disabled(name: str) -> bool:
+    """Return whether an optional backend feature should stay unloaded."""
+    return LIGHT_MODE or _env_flag(f'DUNCREW_DISABLE_{name}')
+
+
+def _optional_import(flag_name: str, import_fn):
+    if feature_disabled(flag_name):
+        return False
+    try:
+        import_fn()
+        return True
+    except ImportError:
+        return False
+
+
 try:
-    import yaml
+    import yaml  # noqa: F401
     HAS_YAML = True
 except ImportError:
     HAS_YAML = False
 
-# MCP 客户端支持
-try:
-    from skills.mcp_manager import MCPClientManager
-    HAS_MCP = True
-except ImportError:
+
+if feature_disabled('MCP'):
     HAS_MCP = False
     MCPClientManager = None
+else:
+    try:
+        from skills.mcp_manager import MCPClientManager
+        HAS_MCP = True
+    except ImportError:
+        HAS_MCP = False
+        MCPClientManager = None
 
-# 文件解析 (可选依赖，缺失时降级)
-try:
-    import pdfplumber
-    HAS_PDF = True
-except ImportError:
-    HAS_PDF = False
 
-try:
-    from docx import Document as DocxDocument
-    HAS_DOCX = True
-except ImportError:
-    HAS_DOCX = False
+def _import_pdf():
+    import pdfplumber  # noqa: F401
 
-try:
-    from pptx import Presentation as PptxPresentation
-    HAS_PPTX = True
-except ImportError:
-    HAS_PPTX = False
 
-try:
-    import pytesseract
-    from PIL import Image
-    # pytesseract 只是 Python 包装，真正执行 OCR 依赖系统里的 tesseract 二进制。
-    # 发现顺序（优先级由高到低）：
-    #   1. 随包分发的 Tesseract：
-    #      - frozen 生产模式：electron-builder extraResources 放到 resources/tesseract/
-    #        (PyInstaller 产物在 resources/duncrew-server/，所以相对路径为 ../tesseract/)
-    #      - 开发模式：项目根 vendor/tesseract/ （用于本地调试打包产物前的真实行为）
-    #   2. 系统 PATH（shutil.which）
-    #   3. Windows 常见安装目录扫描
-    # 命中任何一条都会同时设置 TESSDATA_PREFIX，确保 Tesseract 能找到语言包。
+def _import_docx():
+    from docx import Document as DocxDocument  # noqa: F401
+
+
+def _import_pptx():
+    from pptx import Presentation as PptxPresentation  # noqa: F401
+
+
+def _import_xlsx():
+    import openpyxl  # noqa: F401
+
+
+def _import_bs4():
+    from bs4 import BeautifulSoup  # noqa: F401
+
+
+def _import_epub():
+    import ebooklib  # noqa: F401
+    from ebooklib import epub as epub_lib  # noqa: F401
+
+
+def _import_rtf():
+    from striprtf.striprtf import rtf_to_text  # noqa: F401
+
+
+def _import_trafilatura():
+    import trafilatura  # noqa: F401
+
+
+def _import_xlrd():
+    import xlrd  # noqa: F401
+
+
+def _import_charset():
+    from charset_normalizer import from_bytes as charset_from_bytes  # noqa: F401
+
+
+def _import_markitdown():
+    from markitdown import MarkItDown as _MarkItDown  # noqa: F401
+
+
+HAS_PDF = _optional_import('PARSERS', _import_pdf)
+HAS_DOCX = _optional_import('PARSERS', _import_docx)
+HAS_PPTX = _optional_import('PARSERS', _import_pptx)
+HAS_XLSX = _optional_import('PARSERS', _import_xlsx)
+HAS_BS4 = _optional_import('PARSERS', _import_bs4)
+HAS_EPUB = _optional_import('PARSERS', _import_epub)
+HAS_RTF = _optional_import('PARSERS', _import_rtf)
+HAS_XLRD = _optional_import('PARSERS', _import_xlrd)
+HAS_CHARSET = _optional_import('PARSERS', _import_charset)
+HAS_MARKITDOWN = _optional_import('PARSERS', _import_markitdown)
+HAS_TRAFILATURA = _optional_import('WEB_EXTRACT', _import_trafilatura)
+
+HAS_COM = False
+if platform.system() == 'Windows' and not feature_disabled('PARSERS'):
+    try:
+        import comtypes.client  # noqa: F401
+        HAS_COM = True
+    except ImportError:
+        pass
+
+
+def _configure_tesseract(pytesseract_module) -> None:
     import shutil as _shutil
 
     def _apply_tesseract_path(tesseract_exe: str) -> None:
-        """配置 pytesseract 使用指定的 tesseract.exe，并绑定对应的 tessdata 目录"""
-        pytesseract.pytesseract.tesseract_cmd = tesseract_exe
+        pytesseract_module.pytesseract.tesseract_cmd = tesseract_exe
         tessdata_dir = os.path.join(os.path.dirname(tesseract_exe), 'tessdata')
         if os.path.isdir(tessdata_dir):
-            # TESSDATA_PREFIX 是 Tesseract 查找 *.traineddata 的官方约定环境变量
             os.environ['TESSDATA_PREFIX'] = tessdata_dir
 
-    _tesseract_exe_name = 'tesseract.exe' if platform.system() == 'Windows' else 'tesseract'
-    _bundled_candidates: list[str] = []
+    exe_name = 'tesseract.exe' if platform.system() == 'Windows' else 'tesseract'
+    candidates: list[str] = []
 
     if getattr(sys, 'frozen', False):
-        # PyInstaller onedir：sys.executable = .../resources/duncrew-server/duncrew-server.exe
-        # 随包分发的 Tesseract 在同级的 ../tesseract/ 目录下
-        _bundled_candidates.append(
-            str(Path(sys.executable).parent.parent / 'tesseract' / _tesseract_exe_name)
-        )
+        candidates.append(str(Path(sys.executable).parent.parent / 'tesseract' / exe_name))
     else:
-        # 开发模式：项目根目录下的 vendor/tesseract/
-        _project_root = Path(__file__).resolve().parent.parent
-        _bundled_candidates.append(
-            str(_project_root / 'vendor' / 'tesseract' / _tesseract_exe_name)
-        )
+        project_root = Path(__file__).resolve().parent.parent
+        candidates.append(str(project_root / 'vendor' / 'tesseract' / exe_name))
 
-    _resolved = False
-    for _cand in _bundled_candidates:
-        if os.path.exists(_cand):
-            _apply_tesseract_path(_cand)
-            _resolved = True
+    resolved = False
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            _apply_tesseract_path(candidate)
+            resolved = True
             break
 
-    # 系统 PATH 兜底（开发机已装了的场景）
-    if not _resolved:
-        _sys_tesseract = _shutil.which('tesseract')
-        if _sys_tesseract:
-            _apply_tesseract_path(_sys_tesseract)
-            _resolved = True
+    if not resolved:
+        system_tesseract = _shutil.which('tesseract')
+        if system_tesseract:
+            _apply_tesseract_path(system_tesseract)
+            resolved = True
 
-    # Windows 常见安装路径兜底
-    if not _resolved and platform.system() == 'Windows':
-        for _candidate in (
+    if not resolved and platform.system() == 'Windows':
+        for candidate in (
             r'C:\Program Files\Tesseract-OCR\tesseract.exe',
             r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe',
             r'D:\Program Files\Tesseract-OCR\tesseract.exe',
             r'D:\Program Files (x86)\Tesseract-OCR\tesseract.exe',
             os.path.expandvars(r'%LOCALAPPDATA%\Programs\Tesseract-OCR\tesseract.exe'),
         ):
-            if _candidate and os.path.exists(_candidate):
-                _apply_tesseract_path(_candidate)
-                _resolved = True
+            if candidate and os.path.exists(candidate):
+                _apply_tesseract_path(candidate)
                 break
 
-    HAS_OCR = True
-except ImportError:
-    HAS_OCR = False
 
-# Excel 解析 (可选依赖)
-try:
-    import openpyxl
-    HAS_XLSX = True
-except ImportError:
-    HAS_XLSX = False
-
-# HTML 解析 (可选依赖)
-try:
-    from bs4 import BeautifulSoup
-    HAS_BS4 = True
-except ImportError:
-    HAS_BS4 = False
-
-# ePub 解析 (可选依赖)
-try:
-    import ebooklib
-    from ebooklib import epub as epub_lib
-    HAS_EPUB = True
-except ImportError:
-    HAS_EPUB = False
-
-# RTF 解析 (可选依赖)
-try:
-    from striprtf.striprtf import rtf_to_text
-    HAS_RTF = True
-except ImportError:
-    HAS_RTF = False
-
-# 网页正文提取 (可选依赖，缺失时降级到正则剥离)
-try:
-    import trafilatura
-    HAS_TRAFILATURA = True
-except ImportError:
-    HAS_TRAFILATURA = False
-
-# Windows COM 自动化 (.doc/.wps/.ppt 解析，仅 Windows)
-HAS_COM = False
-if platform.system() == 'Windows':
+HAS_OCR = False
+if not feature_disabled('OCR') and not feature_disabled('PARSERS'):
     try:
-        import comtypes.client
-        HAS_COM = True
+        import pytesseract
+        from PIL import Image  # noqa: F401
+        _configure_tesseract(pytesseract)
+        HAS_OCR = True
     except ImportError:
-        pass
+        HAS_OCR = False
 
-# 旧版 .xls 解析 (xlrd，openpyxl 不支持 .xls)
-HAS_XLRD = False
-try:
-    import xlrd
-    HAS_XLRD = True
-except ImportError:
-    pass
 
-# 智能编码检测 (charset-normalizer)
-HAS_CHARSET = False
-try:
-    from charset_normalizer import from_bytes as charset_from_bytes
-    HAS_CHARSET = True
-except ImportError:
-    pass
+HAS_SCREEN_CAPTURE = False
+if not feature_disabled('SCREEN_CAPTURE'):
+    try:
+        import mss as mss_lib  # noqa: F401
+        import pygetwindow as gw  # noqa: F401
+        HAS_SCREEN_CAPTURE = True
+    except ImportError:
+        HAS_SCREEN_CAPTURE = False
 
-# MarkItDown - 结构化文件转 Markdown (microsoft/markitdown)
-HAS_MARKITDOWN = False
-try:
-    from markitdown import MarkItDown as _MarkItDown
-    HAS_MARKITDOWN = True
-except ImportError:
-    pass
 
-# 屏幕截图 (可选依赖)
-try:
-    import mss as mss_lib
-    import pygetwindow as gw
-    HAS_SCREEN_CAPTURE = True
-except ImportError:
-    HAS_SCREEN_CAPTURE = False
+HAS_HYBRID_SEARCH = False
+if not feature_disabled('HYBRID_SEARCH') and not feature_disabled('EMBEDDING'):
+    try:
+        from hybrid_search import (  # noqa: F401
+            HybridSearchEngine,
+            EmbeddingEngine,
+            ensure_vector_table,
+            index_memory_vectors,
+        )
+        HAS_HYBRID_SEARCH = True
+    except ImportError:
+        print("[Warning] hybrid_search module not available, falling back to FTS5-only search")
 
-# V4: 混合搜索引擎 (可选依赖)
-try:
-    from hybrid_search import (
-        HybridSearchEngine, EmbeddingEngine,
-        ensure_vector_table, index_memory_vectors,
-    )
-    HAS_HYBRID_SEARCH = True
-except ImportError:
-    HAS_HYBRID_SEARCH = False
-    print("[Warning] hybrid_search module not available, falling back to FTS5-only search")
 
 VERSION = "0.1.0-beta"
 
-# 应用根目录 (兼容 PyInstaller frozen 模式)
 if getattr(sys, 'frozen', False):
     APP_DIR = Path(sys.executable).parent.resolve()
     RESOURCES_DIR = APP_DIR.parent.resolve()
 else:
-    APP_DIR = Path(__file__).parent.parent.resolve()  # 项目根目录 (server/ 的上级)
+    APP_DIR = Path(__file__).parent.parent.resolve()
     RESOURCES_DIR = APP_DIR
 
-import re
 
-# 安全配置 - 使用正则表达式精确匹配，避免误报
 DANGEROUS_COMMAND_PATTERNS = [
-    re.compile(r'\brm\s+-[^\s]*(?:rf|fr)'),          # rm -rf / rm -fr
-    re.compile(r'\bdel\s+/f\s+/s', re.IGNORECASE),   # del /f /s
-    re.compile(r'(?:^|[\s;|&])format\s+[a-zA-Z]:', re.IGNORECASE),  # format C:
-    re.compile(r'\bmkfs\b'),                          # mkfs
-    re.compile(r'\bdd\s+if=/dev'),                    # dd if=/dev
-    re.compile(r'\breg\s+delete\s+hklm', re.IGNORECASE),  # reg delete HKLM
+    re.compile(r'\brm\s+-[^\s]*(?:rf|fr)'),
+    re.compile(r'\bdel\s+/f\s+/s', re.IGNORECASE),
+    re.compile(r'(?:^|[\s;|&])format\s+[a-zA-Z]:', re.IGNORECASE),
+    re.compile(r'\bmkfs\b'),
+    re.compile(r'\bdd\s+if=/dev'),
+    re.compile(r'\breg\s+delete\s+hklm', re.IGNORECASE),
 ]
 
 DANGEROUS_SHELL_PATTERNS = [
-    re.compile(r'\brm\s+-[^\s]*(?:rf|fr)\s+/'),      # rm -rf /
-    re.compile(r'\brm\s+-[^\s]*(?:rf|fr)\s+~'),      # rm -rf ~
-    re.compile(r'\bdel\s+/f\s+/s\s+/q\s+c:', re.IGNORECASE),  # del /f /s /q c:
-    re.compile(r'(?:^|[\s;|&])format\s+c:', re.IGNORECASE),     # format c:
-    re.compile(r'\bmkfs\b'),                          # mkfs
-    re.compile(r'\bdd\s+if=/dev'),                    # dd if=/dev
-    re.compile(r'\breg\s+delete\s+hklm', re.IGNORECASE),       # reg delete hklm
-    re.compile(r'>\s*/dev/sda'),                       # > /dev/sda
-    re.compile(r'\bchmod\s+-[rR]\s+777\s+/'),        # chmod -r 777 /
+    re.compile(r'\brm\s+-[^\s]*(?:rf|fr)\s+/'),
+    re.compile(r'\brm\s+-[^\s]*(?:rf|fr)\s+~'),
+    re.compile(r'\bdel\s+/f\s+/s\s+/q\s+c:', re.IGNORECASE),
+    re.compile(r'(?:^|[\s;|&])format\s+c:', re.IGNORECASE),
+    re.compile(r'\bmkfs\b'),
+    re.compile(r'\bdd\s+if=/dev'),
+    re.compile(r'\breg\s+delete\s+hklm', re.IGNORECASE),
+    re.compile(r'>\s*/dev/sda'),
+    re.compile(r'\bchmod\s+-[rR]\s+777\s+/'),
 ]
 
-# 向后兼容：保留旧集合名称，但标记为 deprecated
-# noinspection PyUnresolvedReferences
 DANGEROUS_COMMANDS = {'rm -rf', 'del /f /s', 'format', 'mkfs', 'dd if=/dev', 'reg delete hklm'}
 
-# 已知安全的 CLI 工具前缀列表
-# 这些命令本身是安全的 LLM/Agent CLI，其参数内容不应触发危险检测
 SAFE_CLI_PREFIXES = ['claude', 'codex', 'npx claude', 'npx codex']
 
-MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
-MAX_OUTPUT_SIZE = 512 * 1024      # 512KB
-PLUGIN_TIMEOUT = 60               # 插件执行超时(秒)
+MAX_FILE_SIZE = 10 * 1024 * 1024
+MAX_OUTPUT_SIZE = 512 * 1024
+PLUGIN_TIMEOUT = 60
 
 MIME_TYPES = {
     '.html': 'text/html',

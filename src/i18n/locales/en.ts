@@ -326,6 +326,7 @@ const en: Record<TranslationKey, string> = {
   'file.open_in_explorer': 'Open in file explorer',
   'file.copied': 'Copied',
   'file.copy_path': 'Copy path',
+  'file.view_in_panel': 'View in panel',
 
   // ---- Dashboard ----
   'dashboard.incubating': 'Waiting for Dun to incubate...',

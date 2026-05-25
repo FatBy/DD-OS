@@ -11,8 +11,16 @@ import math
 from pathlib import Path
 from typing import Any
 
+from server.constants import feature_disabled
+
 # scipy 用于 Fisher 精确检验
-from scipy.stats import fisher_exact
+if feature_disabled('RULE_DISCOVERY'):
+    fisher_exact = None
+else:
+    try:
+        from scipy.stats import fisher_exact
+    except ImportError:
+        fisher_exact = None
 
 
 # ============================================

@@ -808,3 +808,183 @@ class AnalysisMixin:
             self.send_json({'ok': True, 'rule': rule_name, 'enabled': bool(enabled)})
         except Exception as e:
             self.send_error_json(f'Failed to save prefs: {str(e)}', 500)
+
+    # ============================================
+    # X→X 子模式分析
+    # ============================================
+
+    def handle_x_pattern_analysis(self, query_params):
+        """GET /api/x-pattern-analysis?days=90 — X-run 子模式拆分"""
+        days = min(int(query_params.get('days', ['90'])[0]), 180)
+        traces = self._load_all_traces(days=days)
+
+        if not traces:
+            self.send_json({'totalXRuns': 0, 'patterns': {}, 'avgXRunLength': 0})
+            return
+
+        patterns = {
+            'X→P': {'count': 0, 'success': 0, 'total': 0},
+            'X→E': {'count': 0, 'success': 0, 'total': 0},
+            'X→V': {'count': 0, 'success': 0, 'total': 0},
+            'X(4+)': {'count': 0, 'success': 0, 'total': 0},
+            'X(tail)': {'count': 0, 'success': 0, 'total': 0},
+        }
+        total_x_runs = 0
+        total_x_run_length = 0
+
+        for t in traces:
+            seq = t.get('baseSequence', '')
+            if not seq:
+                continue
+            bases = seq.split('-')
+            is_success = t.get('success', False)
+
+            i = 0
+            while i < len(bases):
+                if bases[i] != 'X':
+                    i += 1
+                    continue
+
+                x_start = i
+                while i < len(bases) and bases[i] == 'X':
+                    i += 1
+                x_end = i
+                x_len = x_end - x_start
+
+                total_x_runs += 1
+                total_x_run_length += x_len
+
+                if x_end >= len(bases):
+                    key = 'X(tail)'
+                elif x_len >= 4:
+                    key = 'X(4+)'
+                else:
+                    exit_base = bases[x_end]
+                    if exit_base == 'P':
+                        key = 'X→P'
+                    elif exit_base == 'E':
+                        key = 'X→E'
+                    elif exit_base == 'V':
+                        key = 'X→V'
+                    else:
+                        key = 'X(tail)'
+
+                patterns[key]['count'] += 1
+                patterns[key]['total'] += 1
+                if is_success:
+                    patterns[key]['success'] += 1
+
+        result_patterns = {}
+        for k, v in patterns.items():
+            if v['total'] > 0:
+                result_patterns[k] = {
+                    'count': v['count'],
+                    'successRate': round(v['success'] / v['total'], 3),
+                }
+
+        self.send_json({
+            'totalXRuns': total_x_runs,
+            'patterns': result_patterns,
+            'avgXRunLength': round(total_x_run_length / total_x_runs, 2) if total_x_runs else 0,
+            'traceCount': len(traces),
+        })
+
+    # ============================================
+    # Governor Matched Analysis
+    # ============================================
+
+    def handle_governor_matched_analysis(self, query_params):
+        """GET /api/governor-matched-analysis — 消除 selection bias 的干预效果评估"""
+        days = min(int(query_params.get('days', ['90'])[0]), 180)
+        traces = self._load_all_traces(days=days)
+
+        if not traces:
+            self.send_json({'error': 'no traces', 'naiveComparison': {}, 'matchedComparison': {}})
+            return
+
+        intervened = [t for t in traces if t.get('governorInterventions')]
+        control = [t for t in traces if not t.get('governorInterventions')]
+
+        # Naive comparison
+        i_success = sum(1 for t in intervened if t.get('success'))
+        c_success = sum(1 for t in control if t.get('success'))
+        naive = {
+            'intervened': round(i_success / len(intervened), 3) if intervened else None,
+            'control': round(c_success / len(control), 3) if control else None,
+            'interventionCount': len(intervened),
+            'controlCount': len(control),
+        }
+
+        # Matched comparison: bucket by stepCount + xeRatio
+        def _get_bucket(trace):
+            seq = trace.get('baseSequence', '')
+            if not seq:
+                return None
+            bases = seq.split('-')
+            n = len(bases)
+            x_count = bases.count('X')
+            e_count = bases.count('E')
+            step_bucket = 'S' if n <= 4 else ('M' if n <= 11 else 'L')
+            xe_ratio = x_count / (x_count + e_count) if (x_count + e_count) > 0 else 0
+            xe_bucket = 'lo' if xe_ratio < 0.4 else ('mi' if xe_ratio <= 0.8 else 'hi')
+            return f'{step_bucket}_{xe_bucket}'
+
+        # Build control buckets
+        control_buckets: dict[str, list] = {}
+        for t in control:
+            bk = _get_bucket(t)
+            if bk:
+                control_buckets.setdefault(bk, []).append(t)
+
+        # Match each intervened trace to a control trace from same bucket
+        matched_pairs = []
+        for t in intervened:
+            bk = _get_bucket(t)
+            if not bk or bk not in control_buckets or not control_buckets[bk]:
+                continue
+            match = control_buckets[bk][0]
+            matched_pairs.append((t, match))
+            control_buckets[bk] = control_buckets[bk][1:]
+
+        matched_result = {}
+        if matched_pairs:
+            m_i_success = sum(1 for pair in matched_pairs if pair[0].get('success'))
+            m_c_success = sum(1 for pair in matched_pairs if pair[1].get('success'))
+            matched_result = {
+                'intervened': round(m_i_success / len(matched_pairs), 3),
+                'matchedControl': round(m_c_success / len(matched_pairs), 3),
+                'pairs': len(matched_pairs),
+            }
+
+        # Per-rule breakdown
+        per_rule: dict[str, dict] = {}
+        for t in intervened:
+            for intervention in t.get('governorInterventions', []):
+                rule = intervention.get('rule', 'unknown')
+                if rule not in per_rule:
+                    per_rule[rule] = {'success': 0, 'total': 0}
+                per_rule[rule]['total'] += 1
+                if t.get('success'):
+                    per_rule[rule]['success'] += 1
+
+        per_rule_result = {}
+        for rule, stats in per_rule.items():
+            if stats['total'] >= 3:
+                per_rule_result[rule] = {
+                    'successRate': round(stats['success'] / stats['total'], 3),
+                    'count': stats['total'],
+                }
+
+        # Shadow data check
+        shadow_traces = [t for t in traces if t.get('controlTrackShadow')]
+        shadow_info = {
+            'available': len(shadow_traces) > 0,
+            'count': len(shadow_traces),
+        }
+
+        self.send_json({
+            'naiveComparison': naive,
+            'matchedComparison': matched_result,
+            'perRule': per_rule_result,
+            'shadowData': shadow_info,
+        })

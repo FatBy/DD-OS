@@ -10,7 +10,8 @@ declare global {
       isElectron: true
       getServerUrl: () => string
       platform: string
-      getAppInfo: () => Promise<{ version: string; platform: string; isPackaged: boolean }>
+      lightMode?: boolean
+      getAppInfo: () => Promise<{ version: string; platform: string; isPackaged: boolean; lightMode?: boolean }>
       updater?: {
         onStatus: (cb: (data: Record<string, unknown>) => void) => () => void
         check: () => Promise<void>
@@ -51,6 +52,57 @@ export const isTauriMode: boolean =
 
 /** 任意桌面应用模式 */
 export const isDesktopApp: boolean = isElectronMode || isTauriMode
+
+function isTruthyFlag(value: unknown): boolean {
+  if (typeof value === 'boolean') return value
+  if (typeof value !== 'string') return false
+  return ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase())
+}
+
+function readViteFlag(name: string): unknown {
+  const env = import.meta.env as Record<string, unknown>
+  return env[`VITE_${name}`]
+}
+
+function readLocalFlag(name: string): string | null {
+  if (typeof window === 'undefined') return null
+  try {
+    return localStorage.getItem(`duncrew_${name.toLowerCase()}`)
+  } catch {
+    return null
+  }
+}
+
+/** Lightweight frontend mode. Enable with VITE_DUNCREW_LIGHT=1 or localStorage duncrew_light=1. */
+export function isLightMode(): boolean {
+  return (
+    isTruthyFlag(readViteFlag('DUNCREW_LIGHT')) ||
+    isTruthyFlag(readLocalFlag('light')) ||
+    (typeof window !== 'undefined' && window.electronAPI?.lightMode === true)
+  )
+}
+
+/**
+ * Feature gate for optional frontend work. In light mode, optional features are off
+ * unless explicitly forced with VITE_DUNCREW_ENABLE_<FEATURE>=1 or localStorage.
+ */
+export function isFrontendFeatureDisabled(feature: string): boolean {
+  const normalized = feature.toUpperCase()
+  const localName = normalized.toLowerCase()
+
+  if (
+    isTruthyFlag(readViteFlag(`DUNCREW_ENABLE_${normalized}`)) ||
+    isTruthyFlag(readLocalFlag(`enable_${localName}`))
+  ) {
+    return false
+  }
+
+  return (
+    isLightMode() ||
+    isTruthyFlag(readViteFlag(`DUNCREW_DISABLE_${normalized}`)) ||
+    isTruthyFlag(readLocalFlag(`disable_${localName}`))
+  )
+}
 
 /**
  * 获取后端服务器 URL

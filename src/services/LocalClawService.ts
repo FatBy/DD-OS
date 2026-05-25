@@ -13,11 +13,12 @@ import { resolveRunLLMConfig, assertRunConfigValid, toPartialLLMConfig, LLMNotCo
 import type { RunExecutionContext } from '@/types'
 import { backgroundQueue } from './backgroundQueue'
 import type { SimpleChatMessage, LLMStreamResult, VisionChatMessage, ClaudeToolEvent } from './llmService'
-import type { ExecutionStatus, OpenClawSkill, MemoryEntry, ToolInfo, ExecTrace, ExecTraceToolCall, ApprovalRequest, ExecutionStep, DunEntity, DunScoring, TaskCheckpoint, GeneMatch, L1MemoryEntry, SopEpisode } from '@/types'
+import type { ExecutionStatus, OpenClawSkill, MemoryEntry, ToolInfo, ExecTrace, ExecTraceToolCall, ApprovalRequest, ExecutionStep, DunEntity, DunScoring, TaskCheckpoint, GeneMatch, L1MemoryEntry, SopEpisode, ExecutionSummary, MemoryDeposit } from '@/types'
 import { consolidatePostExecution } from './postExecutionConsolidator'
 import type { ConsolidationPayload } from './postExecutionConsolidator'
 import { parseSoulMd, type ParsedSoul } from '@/utils/soulParser'
-import { classifyBaseType, updateBaseClassifierCtx, createBaseClassifierCtx, buildBaseSequence, buildBaseDistribution, buildBaseSequenceFromEntries, buildBaseDistributionFromEntries, detectPBase } from '@/utils/baseClassifier'
+import { classifyBaseType, updateBaseClassifierCtx, createBaseClassifierCtx, buildBaseSequence, buildBaseDistribution, buildBaseSequenceFromEntries, buildBaseDistributionFromEntries, detectPBase, extractResource } from '@/utils/baseClassifier'
+import { classifyRecovery } from '@/utils/recoverySignal'
 import { classifyTaskComplexity } from '@/utils/taskClassifier'
 import { skillStatsService } from './skillStatsService'
 import { immuneService } from './capsuleService'
@@ -39,7 +40,7 @@ import { baseSequenceGovernor, deriveStrategies, isControlTrack } from './baseSe
 import type { InterventionRecord } from './baseSequenceGovernor'
 import { baseLedgerService } from './baseLedgerService'
 import { transcriptaseEngine } from './transcriptaseEngine'
-import { recordEpisode } from './episodeRecorder'
+import { recordEpisode, detectSopAnchorsHit } from './episodeRecorder'
 import { validateEpisode } from './evidenceValidator'
 import { gracefulAbortLanding } from './abortLanding'
 import { buildPluginContext } from './pluginBridge'
@@ -214,6 +215,18 @@ const CONFIG = {
 // ============================================
 // JIT 上下文注入配置
 // ============================================
+
+// ============================================
+// Causal Link 辅助函数
+// ============================================
+
+function findCausalSources(resource: string, entries: import('@/types').BaseSequenceEntry[]): string[] | undefined {
+  const window = entries.slice(-10)
+  const sources = window
+    .filter(e => e.base === 'E' && e.referencesArtifact === resource)
+    .map(e => `step-${e.order}`)
+  return sources.length > 0 ? sources : undefined
+}
 
 // ============================================
 // P1: 工具结果分级截断
@@ -514,6 +527,10 @@ class LocalClawService {
   // 追踪最近一次执行的 trace ID (用于消息关联)
   private _lastTraceId: string | null = null
   get lastTraceId() { return this._lastTraceId }
+
+  // Task #4: 追踪最近一次执行的摘要 (用于右侧面板 Tab 沉淀展示)
+  private _lastExecutionSummary: ExecutionSummary | null = null
+  get lastExecutionSummary() { return this._lastExecutionSummary }
 
   // 后台任务取消控制器（新任务开始时取消旧的后台 LLM 调用）
   private _backgroundAbortController: AbortController | null = null
@@ -2351,6 +2368,7 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
     // 清空上次执行的文件创建记录
     this._lastCreatedFiles = []
     this._lastTraceId = null
+    this._lastExecutionSummary = null
 
     // 取消上一次的后台任务（flush、ingest 等），避免与新任务竞争 API 额度
     this._backgroundAbortController?.abort()
@@ -2430,6 +2448,7 @@ ${sop ? `\n行为准则:\n${sop.slice(0, 800)}` : ''}
     // 清空上次执行的文件创建记录
     this._lastCreatedFiles = []
     this._lastTraceId = null
+    this._lastExecutionSummary = null
 
     const execId = `resume-${Date.now()}`
     
@@ -2718,8 +2737,14 @@ ${failedStepsSummary ? `之前失败的步骤:\n${failedStepsSummary}\n请避免
       console.warn('[LocalClaw/FC] Bootstrap failed (non-blocking):', e)
     )
 
-    // JIT: 动态构建上下文 (传入 dunId 注入 SOP)
-    const dynamicContext = await this.buildDynamicContext(userPrompt, dunId)
+    // JIT: 动态构建上下文 (传入 dunId 注入 SOP) — 带 15s 超时保护
+    const dynamicContext = await Promise.race([
+      this.buildDynamicContext(userPrompt, dunId),
+      new Promise<string>(resolve => setTimeout(() => {
+        console.warn('[LocalClaw/FC] buildDynamicContext timed out (15s), proceeding with minimal context')
+        resolve('')
+      }, 15000)),
+    ])
 
     // 插件 Hook: before_prompt_build — 允许插件注入额外上下文
     const pluginCtx = await buildPluginContext({ userPrompt, dunId: dunId || '', runId })
@@ -3320,14 +3345,13 @@ ${failedStepsSummary ? `之前失败的步骤:\n${failedStepsSummary}\n请避免
             }
 
             // V2: 写入碱基序列独立数组
+            const resource = extractResource(toolName, toolArgs)
             const baseEntry: import('@/types').BaseSequenceEntry = {
               base: baseType,
               order: baseSequenceOrder++,
               toolOrder,
-              // V10 Task 1: 从工具参数提取文件路径作为 referencesArtifact
-              referencesArtifact: (['writeFile', 'readFile', 'appendFile'].includes(toolName) && toolArgs.filePath)
-                ? String(toolArgs.filePath)
-                : undefined,
+              referencesArtifact: resource || undefined,
+              causedBy: resource ? findCausalSources(resource, baseSequenceEntries) : undefined,
             }
             baseSequenceEntries.push(baseEntry)
             // V8: 同步写入 Ledger
@@ -3335,7 +3359,25 @@ ${failedStepsSummary ? `之前失败的步骤:\n${failedStepsSummary}\n请避免
 
             // V3: Governor Layer 1 — 碱基序列实时评估
             {
-              const govSignal = baseSequenceGovernor.evaluate(baseSequenceEntries, baseLedgerService.getLedger(runId))
+              // V5: 回填上一次干预的 nextBaseAfterInjection
+              const lastIntervention = governorInterventions[governorInterventions.length - 1]
+              if (lastIntervention && !lastIntervention.nextBaseAfterInjection) {
+                lastIntervention.nextBaseAfterInjection = baseType
+              }
+
+              // V5/C: 计算 recovery hint — 如果上一步失败且当前步表现为适应性修复，抑制干预
+              let recoveryHint: { isAdaptive: boolean } | undefined
+              if (traceTools.length >= 2) {
+                const prevTool = traceTools[traceTools.length - 2]
+                if (prevTool.status === 'error') {
+                  const currentTool = traceTools[traceTools.length - 1]
+                  const rType = classifyRecovery(prevTool, [currentTool])
+                  const ADAPTIVE_TYPES = new Set(['tool_switch', 'path_switch', 'param_variation', 'read_error_first'])
+                  recoveryHint = { isAdaptive: ADAPTIVE_TYPES.has(rType) }
+                }
+              }
+
+              const govSignal = baseSequenceGovernor.evaluate(baseSequenceEntries, baseLedgerService.getLedger(runId), recoveryHint)
               if (govSignal.triggered) {
                 for (const ruleName of govSignal.triggeredRules) {
                   governorInterventions.push({
@@ -3343,6 +3385,7 @@ ${failedStepsSummary ? `之前失败的步骤:\n${failedStepsSummary}\n请避免
                     stepIndex: baseSequenceEntries.length,
                     features: govSignal._features,
                     counterfactualSuccessRate: govSignal.estimatedSuccessRate,
+                    suggestedDirection: govSignal.suggestedDirection,
                   })
                 }
                 governorPromptInjection = govSignal.promptInjection
@@ -4201,8 +4244,14 @@ ${fcAcceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${d
             messageCountBefore: msgCountBefore,
           })
 
-          // 4. 重建 system prompt（刷新动态上下文）
-          const freshDynamicContext = await this.buildDynamicContext(userPrompt, dunId)
+          // 4. 重建 system prompt（刷新动态上下文）— 带 15s 超时保护
+          const freshDynamicContext = await Promise.race([
+            this.buildDynamicContext(userPrompt, dunId),
+            new Promise<string>(resolve => setTimeout(() => {
+              console.warn('[LocalClaw/FC] buildDynamicContext timed out (15s) during escalation, proceeding with minimal context')
+              resolve('')
+            }, 15000)),
+          ])
           systemPrompt = getSystemPromptFC(locale)
             .replace('{soul_summary}', soulSummary || (locale === 'en' ? 'A friendly, professional AI assistant' : '一个友好、专业的 AI 助手'))
             .replace('{context}', freshDynamicContext)
@@ -4338,6 +4387,23 @@ ${fcAcceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${d
       return !!finalResponse && !wasAborted
     })()
 
+    // 从 traceTools 累加 token 消耗
+    let totalPromptTokens = 0
+    let totalCompletionTokens = 0
+    for (const t of traceTools) {
+      if (t.tokenCost) {
+        totalPromptTokens += t.tokenCost.prompt || 0
+        totalCompletionTokens += t.tokenCost.completion || 0
+      }
+    }
+    const aggregatedTokenUsage = {
+      promptTokens: totalPromptTokens,
+      completionTokens: totalCompletionTokens,
+      totalTokens: totalPromptTokens + totalCompletionTokens,
+    }
+    const resolvedModelId = this._currentModel || 'unknown'
+    const resolvedContextSizeChars = this._lastInjectionMeta?.totalChars ?? 0
+
     // V10/Task9: SOP 绑定会话 — 用 evidenceValidator 覆盖判定，validator 失败时保留 fallback
     if (activeDunId) {
       const duns = this.storeActions?.duns
@@ -4357,7 +4423,7 @@ ${fcAcceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${d
               sopSectionInjected: '',
               sopInjectionTruncated: this._sopInjectionTruncated,
               truncationLayer: this._sopInjectionTruncated ? 'localclaw_partition' : null,
-              contextSizeChars: 0,
+              contextSizeChars: resolvedContextSizeChars,
               directiveMode: 'strict',
             },
             trace: traceTools.map(t => ({
@@ -4367,8 +4433,8 @@ ${fcAcceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${d
             })),
             output: finalResponse,
             durationMs: Date.now() - runStartTime,
-            modelId: '',
-            tokenUsage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+            modelId: resolvedModelId,
+            tokenUsage: aggregatedTokenUsage,
             traceStats: {
               toolCallCount: totalToolsCalled,
               distinctTools: [...new Set(traceTools.map(t => t.name))],
@@ -4690,11 +4756,16 @@ ${fcAcceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${d
       try {
         const duns = this.storeActions?.duns
         const activeDunForEp = duns?.get(activeDunId)
+        const sopContentForEp = activeDunForEp?.sopContent || ''
+        const toolNamesForEp = traceTools.map(t => t.name).filter(Boolean)
+        const anchorsHit = detectSopAnchorsHit(
+          sopContentForEp, userPrompt, toolNamesForEp, finalResponse || '',
+        )
         recordEpisode({
           dunId: activeDunId,
           taskId: runId,
           userQuery: userPrompt,
-          sopAnchorsHit: [],
+          sopAnchorsHit: anchorsHit,
           toolCalls: traceTools.map(t => ({
             name: t.name,
             args: t.args,
@@ -4708,13 +4779,46 @@ ${fcAcceptanceCriteria ? '3. 逐条检查验收标准是否已满足\n' : ''}${d
           isShadow: false,
           sopId: activeDunId,
           sopVersion: activeDunForEp?.version || 'unversioned',
-          tokenUsage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-          modelId: '',
-          contextSizeChars: 0,
+          tokenUsage: aggregatedTokenUsage,
+          modelId: resolvedModelId,
+          contextSizeChars: resolvedContextSizeChars,
         }).catch(err => console.warn('[LocalClaw/FC] Episode recording failed:', err))
       } catch (err) {
         console.warn('[LocalClaw/FC] Episode recording failed:', err)
       }
+    }
+
+    // Phase 6: 构建执行摘要 (Task #4: 记忆沉淀数据采集)
+    // 便于右侧面板 Tab 在执行完成后展示“这次跳动产生了什么”
+    try {
+      const finalResultStr = finalResponse || '任务执行完成，但未生成总结。'
+      const traceTagsForDeposit: string[] = traceTools.length > 0
+        ? Array.from(new Set(traceTools.map(t => t.name).filter(Boolean))).slice(0, 8)
+        : []
+      const memoryDeposits: MemoryDeposit[] = [{
+        type: 'exec_trace' as const,
+        content: `${userPrompt.slice(0, 100)} → ${runSuccess ? '成功' : '失败'}`,
+        tags: traceTagsForDeposit,
+      }]
+
+      const executionSummary: ExecutionSummary = {
+        completedAt: Date.now(),
+        success: runSuccess,
+        toolsUsed: traceTools.map(t => ({
+          name: t.name,
+          status: (t.status === 'success' ? 'success' : 'error') as 'success' | 'error',
+        })),
+        outputPreview: finalResultStr.slice(0, 200),
+        filesCreated: (this._lastCreatedFiles || []).map(f => ({
+          path: f.filePath || '',
+          name: f.fileName || '',
+        })),
+        memoryDeposits,
+      }
+
+      this._lastExecutionSummary = executionSummary
+    } catch (e) {
+      console.warn('[LocalClaw/FC] Failed to build execution summary:', e)
     }
 
     return finalResponse || '任务执行完成，但未生成总结。'

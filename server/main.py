@@ -18,7 +18,36 @@ def main():
     from http.server import ThreadingHTTPServer
     from datetime import datetime
 
-    from server.constants import APP_DIR, RESOURCES_DIR, VERSION
+    parser = argparse.ArgumentParser(description='DunCrew Native Server')
+    parser.add_argument('--port', type=int, default=3001, help='Server port (default: 3001)')
+    # 支持环境变量覆盖默认路径
+    default_path = os.getenv('DUNCREW_DATA_PATH', os.getenv('DDOS_DATA_PATH',
+        str(Path.home() / 'DunCrew-Data')))
+    parser.add_argument('--path', type=str, default=default_path, help='Data directory path (default: ~/DunCrew-Data)')
+    parser.add_argument('--host', type=str, default='0.0.0.0', help='Server host (default: 0.0.0.0)')
+    parser.add_argument('--light', action='store_true', help='Enable lightweight startup mode')
+    parser.add_argument('--disable-embedding', action='store_true', help='Skip local embedding preload and vector search')
+    parser.add_argument('--disable-mcp', action='store_true', help='Skip MCP server scanning/connection')
+    parser.add_argument('--disable-skill-scan', action='store_true', help='Skip SKILL/plugin discovery')
+    parser.add_argument('--disable-background-jobs', action='store_true', help='Skip startup reindex and trace sync jobs')
+    parser.add_argument('--core-tools-only', action='store_true', help='Register only core built-in tools')
+    args = parser.parse_args()
+
+    if args.light:
+        os.environ['DUNCREW_LIGHT'] = '1'
+    if args.disable_embedding:
+        os.environ['DUNCREW_DISABLE_EMBEDDING'] = '1'
+        os.environ['DUNCREW_DISABLE_HYBRID_SEARCH'] = '1'
+    if args.disable_mcp:
+        os.environ['DUNCREW_DISABLE_MCP'] = '1'
+    if args.disable_skill_scan:
+        os.environ['DUNCREW_DISABLE_SKILL_SCAN'] = '1'
+    if args.disable_background_jobs:
+        os.environ['DUNCREW_DISABLE_BACKGROUND_JOBS'] = '1'
+    if args.core_tools_only:
+        os.environ['DUNCREW_CORE_TOOLS_ONLY'] = '1'
+
+    from server.constants import APP_DIR, RESOURCES_DIR, VERSION, LIGHT_MODE, feature_disabled
     from server.state import _browser_manager, _embedding_manager
     from server.db import init_sqlite_db
     from server.registry import ToolRegistry
@@ -29,15 +58,6 @@ def main():
     )
     from server.utils import parse_dun_frontmatter, update_dun_frontmatter
     import server.state as _state
-
-    parser = argparse.ArgumentParser(description='DunCrew Native Server')
-    parser.add_argument('--port', type=int, default=3001, help='Server port (default: 3001)')
-    # 支持环境变量覆盖默认路径
-    default_path = os.getenv('DUNCREW_DATA_PATH', os.getenv('DDOS_DATA_PATH',
-        str(Path.home() / 'DunCrew-Data')))
-    parser.add_argument('--path', type=str, default=default_path, help='Data directory path (default: ~/DunCrew-Data)')
-    parser.add_argument('--host', type=str, default='0.0.0.0', help='Server host (default: 0.0.0.0)')
-    args = parser.parse_args()
     
     clawd_path = Path(args.path).expanduser().resolve()
     
@@ -119,24 +139,40 @@ You maintain state across conversations through the memory system. Use memories 
     # 🔌 初始化工具注册表
     registry = ToolRegistry(clawd_path)
     # 注册内置工具
-    builtin_names = [
-        'readFile', 'writeFile', 'appendFile', 'listDir', 'runCmd',
-        'weather', 'webSearch', 'webFetch', 'saveMemory', 'searchMemory',
-        'dunBindSkill', 'dunUnbindSkill', 'openInExplorer', 'parseFile',
-        'generateSkill',
-        'screenCapture', 'ocrExtract',
-        'searchWiki', 'convertToMarkdown',
-    ]
+    core_tools_only = LIGHT_MODE or os.getenv('DUNCREW_CORE_TOOLS_ONLY', '').lower() in {'1', 'true', 'yes', 'on'}
+    if core_tools_only:
+        builtin_names = [
+            'readFile', 'writeFile', 'appendFile', 'listDir', 'runCmd',
+            'webSearch', 'webFetch', 'saveMemory', 'searchMemory',
+        ]
+    else:
+        builtin_names = [
+            'readFile', 'writeFile', 'appendFile', 'listDir', 'runCmd',
+            'weather', 'webSearch', 'webFetch', 'saveMemory', 'searchMemory',
+            'dunBindSkill', 'dunUnbindSkill', 'openInExplorer', 'parseFile',
+            'generateSkill',
+            'screenCapture', 'ocrExtract',
+            'searchWiki', 'convertToMarkdown',
+        ]
     for name in builtin_names:
         registry.register_builtin(name, name)  # handler resolved at dispatch time
     # 扫描插件工具
-    registry.scan_plugins()
+    if not feature_disabled('SKILL_SCAN'):
+        registry.scan_plugins()
+    else:
+        print('[Startup] Skill/plugin scan skipped (lightweight mode)')
     # 扫描 MCP 服务器
-    registry.scan_mcp_servers()
+    if not feature_disabled('MCP'):
+        registry.scan_mcp_servers()
+    else:
+        print('[Startup] MCP scan skipped (lightweight mode)')
 
     # 清理过期执行追踪 (P2: 保留最近6个月)
-    cleanup_old_traces(clawd_path)
-    cleanup_temp_uploads(clawd_path)
+    if not feature_disabled('BACKGROUND_JOBS'):
+        cleanup_old_traces(clawd_path)
+        cleanup_temp_uploads(clawd_path)
+    else:
+        print('[Startup] Trace/temp cleanup skipped (lightweight mode)')
 
     # V2: 初始化 SQLite 数据库（含 ddos_v2.db → duncrew.db 迁移）
     new_db = clawd_path / 'duncrew.db'
@@ -189,7 +225,7 @@ You maintain state across conversations through the memory system. Use memories 
 +==================================================================+
 |              DunCrew Native Server v{VERSION}                         |
 +==================================================================+
-|  Mode:    NATIVE (standalone, no OpenClaw needed)                |
+|  Mode:    {'LIGHT' if LIGHT_MODE else 'NATIVE'} (standalone, no OpenClaw needed)                |
 |  Server:  http://{args.host}:{args.port}                                    |
 |  Data:    {str(clawd_path)[:50]:<50} |
 +------------------------------------------------------------------+
@@ -201,7 +237,10 @@ You maintain state across conversations through the memory system. Use memories 
     print(f"Press Ctrl+C to stop\n")
     
     # 后台预热 Embedding 模型，避免首次请求时冷启动
-    _embedding_manager.sync_with_llm_config(embedding_llm_config, reason='startup')
+    if not feature_disabled('EMBEDDING'):
+        _embedding_manager.sync_with_llm_config(embedding_llm_config, reason='startup')
+    else:
+        print('[Embedding] Startup preheat skipped (lightweight mode)', file=sys.stderr)
 
     # 后台自动建 wiki 向量索引（embedding 就绪后执行）
     def _auto_reindex_wiki():
@@ -236,15 +275,21 @@ You maintain state across conversations through the memory system. Use memories 
         except Exception as e:
             print(f"[Wiki] Auto-reindex failed: {e}", file=sys.stderr)
 
-    threading.Thread(target=_auto_reindex_wiki, name='wiki-reindex', daemon=True).start()
+    if not feature_disabled('BACKGROUND_JOBS'):
+        threading.Thread(target=_auto_reindex_wiki, name='wiki-reindex', daemon=True).start()
+    else:
+        print('[Startup] Wiki reindex skipped (lightweight mode)', file=sys.stderr)
     
     # 后台同步 JSONL exec_traces → SQLite memory 表
-    threading.Thread(
-        target=sync_traces_to_sqlite,
-        args=(_state._db_conn, clawd_path),
-        name='trace-sync',
-        daemon=True,
-    ).start()
+    if not feature_disabled('BACKGROUND_JOBS'):
+        threading.Thread(
+            target=sync_traces_to_sqlite,
+            args=(_state._db_conn, clawd_path),
+            name='trace-sync',
+            daemon=True,
+        ).start()
+    else:
+        print('[Startup] Trace sync skipped (lightweight mode)', file=sys.stderr)
     
     try:
         server.serve_forever()

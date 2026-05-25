@@ -324,6 +324,7 @@ const zh = {
   'file.open_in_explorer': '在文件系统中打开',
   'file.copied': '已复制',
   'file.copy_path': '复制路径',
+  'file.view_in_panel': '在面板中查看',
 
   // ---- Dashboard ----
   'dashboard.incubating': '等待 Dun 孵化中...',

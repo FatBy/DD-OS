@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   isElectron: true as const,
   getServerUrl: () => 'http://127.0.0.1:3001',
   platform: process.platform,
+  lightMode: ['1', 'true', 'yes', 'on'].includes((process.env.DUNCREW_LIGHT || '').trim().toLowerCase()),
   getAppInfo: () => ipcRenderer.invoke('get-app-info'),
   // 剪贴板 API
   clipboard: {

@@ -12,7 +12,7 @@ from http.server import BaseHTTPRequestHandler
 from urllib.parse import unquote, urlparse, parse_qs
 from datetime import datetime
 
-from server.constants import APP_DIR, RESOURCES_DIR, VERSION, MIME_TYPES
+from server.constants import APP_DIR, RESOURCES_DIR, VERSION, MIME_TYPES, LIGHT_MODE
 from server.state import _db_lock, _embedding_manager
 from server.db import init_sqlite_db
 from server.cleanup import list_files, sync_traces_to_sqlite
@@ -292,6 +292,10 @@ class ClawdDataHandler(
             self.handle_base_analysis(query)
         elif path == '/api/base-analysis/models':
             self.handle_base_analysis_models(query)
+        elif path == '/api/x-pattern-analysis':
+            self.handle_x_pattern_analysis(query)
+        elif path == '/api/governor-matched-analysis':
+            self.handle_governor_matched_analysis(query)
         elif path == '/api/rule-tips':
             self.handle_rule_tips_get()
         elif path == '/api/dismissed-items':
@@ -855,6 +859,7 @@ curl -X POST http://localhost:3001/api/tools/execute \\
             'status': 'ok',
             'version': VERSION,
             'mode': 'native',
+            'lightMode': LIGHT_MODE,
             'clawdPath': str(self.clawd_path),
             'fileCount': len(files),
             'skillCount': skill_count,

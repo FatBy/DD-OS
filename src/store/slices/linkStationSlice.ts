@@ -22,7 +22,7 @@ import type {
   ProviderGuide,
   ApiProtocol,
 } from '@/types'
-import { getServerUrl } from '@/utils/env'
+import { getServerUrl, isFrontendFeatureDisabled } from '@/utils/env'
 import { initPluginBroadcastListener } from '@/services/pluginBridge'
 
 // ProviderRegion 仅在 PROVIDER_GUIDES 中使用，无需从 types 导入
@@ -61,6 +61,11 @@ async function _executeLinkStationSave(
   if (chatConfig) {
     const { saveLLMConfig } = await import('@/services/llmService')
     saveLLMConfig(chatConfig)
+  }
+
+  if (isFrontendFeatureDisabled('MCP')) {
+    console.debug('[LinkStation] MCP sync skipped by lightweight feature gate')
+    return
   }
 
   // 3. 同步 MCP 配置到后端 mcp-servers.json
@@ -926,6 +931,7 @@ export const createLinkStationSlice: StateCreator<
     // 并发去重：避免多处同时调用导致重复 MCP 查询
     if (_linkStationLoading) return
     _linkStationLoading = true
+    const skipMCP = isFrontendFeatureDisabled('MCP')
     try {
     // 1. 先尝试从 localStorage 缓存恢复（即时可用，不依赖后端）
     let loaded = false
@@ -981,47 +987,53 @@ export const createLinkStationSlice: StateCreator<
     }
 
     // 4. 获取后端 MCP 服务器连接状态
-    try {
-      const serverUrl = localStorage.getItem('duncrew_server_url') || getServerUrl()
-      const statusRes = await fetch(`${serverUrl}/mcp/servers`, {
-        signal: AbortSignal.timeout(5000),
-      })
-      if (statusRes.ok) {
-        const statusData = await statusRes.json()
-        const serverStatus = statusData.servers || {}
+    if (!skipMCP) {
+      try {
+        const serverUrl = localStorage.getItem('duncrew_server_url') || getServerUrl()
+        const statusRes = await fetch(`${serverUrl}/mcp/servers`, {
+          signal: AbortSignal.timeout(5000),
+        })
+        if (statusRes.ok) {
+          const statusData = await statusRes.json()
+          const serverStatus = statusData.servers || {}
 
-        for (const [serverName, info] of Object.entries(serverStatus)) {
-          const serverInfo = info as { connected: boolean; tools: number }
-          get().updateMCPStatus(
-            serverName,
-            serverInfo.connected ? 'connected' : 'disconnected'
-          )
-        }
+          for (const [serverName, info] of Object.entries(serverStatus)) {
+            const serverInfo = info as { connected: boolean; tools: number }
+            get().updateMCPStatus(
+              serverName,
+              serverInfo.connected ? 'connected' : 'disconnected'
+            )
+          }
 
-        if (statusData.tools && Array.isArray(statusData.tools)) {
-          get().setMCPTools(
-            statusData.tools.map((tool: Record<string, unknown>) => ({
-              name: tool.name as string,
-              serverName: tool.server as string,
-              description: (tool.description as string) || '',
-            }))
-          )
+          if (statusData.tools && Array.isArray(statusData.tools)) {
+            get().setMCPTools(
+              statusData.tools.map((tool: Record<string, unknown>) => ({
+                name: tool.name as string,
+                serverName: tool.server as string,
+                description: (tool.description as string) || '',
+              }))
+            )
+          }
+          console.log('[LinkStation] MCP status loaded from server')
         }
-        console.log('[LinkStation] MCP status loaded from server')
+      } catch {
+        console.debug('[LinkStation] Failed to fetch MCP status')
       }
-    } catch {
-      console.debug('[LinkStation] Failed to fetch MCP status')
     }
 
     // 启动 MCP 状态轮询（每 30s 更新一次）
-    get().startMCPStatusPolling()
+    if (!skipMCP) {
+      get().startMCPStatusPolling()
+    }
 
     // 初始化插件 Provider 广播监听
-    initPluginBroadcastListener({
-      addProvider: (provider) => get().addProvider(provider as ModelProvider),
-      removeProvider: (id) => get().removeProvider(id),
-      getProviders: () => get().linkStation.providers,
-    })
+    if (!isFrontendFeatureDisabled('PLUGINS')) {
+      initPluginBroadcastListener({
+        addProvider: (provider) => get().addProvider(provider as ModelProvider),
+        removeProvider: (id) => get().removeProvider(id),
+        getProviders: () => get().linkStation.providers,
+      })
+    }
     } finally {
       _linkStationLoading = false
     }
@@ -1044,11 +1056,13 @@ export const createLinkStationSlice: StateCreator<
       get().setMCPTools(filteredTools)
     }
     // 同步移除 LocalClawService 中不活跃服务器的 MCP 工具
-    try {
-      const { localClawService } = await import('@/services/LocalClawService')
-      localClawService.filterOutMCPTools(activeServerNames)
-    } catch {
-      // 静默失败
+    if (!isFrontendFeatureDisabled('MCP')) {
+      try {
+        const { localClawService } = await import('@/services/LocalClawService')
+        localClawService.filterOutMCPTools(activeServerNames)
+      } catch {
+        // 静默失败
+      }
     }
 
     // 防抖网络请求（1.5秒），避免 UI 操作频繁触发网络请求
@@ -1089,6 +1103,7 @@ export const createLinkStationSlice: StateCreator<
 
   // ── MCP 状态轮询 ──
   startMCPStatusPolling: () => {
+    if (isFrontendFeatureDisabled('MCP')) return
     if (_mcpPollingTimer) return
     _mcpPollingTimer = setInterval(async () => {
       // 节流：距离上次成功查询不到 60 秒则跳过

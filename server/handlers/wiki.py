@@ -13,19 +13,21 @@ import uuid
 
 from server.state import _db_lock
 from server.db import get_hybrid_engine, mark_superseded, mark_conflicted
+from server.constants import feature_disabled
 
 # 条件导入 wiki 向量搜索函数
 HAS_WIKI_SEARCH = False
-try:
-    from hybrid_search import (
-        search_wiki_vectors,
-        index_wiki_entity_vector,
-        reindex_all_wiki_vectors,
-        EmbeddingEngine,
-    )
-    HAS_WIKI_SEARCH = True
-except ImportError:
-    pass
+if not feature_disabled('HYBRID_SEARCH') and not feature_disabled('EMBEDDING'):
+    try:
+        from hybrid_search import (
+            search_wiki_vectors,
+            index_wiki_entity_vector,
+            reindex_all_wiki_vectors,
+            EmbeddingEngine,
+        )
+        HAS_WIKI_SEARCH = True
+    except ImportError:
+        pass
 
 
 def _now_ms() -> int:

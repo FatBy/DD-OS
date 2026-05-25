@@ -54,10 +54,17 @@ function readLinkStation(): { providers: ModelProvider[]; channelBindings: Chann
   try {
     // 动态引用避免循环依赖（与 LocalClawService 同模式）
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { useStore } = require('@/store') as { useStore: { getState: () => any } }
-    const { providers, channelBindings } = useStore.getState().linkStation
+    const { useStore } = require('@/store') as { useStore: { getState: () => Record<string, unknown> } }
+    const state = useStore.getState()
+    const linkStation = state.linkStation as { providers: ModelProvider[]; channelBindings: ChannelBindings } | undefined
+    if (!linkStation) {
+      console.warn('[runConfigResolver] readLinkStation: linkStation 不存在于 Store 中')
+      return null
+    }
+    const { providers, channelBindings } = linkStation
     return { providers, channelBindings }
-  } catch {
+  } catch (e) {
+    console.warn('[runConfigResolver] readLinkStation: Store 读取异常', e)
     return null
   }
 }
@@ -66,11 +73,24 @@ function readLinkStation(): { providers: ModelProvider[]; channelBindings: Chann
 function getDunLLMBinding(dunId: string): DunLLMBinding | undefined {
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { useStore } = require('@/store') as { useStore: { getState: () => any } }
-    const duns = useStore.getState().duns as Map<string, { llmBinding?: DunLLMBinding }>
-    const dun = duns?.get?.(dunId)
-    return dun?.llmBinding
-  } catch {
+    const { useStore } = require('@/store') as { useStore: { getState: () => Record<string, unknown> } }
+    const state = useStore.getState()
+    const duns = state.duns as Map<string, { llmBinding?: DunLLMBinding }> | undefined
+    if (!duns) {
+      console.warn(`[runConfigResolver] getDunLLMBinding: Store 中 duns 字段不存在 (dunId=${dunId})`)
+      return undefined
+    }
+    const dun = duns.get?.(dunId)
+    if (!dun) {
+      console.warn(`[runConfigResolver] getDunLLMBinding: 未找到 Dun (dunId=${dunId}), Store 中共有 ${duns.size} 个 Dun [${[...duns.keys()].slice(0, 5).join(', ')}]`)
+      return undefined
+    }
+    if (!dun.llmBinding) {
+      console.debug(`[runConfigResolver] getDunLLMBinding: Dun "${dunId}" 存在但未配置 llmBinding`)
+    }
+    return dun.llmBinding
+  } catch (e) {
+    console.warn(`[runConfigResolver] getDunLLMBinding: Store 读取异常 (dunId=${dunId})`, e)
     return undefined
   }
 }
@@ -212,7 +232,7 @@ export function resolveRunLLMConfig(
       if (ls) {
         const provider = findProvider(ls.providers, llmBinding.providerId)
         if (provider) {
-          return buildFromBinding(
+          const result = buildFromBinding(
             ls.providers,
             { providerId: llmBinding.providerId, modelId: llmBinding.modelId },
             purpose,
@@ -220,10 +240,17 @@ export function resolveRunLLMConfig(
             undefined,
             llmBinding.temperature,
           )
+          console.debug(`[resolveRunLLMConfig] Using: dun-binding, model: ${result.model}, provider: ${provider.label} (dunId=${dunId})`)
+          return result
         }
-        // Provider 已删除
-        console.warn(`[runConfigResolver] Dun ${dunId} 绑定的 Provider ${llmBinding.providerId} 不存在，回退全局`)
+        // Provider 已删除 — 列出可用 providers 帮助诊断
+        const availableProviders = ls.providers.map(p => `${p.id}(${p.label})`).join(', ')
+        console.warn(`[resolveRunLLMConfig] Dun "${dunId}" 绑定的 Provider "${llmBinding.providerId}" 不存在，可用 Providers: [${availableProviders}]，回退全局`)
+      } else {
+        console.warn(`[resolveRunLLMConfig] Dun "${dunId}" 有 llmBinding (providerId=${llmBinding.providerId}, modelId=${llmBinding.modelId})，但 LinkStation 为 null，无法解析 Provider，回退全局`)
       }
+    } else {
+      console.debug(`[resolveRunLLMConfig] Dun "${dunId}" 无 llmBinding，使用全局配置`)
     }
   }
 
@@ -231,10 +258,14 @@ export function resolveRunLLMConfig(
   if (ls) {
     const { providers, channelBindings } = ls
     if (channelBindings.chat) {
-      return buildFromBinding(providers, channelBindings.chat, purpose, 'global-chat', 'chat')
+      const result = buildFromBinding(providers, channelBindings.chat, purpose, 'global-chat', 'chat')
+      console.debug(`[resolveRunLLMConfig] Using: global-chat, model: ${result.model}${dunId ? ` (dunId=${dunId} 无绑定)` : ''}`)
+      return result
     }
   }
-  return buildFromGlobalFallback(purpose)
+  const fallback = buildFromGlobalFallback(purpose)
+  console.debug(`[resolveRunLLMConfig] Using: global-fallback, model: ${fallback.model}${dunId ? ` (dunId=${dunId} 无绑定)` : ''}`)
+  return fallback
 }
 
 /**

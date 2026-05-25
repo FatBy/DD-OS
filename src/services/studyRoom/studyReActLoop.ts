@@ -37,6 +37,13 @@ import {
   type ConsolidatorStoreActions,
 } from '@/services/postExecutionConsolidator'
 import { getServerUrl } from '@/utils/env'
+import {
+  recordEpisode,
+  detectSopAnchorsHit,
+  computeSopId,
+  computeSopVersion,
+} from '@/services/episodeRecorder'
+import { sopEvolutionService } from '@/services/sopEvolutionService'
 
 // ============================================
 // 配置常量 (自习室专属, 和 LocalClawService.CONFIG 独立)
@@ -514,6 +521,7 @@ export async function runStudyReAct(
     errorCount,
     phase,
     storeActions,
+    sopContent: dun.sopContent,
   })
 
   return {
@@ -579,6 +587,7 @@ interface FireAndForgetParams {
   errorCount: number
   phase: StudyReActCompletionPhase
   storeActions?: ConsolidatorStoreActions
+  sopContent: string
 }
 
 /**
@@ -603,6 +612,7 @@ function fireAndForgetPostExec(params: FireAndForgetParams): void {
     errorCount,
     phase,
     storeActions,
+    sopContent,
   } = params
 
   // ---------- 构造 ExecTrace ----------
@@ -641,7 +651,38 @@ function fireAndForgetPostExec(params: FireAndForgetParams): void {
     )
     .catch((err) => console.warn('[StudyReAct] recordExperience failed:', err))
 
-  // ---------- 2. Dun 评分更新 + 3. Consolidator ----------
+  // ---------- 2. Episode 记录 (SOP 评估闭环) ----------
+  if (sopContent) {
+    const toolNames = traceTools.map(t => t.name).filter(Boolean)
+    const anchorsHit = detectSopAnchorsHit(sopContent, userMessage, toolNames, finalResponse || '')
+    const totalPrompt = traceTools.reduce((s, t) => s + (t.tokenCost?.prompt || 0), 0)
+    const totalCompletion = traceTools.reduce((s, t) => s + (t.tokenCost?.completion || 0), 0)
+
+    recordEpisode({
+      dunId,
+      taskId: traceId,
+      userQuery: userMessage,
+      sopAnchorsHit: anchorsHit,
+      toolCalls: traceTools.map(t => ({
+        name: t.name,
+        args: t.args,
+        result: t.result || '',
+        success: t.status === 'success',
+      })),
+      outcome: finalResponse || '',
+      evidenceRefs: [],
+      timestamp: Date.now(),
+      sopInjectionTruncated: false,
+      isShadow: false,
+      sopId: computeSopId(dunId),
+      sopVersion: computeSopVersion(sopContent),
+      tokenUsage: { promptTokens: totalPrompt, completionTokens: totalCompletion, totalTokens: totalPrompt + totalCompletion },
+      modelId: getLLMConfig().model || 'unknown',
+      contextSizeChars: sopContent.length + userMessage.length,
+    }).catch(err => console.warn('[StudyReAct] Episode recording failed:', err))
+  }
+
+  // ---------- 3. Dun 评分更新 + 4. Consolidator ----------
   // ensureLoaded 是异步的，需要在加载完成后才能安全调用 updateFromTrace
   // fireAndForgetPostExec 是同步函数，用 async IIFE 处理
   ;(async () => {
@@ -654,7 +695,7 @@ function fireAndForgetPostExec(params: FireAndForgetParams): void {
       console.warn('[StudyReAct] DunScoring precompute failed:', err)
     }
 
-    // ---------- 3. Consolidator (需要 storeActions 才能跑) ----------
+    // ---------- 4. Consolidator (需要 storeActions 才能跑) ----------
     if (!storeActions) {
       console.log('[StudyReAct] Skip consolidator (no storeActions passed)')
       return
@@ -662,6 +703,15 @@ function fireAndForgetPostExec(params: FireAndForgetParams): void {
     if (!precomputedScoring) {
       console.log('[StudyReAct] Skip consolidator (scoring precompute failed)')
       return
+    }
+
+    let sopFitnessCtx: string | undefined
+    if (sopContent) {
+      try {
+        sopFitnessCtx = (await sopEvolutionService.buildGoldenPathContext(dunId, sopContent)) ?? undefined
+      } catch (err) {
+        console.warn('[StudyReAct] buildGoldenPathContext failed:', err)
+      }
     }
 
     const payload: ConsolidationPayload = {
@@ -679,9 +729,9 @@ function fireAndForgetPostExec(params: FireAndForgetParams): void {
       runSuccess,
       turnCount,
       precomputedScoring,
-      promotableCandidates: [], // 自习室不接入 confidenceTracker 的 L1 候选
-      sopContent: undefined,
-      sopFitnessContext: undefined,
+      promotableCandidates: [],
+      sopContent: sopContent || undefined,
+      sopFitnessContext: sopFitnessCtx,
       bgSignal: undefined,
       serverUrl: getServerUrl(),
       entityTitles: [],

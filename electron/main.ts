@@ -41,6 +41,11 @@ if (process.platform === 'win32') {
 }
 
 const isDev = !app.isPackaged
+const truthyEnv = (value: string | undefined) =>
+  ['1', 'true', 'yes', 'on'].includes((value || '').trim().toLowerCase())
+const isLightMode = truthyEnv(process.env.DUNCREW_LIGHT)
+const disablePlugins = isLightMode || truthyEnv(process.env.DUNCREW_DISABLE_PLUGINS)
+const disableAutoUpdater = isLightMode || truthyEnv(process.env.DUNCREW_DISABLE_AUTO_UPDATER)
 
 let mainWindow: BrowserWindow | null = null
 const pythonManager = new PythonManager()
@@ -116,6 +121,7 @@ ipcMain.handle('get-app-info', () => {
     version: app.getVersion(),
     platform: process.platform,
     isPackaged: app.isPackaged,
+    lightMode: isLightMode,
   }
 })
 
@@ -196,16 +202,24 @@ app.whenReady().then(async () => {
   createWindow()
 
   // 初始化插件系统（在窗口创建后立即注册 IPC，确保渲染进程可用）
-  try {
-    pluginHost = new PluginHost(mainWindow!)
-    await pluginHost.initialize()
-    console.log('[Main] PluginHost initialized')
-  } catch (err) {
-    console.error('[Main] PluginHost error:', err)
+  if (!disablePlugins) {
+    try {
+      pluginHost = new PluginHost(mainWindow!)
+      await pluginHost.initialize()
+      console.log('[Main] PluginHost initialized')
+    } catch (err) {
+      console.error('[Main] PluginHost error:', err)
+    }
+  } else {
+    console.log('[Main] PluginHost skipped (lightweight mode)')
   }
 
   // 初始化自动更新（生产模式下检查 GitHub Releases）
-  initAutoUpdater(mainWindow, pythonManager)
+  if (!disableAutoUpdater) {
+    initAutoUpdater(mainWindow, pythonManager)
+  } else {
+    console.log('[Main] AutoUpdater skipped (lightweight mode)')
+  }
 
   // Python 后台启动，不阻塞窗口显示
   try {

@@ -1,22 +1,14 @@
-import { useState, useEffect } from 'react'
+import { lazy, Suspense, useState, useEffect } from 'react'
 import { AnimatePresence } from 'framer-motion'
-import { WorldView } from '@/components/WorldView'
 import { Dock } from '@/components/Dock'
 import { HouseContainer } from '@/components/HouseContainer'
 import { ConnectionPanel } from '@/components/ConnectionPanel'
 import { ToastContainer } from '@/components/Toast'
 import { NotificationCenter } from '@/components/NotificationCenter'
 import { LocaleToggle } from '@/components/LocaleToggle'
-import { AIChatPanel } from '@/components/ai/AIChatPanel'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
-import { BuildProposalModal } from '@/components/world/BuildProposalModal'
-import { SkillProposalCard } from '@/components/world/SkillProposalCard'
 import { ApprovalModal } from '@/components/ApprovalModal'
-import { DunDetailPanel } from '@/components/world/DunDetailPanel'
 import { InterruptedTasksWarning } from '@/components/InterruptedTasksWarning'
-import { CrashRecoveryBanner } from '@/components/CrashRecoveryBanner'
-import { UpdateBanner } from '@/components/UpdateBanner'
-import { FirstLaunchSetup } from '@/components/FirstLaunchSetup'
 import { useStore } from '@/store'
 import { getHouseById } from '@/houses/registry'
 import * as connectionClient from '@/services/connectionClient'
@@ -27,9 +19,17 @@ import { restoreLLMConfigFromServer, injectStoreConfigReader } from '@/services/
 import { persistTaskHistory } from '@/store/slices/sessionsSlice'
 import { MEMORY_CACHE_STORAGE_KEY } from '@/store/slices/agentSlice'
 import { getCachedMBTIResult, getCachedAxes } from '@/services/mbtiAnalyzer'
-import { soulEvolutionService } from '@/services/soulEvolutionService'
-import { agentEventBus } from '@/services/agentEventBus'
+import { isFrontendFeatureDisabled } from '@/utils/env'
 import type { ExecTrace } from '@/types'
+
+const WorldView = lazy(() => import('@/components/WorldView').then(m => ({ default: m.WorldView })))
+const AIChatPanel = lazy(() => import('@/components/ai/AIChatPanel').then(m => ({ default: m.AIChatPanel })))
+const BuildProposalModal = lazy(() => import('@/components/world/BuildProposalModal').then(m => ({ default: m.BuildProposalModal })))
+const SkillProposalCard = lazy(() => import('@/components/world/SkillProposalCard').then(m => ({ default: m.SkillProposalCard })))
+const DunDetailPanel = lazy(() => import('@/components/world/DunDetailPanel').then(m => ({ default: m.DunDetailPanel })))
+const CrashRecoveryBanner = lazy(() => import('@/components/CrashRecoveryBanner').then(m => ({ default: m.CrashRecoveryBanner })))
+const UpdateBanner = lazy(() => import('@/components/UpdateBanner').then(m => ({ default: m.UpdateBanner })))
+const FirstLaunchSetup = lazy(() => import('@/components/FirstLaunchSetup').then(m => ({ default: m.FirstLaunchSetup })))
 
 /**
  * 一次性迁移: 将 localStorage 中旧 ddos_ 前缀的数据移动到 duncrew_ 前缀
@@ -136,6 +136,10 @@ function restoreLocalCacheToStore(storeActions: any) {
 function App() {
   const currentView = useStore((s) => s.currentView)
   const currentHouse = getHouseById(currentView)
+  const disableCanvas = isFrontendFeatureDisabled('CANVAS')
+  const disableObserver = isFrontendFeatureDisabled('OBSERVER')
+  const disableSoulEvolution = isFrontendFeatureDisabled('SOUL_EVOLUTION')
+  const disableSkillEnvLoad = isFrontendFeatureDisabled('SKILL_ENV')
 
   // 首次启动引导页
   const [showSetup, setShowSetup] = useState(() => {
@@ -146,6 +150,10 @@ function App() {
   useEffect(() => {
     performance.mark('app-init-start')
     let cancelRetry: (() => void) | null = null
+    let disposed = false
+    let unsubSoulEvolution: (() => void) | null = null
+    let destroySoulEvolution: (() => void) | null = null
+    let soulEvolutionInitStarted = false
 
     const storeActions = {
       // Connection
@@ -230,6 +238,41 @@ function App() {
     // 加载联络站持久化数据（含旧配置迁移）
     useStore.getState().loadLinkStation()
 
+    const initSoulEvolutionIfEnabled = async () => {
+      if (disableSoulEvolution || unsubSoulEvolution || soulEvolutionInitStarted) return
+      soulEvolutionInitStarted = true
+      try {
+        const [{ soulEvolutionService }, { agentEventBus }] = await Promise.all([
+          import('@/services/soulEvolutionService'),
+          import('@/services/agentEventBus'),
+        ])
+        await soulEvolutionService.init()
+        if (disposed) {
+          soulEvolutionService.destroy()
+          return
+        }
+        destroySoulEvolution = () => soulEvolutionService.destroy()
+        unsubSoulEvolution = agentEventBus.subscribe((event) => {
+          if (event.type === 'run_end') {
+            const dunId = event.dunId || (event.data?.dunId as string | undefined) || ''
+            const trace: ExecTrace = {
+              id: event.runId,
+              task: (event.data?.task as string | undefined) || event.runId,
+              tools: [],
+              success: (event.data?.success as boolean | undefined) ?? true,
+              duration: (event.data?.durationMs as number | undefined) ?? 0,
+              timestamp: event.ts,
+              tags: [],
+            }
+            soulEvolutionService.onTraceCompleted(trace, dunId)
+          }
+        })
+      } catch (err) {
+        soulEvolutionInitStarted = false
+        console.warn('[App] soulEvolutionService.init failed:', err)
+      }
+    }
+
     // 异步初始化: 通过瘦 facade 加载 LocalClawService（不阻塞首帧渲染）
     let unsubConnected: (() => void) | null = null
     const initAsync = async () => {
@@ -243,8 +286,12 @@ function App() {
         try {
           await useStore.getState().loadConversationsFromServer()
           await useStore.getState().loadDunsFromServer()
-          await useStore.getState().loadBehaviorRecords()
-          await useStore.getState().loadSkillEnvValues()
+          if (!disableObserver) {
+            await useStore.getState().loadBehaviorRecords()
+          }
+          if (!disableSkillEnvLoad) {
+            await useStore.getState().loadSkillEnvValues()
+          }
           console.log('[App] Loaded persisted data from server')
         } catch (e) {
           console.warn('[App] Failed to load persisted data:', e)
@@ -252,7 +299,7 @@ function App() {
         // 后端就绪后重新加载联络站（从后端获取最新 MCP 状态）
         // 注：linkStationSlice 内置去重机制保证与行231的同步调用不会并发冲突
         useStore.getState().loadLinkStation()
-        soulEvolutionService.init().catch(() => {})
+        initSoulEvolutionIfEnabled()
       }
       // 重连时不重新加载全部数据，避免覆盖用户本地操作
       })
@@ -341,38 +388,19 @@ function App() {
     restoreLocalCacheToStore(storeActions)
 
     // Issue #8: 初始化 soulEvolutionService（加载修正案、启动衰减定时器）
-    soulEvolutionService.init().catch((err) => {
-      console.warn('[App] soulEvolutionService.init failed:', err)
-    })
+    initSoulEvolutionIfEnabled()
 
     performance.mark('app-init-end')
     performance.measure('[Perf] App.init total', 'app-init-start', 'app-init-end')
 
-    // Issue #8: 订阅 run_end 事件 → 驱动灵魂演化
-    const unsubSoulEvolution = agentEventBus.subscribe((event) => {
-      if (event.type === 'run_end') {
-        const dunId = event.dunId || (event.data?.dunId as string | undefined) || ''
-        // 从事件数据中重建轻量 ExecTrace（soulEvolutionService 只需 id/task/success）
-        const trace: ExecTrace = {
-          id: event.runId,
-          task: (event.data?.task as string | undefined) || event.runId,
-          tools: [],
-          success: (event.data?.success as boolean | undefined) ?? true,
-          duration: (event.data?.durationMs as number | undefined) ?? 0,
-          timestamp: event.ts,
-          tags: [],
-        }
-        soulEvolutionService.onTraceCompleted(trace, dunId)
-      }
-    })
-
     // Cleanup on unmount
     return () => {
+      disposed = true
       if (cancelRetry) cancelRetry()
       if (unsubConnected) unsubConnected()
       connectionClient.disconnect()
-      unsubSoulEvolution()
-      soulEvolutionService.destroy()
+      if (unsubSoulEvolution) unsubSoulEvolution()
+      if (destroySoulEvolution) destroySoulEvolution()
     }
   }, [])
 
@@ -420,7 +448,13 @@ function App() {
       <div className="relative flex-1 min-w-0 h-full overflow-hidden">
         {/* Background layer: always present */}
         <ErrorBoundary>
-          <WorldView />
+          {disableCanvas ? (
+            <div className="absolute inset-0 bg-skin-bg-primary" />
+          ) : (
+            <Suspense fallback={<div className="absolute inset-0 bg-skin-bg-primary" />}>
+              <WorldView />
+            </Suspense>
+          )}
         </ErrorBoundary>
 
         {/* Content layer: active house */}
@@ -439,25 +473,37 @@ function App() {
       </div>
 
       {/* AI Chat panel - Blueprint AssistantModal */}
-      <AIChatPanel />
+      <Suspense fallback={null}>
+        <AIChatPanel />
+      </Suspense>
 
-      {/* Observer: Dun build proposal modal */}
-      <BuildProposalModal />
-      {/* Observer: Skill discovery proposal card */}
-      <SkillProposalCard />
+      {!disableObserver && (
+        <Suspense fallback={null}>
+          {/* Observer: Dun build proposal modal */}
+          <BuildProposalModal />
+          {/* Observer: Skill discovery proposal card */}
+          <SkillProposalCard />
+        </Suspense>
+      )}
       <ApprovalModal />
 
       {/* Dun detail panel */}
-      <DunDetailPanel />
+      <Suspense fallback={null}>
+        <DunDetailPanel />
+      </Suspense>
 
       {/* Interrupted tasks warning */}
       <InterruptedTasksWarning />
 
       {/* Crash recovery banner */}
-      <CrashRecoveryBanner />
+      <Suspense fallback={null}>
+        <CrashRecoveryBanner />
+      </Suspense>
 
       {/* Auto-update banner */}
-      <UpdateBanner />
+      <Suspense fallback={null}>
+        <UpdateBanner />
+      </Suspense>
 
       {/* Toast notifications */}
       <ToastContainer />
@@ -471,7 +517,9 @@ function App() {
       {/* 首次启动引导 */}
       <AnimatePresence>
         {showSetup && (
-          <FirstLaunchSetup onComplete={() => setShowSetup(false)} />
+          <Suspense fallback={null}>
+            <FirstLaunchSetup onComplete={() => setShowSetup(false)} />
+          </Suspense>
         )}
       </AnimatePresence>
     </div>

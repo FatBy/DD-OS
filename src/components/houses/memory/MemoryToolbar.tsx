@@ -1,9 +1,9 @@
 import { useState, useCallback, useRef } from 'react'
-import { Search, RefreshCw, Brain, Route, Share2, Download, BookOpen } from 'lucide-react'
+import { Search, RefreshCw, Brain, Route, Share2, Download, BookOpen, Activity } from 'lucide-react'
 import { cn } from '@/utils/cn'
 import { memoryStore } from '@/services/memoryStore'
 
-export type MemoryTab = 'wall' | 'traces' | 'graph' | 'diary'
+export type MemoryTab = 'wall' | 'traces' | 'graph' | 'diary' | 'governor'
 
 interface MemoryToolbarProps {
   activeTab: MemoryTab
@@ -18,6 +18,7 @@ interface MemoryToolbarProps {
 const tabs: { key: MemoryTab; label: string; icon: typeof Brain }[] = [
   { key: 'wall', label: '核心记忆', icon: Brain },
   { key: 'traces', label: '执行分析', icon: Route },
+  { key: 'governor', label: 'Governor', icon: Activity },
   { key: 'graph', label: '概念图谱', icon: Share2 },
   { key: 'diary', label: '日记', icon: BookOpen },
 ]

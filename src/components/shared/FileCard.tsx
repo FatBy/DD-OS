@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect } from 'react'
-import { FileText, MoreHorizontal, FolderOpen, Copy, ExternalLink, Check } from 'lucide-react'
+import { FileText, MoreHorizontal, FolderOpen, Copy, ExternalLink, Check, Eye } from 'lucide-react'
 import { getServerUrl } from '@/utils/env'
 import { useT } from '@/i18n'
+import { useStore } from '@/store'
 
 interface FileCardProps {
   filePath: string
@@ -21,6 +22,8 @@ async function callTool(name: string, args: Record<string, string>) {
 
 export function FileCard({ filePath, fileName, fileSize }: FileCardProps) {
   const t = useT()
+  const requestOpenDocument = useStore(s => s.requestOpenDocument)
+  const isMd = /\.(md|markdown)$/i.test(filePath)
   const [menuOpen, setMenuOpen] = useState(false)
   const [copied, setCopied] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -45,6 +48,12 @@ export function FileCard({ filePath, fileName, fileSize }: FileCardProps) {
   const handleReveal = async () => {
     setMenuOpen(false)
     await callTool('openInExplorer', { path: filePath, mode: 'reveal' })
+  }
+
+  const handleViewInPanel = () => {
+    setMenuOpen(false)
+    const name = fileName || filePath.split(/[/\\]/).pop() || '文档'
+    requestOpenDocument(filePath, name)
   }
 
   const handleCopy = async () => {
@@ -115,6 +124,15 @@ export function FileCard({ filePath, fileName, fileSize }: FileCardProps) {
             <ExternalLink className="w-3.5 h-3.5" />
             <span>{t('file.open')}</span>
           </button>
+          {isMd && (
+            <button
+              onClick={handleViewInPanel}
+              className="w-full flex items-center gap-2.5 px-3 py-2 hover:bg-stone-100 dark:hover:bg-stone-700 transition-colors text-stone-700 dark:text-stone-200"
+            >
+              <Eye className="w-3.5 h-3.5" />
+              <span>{t('file.view_in_panel')}</span>
+            </button>
+          )}
           <button
             onClick={handleReveal}
             className="w-full flex items-center gap-2.5 px-3 py-2 hover:bg-stone-100 dark:hover:bg-stone-700 transition-colors text-stone-700 dark:text-stone-200"

@@ -4,6 +4,7 @@ import { MemoryToolbar, type MemoryTab } from './memory/MemoryToolbar'
 import { MemorySidebar } from './memory/MemorySidebar'
 import { L0MemoryWall } from './memory/L0MemoryWall'
 import { BaseAnalysisPanel } from './memory/BaseAnalysisPanel'
+import { GovernorDashboard } from './memory/GovernorDashboard'
 import { NexusGraph } from './memory/DunGraph'
 import { TemporalLens } from './memory/TemporalLens'
 import { MemoryStatusBar } from './memory/MemoryStatusBar'
@@ -60,6 +61,9 @@ export function MemoryHouse() {
           )}
           {activeTab === 'traces' && (
             <BaseAnalysisPanel />
+          )}
+          {activeTab === 'governor' && (
+            <GovernorDashboard />
           )}
           {activeTab === 'graph' && (
             <NexusGraph nodes={data.graphNodes} edges={data.graphEdges} />

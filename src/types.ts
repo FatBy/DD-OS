@@ -848,6 +848,38 @@ export interface Conversation {
   pinned?: boolean
   autoTitled?: boolean      // 标记是否已自动生成标题
   messagesLoaded?: boolean  // 标记消息是否已从后端懒加载
+  progressTabs?: ProgressTab[]
+  activeTabId?: string
+}
+
+/** 右侧面板执行进展 Tab */
+export interface ProgressTab {
+  taskId: string
+  title: string
+  status: 'executing' | 'done' | 'terminated' | string
+  openedAt: number
+  type?: 'execution' | 'document'
+  filePath?: string
+  documentContent?: string
+  conversationId: string
+  summary?: ExecutionSummary
+}
+
+/** 执行完成摘要 */
+export interface ExecutionSummary {
+  completedAt: number
+  success: boolean
+  toolsUsed: { name: string; status: 'success' | 'error' }[]
+  outputPreview: string
+  filesCreated: { path: string; name: string }[]
+  memoryDeposits: MemoryDeposit[]
+}
+
+/** 记忆沉淀条目 */
+export interface MemoryDeposit {
+  type: 'exec_trace' | 'experience' | 'skill_update'
+  content: string
+  tags: string[]
 }
 
 export interface ConversationMeta {
@@ -946,6 +978,10 @@ export interface ExecTrace {
       maxERunLength?: number; xeRatio?: number
     }
     counterfactualSuccessRate?: number
+    /** V5: 注入后模型实际走的下一步碱基 */
+    nextBaseAfterInjection?: string
+    /** V5: 注入时建议的最优方向 */
+    suggestedDirection?: string
   }>
   /** V4: 上下文注入元数据（用于记忆/技能注入质量分析） */
   contextInjectionMeta?: ContextInjectionMeta

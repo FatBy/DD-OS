@@ -10,6 +10,8 @@ const HEALTH_CHECK_URL = `http://${SERVER_HOST}:${SERVER_PORT}/status`
 const MAX_WAIT_MS = 60000
 const POLL_INTERVAL_MS = 500
 const MAX_RESTART_ATTEMPTS = 3
+const truthyEnv = (value: string | undefined) =>
+  ['1', 'true', 'yes', 'on'].includes((value || '').trim().toLowerCase())
 
 export class PythonManager {
   private process: ChildProcess | null = null
@@ -81,6 +83,25 @@ export class PythonManager {
       cmd = exePath
       args = ['--port', String(SERVER_PORT), '--host', SERVER_HOST, '--path', dataPath]
       cwd = path.join(process.resourcesPath, 'duncrew-server')
+    }
+
+    if (truthyEnv(process.env.DUNCREW_LIGHT)) {
+      args.push('--light')
+    }
+    if (truthyEnv(process.env.DUNCREW_DISABLE_EMBEDDING)) {
+      args.push('--disable-embedding')
+    }
+    if (truthyEnv(process.env.DUNCREW_DISABLE_MCP)) {
+      args.push('--disable-mcp')
+    }
+    if (truthyEnv(process.env.DUNCREW_DISABLE_SKILL_SCAN)) {
+      args.push('--disable-skill-scan')
+    }
+    if (truthyEnv(process.env.DUNCREW_DISABLE_BACKGROUND_JOBS)) {
+      args.push('--disable-background-jobs')
+    }
+    if (truthyEnv(process.env.DUNCREW_CORE_TOOLS_ONLY)) {
+      args.push('--core-tools-only')
     }
 
     console.log(`[PythonManager] Starting: ${cmd} ${args.join(' ')}`)

@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
+import { lazy, Suspense, useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { motion, AnimatePresence, useDragControls } from 'framer-motion'
 import { 
   MessageSquare, X, Send, Trash2, Square, Sparkles, Loader2, Zap,
@@ -12,31 +12,25 @@ import { getQuickCommands } from '@/services/contextBuilder'
 import { ChatMessage, StreamingMessage } from './ChatMessage'
 import { AgentProgressTicker } from './AgentProgressTicker'
 import { ChatErrorBoundary } from './ChatErrorBoundary'
-import { AddMCPModal } from './AddMCPModal'
-import { AddSkillModal } from './AddSkillModal'
 import { MentionDropdown, detectMention, closeMention, filterMentionItems, type MentionState, type MentionItem } from './MentionDropdown'
-import { CreateDunModal, DunInitialData } from '@/components/world/CreateDunModal'
+import type { DunInitialData } from '@/components/world/CreateDunModal'
 import { autoInstallSkills } from '@/services/installService'
-import { ConversationSidebar } from './ConversationSidebar'
-import { ExecutionProgressPanel } from './ExecutionProgressPanel'
-import { MarkdownDocPanel } from './MarkdownDocPanel'
 import { useT } from '@/i18n'
 import { getServerUrl as _getServerUrl } from '@/utils/env'
+import type { ProgressTab } from '@/types'
 
 const PANEL_WIDTH_KEY = 'duncrew_progress_panel_width'
 const SIDEBAR_WIDTH_KEY = 'duncrew_sidebar_width'
-const MAX_PROGRESS_TABS = 10
 
-// Tab 数据结构
-interface ProgressTab {
-  taskId: string
-  title: string       // 任务标题（截取前30字）
-  status: 'executing' | 'done' | 'terminated' | string
-  openedAt: number    // 打开时间，用于排序
-  type?: 'execution' | 'document'  // 不填默认 execution，保持兼容
-  filePath?: string                // document 类型的文件路径
-  documentContent?: string         // 文档内容缓存
-}
+const AddMCPModal = lazy(() => import('./AddMCPModal').then(m => ({ default: m.AddMCPModal })))
+const AddSkillModal = lazy(() => import('./AddSkillModal').then(m => ({ default: m.AddSkillModal })))
+const CreateDunModal = lazy(() => import('@/components/world/CreateDunModal').then(m => ({ default: m.CreateDunModal })))
+const ConversationSidebar = lazy(() => import('./ConversationSidebar').then(m => ({ default: m.ConversationSidebar })))
+const ExecutionProgressPanel = lazy(() => import('./ExecutionProgressPanel').then(m => ({ default: m.ExecutionProgressPanel })))
+const MarkdownDocPanel = lazy(() => import('./MarkdownDocPanel').then(m => ({ default: m.MarkdownDocPanel })))
+
+// 稳定的空数组引用，避免 selector 反复触发 re-render
+const EMPTY_TABS: ProgressTab[] = []
 
 export function AIChatPanel() {
   const t = useT()
@@ -50,8 +44,24 @@ export function AIChatPanel() {
   const [dunInitialData, setDunInitialData] = useState<DunInitialData | undefined>()
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [showProgressPanel, setShowProgressPanel] = useState(false)
-  const [progressTabs, setProgressTabs] = useState<ProgressTab[]>([])
-  const [activeTabId, setActiveTabId] = useState<string | null>(null)
+  // Tab 管理从 store 读取（绑定到当前活动会话）
+  const progressTabs = useStore(s => {
+    const convId = s.activeConversationId
+    if (!convId) return EMPTY_TABS
+    const conv = s.conversations.get(convId)
+    return conv?.progressTabs || EMPTY_TABS
+  })
+  const activeTabId = useStore(s => {
+    const convId = s.activeConversationId
+    if (!convId) return null
+    const conv = s.conversations.get(convId)
+    return conv?.activeTabId ?? null
+  })
+  const addProgressTab = useStore(s => s.addProgressTab)
+  const removeProgressTab = useStore(s => s.removeProgressTab)
+  const setActiveProgressTab = useStore(s => s.setActiveProgressTab)
+  const updateTabStatus = useStore(s => s.updateTabStatus)
+  const updateProgressTabField = useStore(s => s.updateProgressTabField)
   const prevExecutionIdsRef = useRef<Set<string>>(new Set())
   const [panelWidth, setPanelWidth] = useState(() => {
     const saved = localStorage.getItem(PANEL_WIDTH_KEY)
@@ -170,47 +180,33 @@ export function AIChatPanel() {
   // 自动添加/更新 Tab 逻辑
   useEffect(() => {
     const prevIds = prevExecutionIdsRef.current
+    const convId = activeConversationId || ''
 
     // 检测新出现的 executing 任务
     for (const task of activeExecutions) {
       const isExecuting = task.status === 'executing' || task.status === 'retrying'
       if (isExecuting && !prevIds.has(task.id)) {
-        // 新的执行任务 → 添加为新 Tab 并激活
-        setProgressTabs(prev => {
-          // 已存在则不重复添加
-          if (prev.some(t => t.taskId === task.id)) return prev
-          const newTab: ProgressTab = {
+        // 新的执行任务 → 添加为新 Tab 并激活（store 内部处理 MAX 回收）
+        if (!progressTabs.some(t => t.taskId === task.id)) {
+          addProgressTab(convId, {
             taskId: task.id,
             title: (task.title || task.description || '未命名任务').slice(0, 30),
             status: task.status,
             openedAt: Date.now(),
-          }
-          let updated = [...prev, newTab]
-          // 超过最大数量时，关闭最早的已完成 Tab
-          if (updated.length > MAX_PROGRESS_TABS) {
-            const doneTab = updated.find(t => t.status === 'done' || t.status === 'terminated')
-            if (doneTab) {
-              updated = updated.filter(t => t.taskId !== doneTab.taskId)
-            } else {
-              updated = updated.slice(1) // 全部都在执行中，移除最旧的
-            }
-          }
-          return updated
-        })
-        setActiveTabId(task.id)
+            conversationId: convId,
+          })
+        }
         setShowProgressPanel(true)
       }
     }
 
     // 更新所有 Tab 的状态
-    setProgressTabs(prev => prev.map(tab => {
+    for (const tab of progressTabs) {
       const task = activeExecutions.find(t => t.id === tab.taskId)
-      if (!task) return tab
-      if (task.status !== tab.status) {
-        return { ...tab, status: task.status }
+      if (task && task.status !== tab.status) {
+        updateTabStatus(convId, tab.taskId, task.status)
       }
-      return tab
-    }))
+    }
 
     // 更新 prevIds
     const executingIds = new Set(
@@ -219,57 +215,42 @@ export function AIChatPanel() {
         .map(t => t.id)
     )
     prevExecutionIdsRef.current = executingIds
-  }, [activeExecutions])
+  }, [activeExecutions, activeConversationId, progressTabs, addProgressTab, updateTabStatus])
 
   // 关闭 Tab 逻辑
   const closeTab = useCallback((tabId: string) => {
-    setProgressTabs(prev => {
-      const updated = prev.filter(t => t.taskId !== tabId)
-      // 如果关闭的是当前激活的 Tab，切换到最近的
-      if (activeTabId === tabId) {
-        if (updated.length > 0) {
-          setActiveTabId(updated[updated.length - 1].taskId)
-        } else {
-          setActiveTabId(null)
-          setShowProgressPanel(false)
-        }
-      }
-      return updated
-    })
-  }, [activeTabId])
+    const convId = activeConversationId || ''
+    removeProgressTab(convId, tabId)
+    // 如果关闭后没有 Tab 了，收起面板
+    const remainingTabs = progressTabs.filter(t => t.taskId !== tabId)
+    if (remainingTabs.length === 0) {
+      setShowProgressPanel(false)
+    }
+  }, [activeConversationId, removeProgressTab, progressTabs])
 
   // 打开文档 Tab
   const openDocument = useCallback((filePath: string, title?: string) => {
-    const docId = `doc_${Date.now()}`
+    const convId = activeConversationId || ''
     const fileName = title || filePath.split(/[/\\]/).pop() || '文档'
-    setProgressTabs(prev => {
-      // 如果已打开同一文件，直接切换
-      const existing = prev.find(t => t.type === 'document' && t.filePath === filePath)
-      if (existing) {
-        setActiveTabId(existing.taskId)
-        return prev
-      }
-      // 超过最大 Tab 数时回收已完成的最旧 Tab
-      let updated = [...prev]
-      if (updated.length >= MAX_PROGRESS_TABS) {
-        const doneTabs = updated.filter(t => t.status !== 'executing')
-        if (doneTabs.length > 0) {
-          const oldest = doneTabs.sort((a, b) => a.openedAt - b.openedAt)[0]
-          updated = updated.filter(t => t.taskId !== oldest.taskId)
-        }
-      }
-      return [...updated, {
-        taskId: docId,
-        title: fileName,
-        status: 'done',
-        openedAt: Date.now(),
-        type: 'document' as const,
-        filePath,
-      }]
+    // 如果已打开同一文件，直接切换
+    const existing = progressTabs.find(t => t.type === 'document' && t.filePath === filePath)
+    if (existing) {
+      setActiveProgressTab(convId, existing.taskId)
+      setShowProgressPanel(true)
+      return
+    }
+    const docId = `doc_${Date.now()}`
+    addProgressTab(convId, {
+      taskId: docId,
+      title: fileName,
+      status: 'done',
+      openedAt: Date.now(),
+      type: 'document' as const,
+      filePath,
+      conversationId: convId,
     })
-    setActiveTabId(docId)
     setShowProgressPanel(true)
-  }, [])
+  }, [activeConversationId, progressTabs, addProgressTab, setActiveProgressTab])
 
   // 监听 pendingDocumentOpen
   const pendingDocumentOpen = useStore(s => s.pendingDocumentOpen)
@@ -1031,13 +1012,14 @@ export function AIChatPanel() {
                         // 打开面板：如果没有Tab但有任务，自动为最后一个任务创建Tab
                         if (progressTabs.length === 0 && activeExecutions.length > 0) {
                           const lastTask = activeExecutions[activeExecutions.length - 1]
-                          setProgressTabs([{
+                          const convId = activeConversationId || ''
+                          addProgressTab(convId, {
                             taskId: lastTask.id,
                             title: (lastTask.title || lastTask.description || '未命名任务').slice(0, 30),
                             status: lastTask.status,
                             openedAt: Date.now(),
-                          }])
-                          setActiveTabId(lastTask.id)
+                            conversationId: convId,
+                          })
                         }
                         setShowProgressPanel(true)
                       }
@@ -1080,7 +1062,9 @@ export function AIChatPanel() {
                       transition={{ duration: 0.2 }}
                       className="flex-shrink-0 overflow-hidden"
                     >
-                      <ConversationSidebar className="h-full" />
+                      <Suspense fallback={null}>
+                        <ConversationSidebar className="h-full" />
+                      </Suspense>
                     </motion.div>
                   )}
                 </AnimatePresence>
@@ -1369,7 +1353,7 @@ export function AIChatPanel() {
                         {progressTabs.map(tab => (
                           <div
                             key={tab.taskId}
-                            onClick={() => setActiveTabId(tab.taskId)}
+                            onClick={() => setActiveProgressTab(activeConversationId || '', tab.taskId)}
                             className={`flex items-center gap-2 px-3 py-2 text-sm cursor-pointer border-b-2 whitespace-nowrap flex-shrink-0 transition-colors ${
                               activeTabId === tab.taskId 
                                 ? 'border-emerald-500 text-gray-800 bg-gray-50/50' 
@@ -1403,24 +1387,27 @@ export function AIChatPanel() {
                           const activeTab = progressTabs.find(t => t.taskId === activeTabId)
                           if (activeTab?.type === 'document') {
                             return (
-                              <MarkdownDocPanel
-                                filePath={activeTab.filePath!}
-                                content={activeTab.documentContent}
-                                onContentLoaded={(content) => {
-                                  setProgressTabs(prev => prev.map(t =>
-                                    t.taskId === activeTab.taskId ? { ...t, documentContent: content } : t
-                                  ))
-                                }}
-                              />
+                              <Suspense fallback={null}>
+                                <MarkdownDocPanel
+                                  filePath={activeTab.filePath!}
+                                  content={activeTab.documentContent}
+                                  onContentLoaded={(content) => {
+                                    updateProgressTabField(activeConversationId || '', activeTab.taskId, { documentContent: content })
+                                  }}
+                                />
+                              </Suspense>
                             )
                           }
                           return (
-                            <ExecutionProgressPanel 
-                              taskId={activeTabId || undefined} 
-                              onClose={() => {
-                                if (activeTabId) closeTab(activeTabId)
-                              }} 
-                            />
+                            <Suspense fallback={null}>
+                              <ExecutionProgressPanel 
+                                taskId={activeTabId || undefined} 
+                                onClose={() => {
+                                  if (activeTabId) closeTab(activeTabId)
+                                }} 
+                                tab={progressTabs.find(t => t.taskId === activeTabId)}
+                              />
+                            </Suspense>
                           )
                         })()}
                       </div>
@@ -1435,21 +1422,29 @@ export function AIChatPanel() {
       </AnimatePresence>
 
       {/* MCP / SKILL / Nexus 引导模态框 */}
-      <AddMCPModal
-        isOpen={showMCPModal}
-        onClose={() => setShowMCPModal(false)}
-        onConfirm={handleAddMCP}
-      />
-      <AddSkillModal
-        isOpen={showSkillModal}
-        onClose={() => setShowSkillModal(false)}
-        onConfirm={handleAddSkill}
-      />
-      <CreateDunModal
-        isOpen={showDunModal}
-        onClose={handleCloseDunModal}
-        initialData={dunInitialData}
-      />
+      <Suspense fallback={null}>
+        {showMCPModal && (
+          <AddMCPModal
+            isOpen={showMCPModal}
+            onClose={() => setShowMCPModal(false)}
+            onConfirm={handleAddMCP}
+          />
+        )}
+        {showSkillModal && (
+          <AddSkillModal
+            isOpen={showSkillModal}
+            onClose={() => setShowSkillModal(false)}
+            onConfirm={handleAddSkill}
+          />
+        )}
+        {showDunModal && (
+          <CreateDunModal
+            isOpen={showDunModal}
+            onClose={handleCloseDunModal}
+            initialData={dunInitialData}
+          />
+        )}
+      </Suspense>
     </>
   )
 }

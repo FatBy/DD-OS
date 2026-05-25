@@ -321,3 +321,85 @@ export async function recordEpisode(input: RecordEpisodeInput): Promise<SopEpiso
     return null
   }
 }
+
+// ============================================
+// SOP Anchors Detection
+// ============================================
+
+interface SopSection {
+  heading: string
+  body: string
+}
+
+/**
+ * 从 SOP markdown 中提取 section(## / ### 标题 + 下方正文)
+ */
+function extractSopSections(sopContent: string): SopSection[] {
+  const lines = sopContent.split('\n')
+  const sections: SopSection[] = []
+  let current: SopSection | null = null
+
+  for (const line of lines) {
+    const headingMatch = line.match(/^(#{2,3})\s+(.+)/)
+    if (headingMatch) {
+      if (current) sections.push(current)
+      current = { heading: headingMatch[2].trim(), body: '' }
+    } else if (current) {
+      current.body += line + '\n'
+    }
+  }
+  if (current) sections.push(current)
+  return sections
+}
+
+/**
+ * 检测执行过程中命中了 SOP 的哪些 section。
+ * 基于 trace 工具名、用户 query、最终输出与 section 正文的关键词重叠度。
+ */
+export function detectSopAnchorsHit(
+  sopContent: string,
+  userQuery: string,
+  toolNames: string[],
+  finalResponse: string,
+): string[] {
+  if (!sopContent) return []
+
+  const sections = extractSopSections(sopContent)
+  if (sections.length === 0) return []
+
+  // 构建执行语料（小写，用于匹配）
+  const execCorpus = [
+    userQuery,
+    ...toolNames,
+    finalResponse.slice(0, 2000),
+  ].join(' ').toLowerCase()
+
+  const hits: string[] = []
+
+  for (const section of sections) {
+    // 跳过非流程类 section
+    if (/^(Mission|Constraints|核心人格|个性特点)/i.test(section.heading)) continue
+
+    // 从 section body 提取关键词（中文 2+ 字词、英文 3+ 字母词）
+    const bodyLower = section.body.toLowerCase()
+    const keywords = bodyLower.match(/[一-鿿]{2,}|[a-z]{3,}/g)
+    if (!keywords || keywords.length === 0) continue
+
+    // 去重，取有区分度的词（长度 > 2 的中文，或 > 4 的英文）
+    const uniqueKeywords = [...new Set(keywords)].filter(
+      k => (k.match(/[一-鿿]/) && k.length >= 2) || k.length >= 4
+    )
+    if (uniqueKeywords.length === 0) continue
+
+    // 计算命中率
+    const hitCount = uniqueKeywords.filter(kw => execCorpus.includes(kw)).length
+    const hitRate = hitCount / uniqueKeywords.length
+
+    // 阈值：至少 15% 的关键词命中
+    if (hitRate >= 0.15 && hitCount >= 2) {
+      hits.push(section.heading)
+    }
+  }
+
+  return hits
+}

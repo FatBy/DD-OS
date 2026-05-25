@@ -176,7 +176,7 @@ function normalizePath(p: string): string {
 // Resource extraction
 // ============================================
 
-function extractResource(
+export function extractResource(
   toolName: string,
   args: Record<string, unknown>,
 ): string | null {

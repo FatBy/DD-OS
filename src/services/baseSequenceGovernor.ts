@@ -57,6 +57,8 @@ export interface GovernorSignal {
   estimatedSuccessRate: number
   /** 触发时的特征快照（供 InterventionRecord 使用） */
   _features: FeatureSnapshot
+  /** V5: 建议的最优方向（用于响应追踪） */
+  suggestedDirection?: string
 }
 
 /** 干预事件记录（嵌入 ExecTrace，供 Layer 2/3 使用） */
@@ -69,6 +71,10 @@ export interface InterventionRecord {
   features: FeatureSnapshot
   /** 反事实预测：触发时从分桶查表的"如果不干预"预估成功率 */
   counterfactualSuccessRate: number
+  /** V5: 注入后模型实际走的下一步碱基 */
+  nextBaseAfterInjection?: string
+  /** V5: 建议的最优方向 */
+  suggestedDirection?: string
 }
 
 /** 特征快照（8 维，O(n) 可计算） */
@@ -97,11 +103,11 @@ interface BucketStats {
 
 /** 规则阈值配置（可被 Layer 3 动态调整） */
 interface RuleThresholds {
-  /** 连续 X 刹车阈值（默认 2，即连续 2 个 X 就触发） */
+  /** 连续 X 刹车阈值（默认 12） */
   consecutiveXBrake: number
   /** 序列长度熔断阈值（默认 12） */
   stepLengthFuse: number
-  /** 切换频率警告阈值（默认 0.6） */
+  /** 切换频率警告阈值（默认 0.8，数据显示 >0.8 才真正危险 SR=47%） */
   switchRateWarning: number
   /** Layer 3 自适应触发间隔（每 N 条 trace） */
   adaptationInterval: number
@@ -110,12 +116,19 @@ interface RuleThresholds {
   diversityCollapseWindow: number
   /** 后期规划警告的位置比例阈值（默认 0.5） */
   latePlanningRatio: number
-  /** 验证缺失检测的步数阈值（默认 3） */
+  /** 验证缺失检测的步数阈值（已废弃，保留兼容） */
   missingVerificationSteps: number
   /** 探索过度的 X/(X+E) 阈值（默认 0.7） */
   exploreDominanceRatio: number
-  /** 探索过度的最小步数（默认 8） */
+  /** 探索过度的最小步数（默认 6） */
   exploreDominanceMinSteps: number
+  // v5 新增（数据驱动校准）
+  /** P-X-P 循环检测的最小步数（默认 5） */
+  planCycleMinSteps: number
+  /** 多样性崩溃位置门控（默认 0.6，只在序列 60% 之后触发） */
+  diversityCollapsePositionGate: number
+  /** 全局干预冷却步数（默认 3，同 trace 内两次干预至少间隔 N 步） */
+  globalCooldownSteps: number
 }
 
 /** 干预模式库条目 */
@@ -125,6 +138,24 @@ interface PatternEntry {
   rule: string
   success: boolean
   recoveryPath?: string
+}
+
+/** 转移统计条目 */
+interface TransitionStats {
+  successCount: number
+  totalCount: number
+}
+
+/** 信息响应追踪 */
+interface InjectionResponseStats {
+  /** 建议后模型响应的次数（下一步走了建议方向） */
+  respondedCount: number
+  /** 建议后模型未响应的次数 */
+  ignoredCount: number
+  /** 响应后成功的次数 */
+  respondedSuccessCount: number
+  /** 未响应后成功的次数 */
+  ignoredSuccessCount: number
 }
 
 /** 持久化的统计数据 */
@@ -145,6 +176,12 @@ export interface GovernorStats {
   patternLibrary?: PatternEntry[]
   /** v2: 反事实预测累加（key = ruleName） */
   counterfactualAccumulator?: Record<string, { sumPredicted: number; sumActual: number; count: number }>
+  /** V5: 转移成功率统计 key = "X->E", value = {successCount, totalCount} */
+  transitionStats?: Record<string, TransitionStats>
+  /** V5: 信息注入响应追踪 key = ruleName */
+  injectionResponseStats?: Record<string, InjectionResponseStats>
+  /** V5: 上次规则发现触发时的 trace 计数 */
+  lastDiscoveryCount?: number
 }
 
 // ============================================
@@ -152,16 +189,19 @@ export interface GovernorStats {
 // ============================================
 
 const DEFAULT_THRESHOLDS: RuleThresholds = {
-  consecutiveXBrake: 12,         // V4: 8→12，数据显示连续X 8~12次对成功率影响仅1pp(92%→93%)
+  consecutiveXBrake: 12,         // 数据: X-run 7+ SR=88.3%，连续X不是主要问题，保持高阈值作为安全阀
   stepLengthFuse: 12,
-  switchRateWarning: 0.6,
+  switchRateWarning: 0.8,        // V5: 0.6→0.8，数据: rate<0.3=94%, 0.3-0.7=81%, >0.8=47%
   adaptationInterval: 50,
-  // v2 新增
   diversityCollapseWindow: 5,
   latePlanningRatio: 0.5,
-  missingVerificationSteps: 3,
-  exploreDominanceRatio: 0.55,   // V4: 0.7→0.55，原阈值太高几乎不触发，55%更贴近有害区间
-  exploreDominanceMinSteps: 6,   // V4: 8→6，提前介入
+  missingVerificationSteps: 6,   // V5: 3→6，实质上禁用旧逻辑（由 plan_cycle 替代）
+  exploreDominanceRatio: 0.7,    // V5: 0.55→0.7，数据显示 xeRatio 对 SR 区分力仅 1.4pp
+  exploreDominanceMinSteps: 8,   // V5: 6→8，避免短序列误触发
+  // v5 新增
+  planCycleMinSteps: 5,
+  diversityCollapsePositionGate: 0.6,
+  globalCooldownSteps: 3,
 }
 
 /** 卡方检验临界值 (df=1, α=0.05) */
@@ -178,14 +218,14 @@ const GAMMA = 0.9
 
 const STATS_VERSION = 2
 
-/** 全部 7 条规则名称 */
+/** 全部 7 条规则名称（v5: missing_verification → plan_cycle_detection） */
 const ALL_RULE_NAMES = [
   'consecutive_x_brake',
   'step_length_fuse',
   'switch_rate_warning',
   'diversity_collapse',
   'late_planning_warning',
-  'missing_verification',
+  'plan_cycle_detection',
   'explore_dominance',
 ]
 
@@ -273,100 +313,168 @@ export function extractFeatures(entries: BaseEntry[]): FeatureSnapshot {
 }
 
 /**
+ * 静态转移概率表（初始值，基于 907 traces 统计）。
+ * 当动态数据不足时 fallback 使用。
+ */
+const FALLBACK_TRANSITION_SR: Record<string, Record<string, number>> = {
+  X: { X: 0.836, E: 0.842, P: 0.691, V: 0.800 },
+  E: { E: 0.842, X: 0.821, P: 0.613, V: 0.941 },
+  P: { E: 0.725, X: 0.707, P: 0.714, V: 0.706 },
+  V: { E: 0.750, X: 0.768, P: 0.637, V: 1.000 },
+}
+
+/**
+ * 从动态 transitionStats 计算转移 SR，不足时 fallback 到静态表。
+ */
+function getTransitionSR(transitionStats?: Record<string, { successCount: number; totalCount: number }>): Record<string, Record<string, number>> {
+  if (!transitionStats) return FALLBACK_TRANSITION_SR
+
+  const result: Record<string, Record<string, number>> = {}
+  for (const base of ['X', 'E', 'P', 'V']) {
+    result[base] = {}
+    for (const next of ['X', 'E', 'P', 'V']) {
+      const key = `${base}->${next}`
+      const stat = transitionStats[key]
+      if (stat && stat.totalCount >= 5) {
+        result[base][next] = stat.successCount / stat.totalCount
+      } else {
+        result[base][next] = FALLBACK_TRANSITION_SR[base]?.[next] ?? 0.8
+      }
+    }
+  }
+  return result
+}
+
+function formatTransitionHint(lastBase: string, transitionStats?: Record<string, { successCount: number; totalCount: number }>): string {
+  const sr = getTransitionSR(transitionStats)[lastBase]
+  if (!sr) return ''
+  const sorted = Object.entries(sr).sort((a, b) => b[1] - a[1])
+  const best = sorted[0]
+  const worst = sorted[sorted.length - 1]
+  return `从当前状态，历史最优下一步: ${best[0]}(SR=${(best[1]*100).toFixed(0)}%)，最差: ${worst[0]}(SR=${(worst[1]*100).toFixed(0)}%)`
+}
+
+/**
+ * 获取当前状态的建议最优方向（用于响应追踪）。
+ */
+function getSuggestedDirection(lastBase: string, transitionStats?: Record<string, { successCount: number; totalCount: number }>): string {
+  const sr = getTransitionSR(transitionStats)[lastBase]
+  if (!sr) return 'E'
+  const sorted = Object.entries(sr).sort((a, b) => b[1] - a[1])
+  return sorted[0][0]
+}
+
+/**
  * Layer 1: 评估当前碱基序列，返回干预信号。
  *
- * 在 ReAct 循环每轮工具执行完成后调用。
+ * V5 范式: 信息顾问模式 — 提供量化观测和路径对比，不发出行为命令。
  * 纯代码 if/else，0ms 延迟，不调用任何模型。
- * v2: 7 条规则 + 8 维特征
  */
 export function evaluateSequence(
   entries: BaseEntry[],
   thresholds: RuleThresholds = DEFAULT_THRESHOLDS,
   disabledRules?: Set<string>,
+  transitionStats?: Record<string, { successCount: number; totalCount: number }>,
 ): GovernorSignal {
   const features = extractFeatures(entries)
   const triggeredRules: string[] = []
   const injections: string[] = []
 
-  // 规则 1: 连续 X 刹车（默认禁用，可通过 UI 启用）
+  // 规则 1: 连续探索安全阀
   if (!disabledRules?.has('consecutive_x_brake')
     && features.consecutiveX >= thresholds.consecutiveXBrake) {
     triggeredRules.push('consecutive_x_brake')
     injections.push(
-      `[连续探索刹车] 已连续 ${features.consecutiveX} 次探索(X)未获实质进展。` +
-      `请停止当前方向，换一个完全不同的策略。`
+      `[状态观测] 已连续 ${features.consecutiveX} 步探索(X)。` +
+      `${formatTransitionHint('X', transitionStats)}。` +
+      `历史数据: 连续探索后转入执行(E)的成功率为 84%。`
     )
   }
 
-  // 规则 2: 序列长度熔断（默认禁用，可通过 UI 启用）
+  // 规则 2: 序列长度安全阀
   if (!disabledRules?.has('step_length_fuse')
     && features.stepCount >= thresholds.stepLengthFuse) {
     triggeredRules.push('step_length_fuse')
     injections.push(
-      `[序列长度熔断] 任务已执行 ${features.stepCount} 步，接近上限。` +
-      `请尽快收敛到最终结果，避免继续发散。`
+      `[状态观测] 当前已执行 ${features.stepCount} 步。` +
+      `历史数据: 序列长度 ≥12 步时成功率 79%（基线 82%），≥21 步时降至 74.5%。`
     )
   }
 
-  // 规则 3: 切换频率警告（仅在步数 >= 5 时才有统计意义）
+  // 规则 3: 极端切换警告
+  // 仅在切换率 >0.8 时触发（数据: >0.8 的 SR=47%，属于真正危险区）
   if (!disabledRules?.has('switch_rate_warning')
-    && features.stepCount >= 5 && features.switchRate > thresholds.switchRateWarning) {
+    && features.stepCount >= 6 && features.switchRate > thresholds.switchRateWarning) {
     triggeredRules.push('switch_rate_warning')
     injections.push(
-      `[策略一致性提示] 你的操作在不同方向之间频繁切换（切换率 ${(features.switchRate * 100).toFixed(0)}%）。` +
-      `请集中精力在一个方向上深入推进，而不是反复跳跃。`
+      `[状态观测] 当前切换率 ${(features.switchRate * 100).toFixed(0)}%（每步都在换方向）。` +
+      `历史数据: 切换率 >80% 时成功率仅 47%（基线 82%），切换率 <30% 时成功率 94%。` +
+      `连续 2-3 步同方向推进的历史表现显著优于频繁切换。`
     )
   }
 
-  // --- v2 新增规则 ---
+  // --- v5 信息顾问规则 ---
 
-  // 规则 4: 碱基多样性崩溃（默认禁用，可通过 UI 启用）
+  // 规则 4: 单一模式（仅后段，排除连续 E）
   if (!disabledRules?.has('diversity_collapse')
     && features.stepCount >= thresholds.diversityCollapseWindow * 2) {
-    const window = entries.slice(-thresholds.diversityCollapseWindow)
-    const uniqueBases = new Set(window.map(e => e.base))
-    if (uniqueBases.size === 1) {
-      triggeredRules.push('diversity_collapse')
-      injections.push(
-        `[多样性崩溃] 最近 ${thresholds.diversityCollapseWindow} 步全部是相同碱基类型(${window[0].base})。` +
-        `这可能意味着陷入了重复循环，请尝试不同的操作类型。`
-      )
+    const positionRatio = features.stepCount / Math.max(thresholds.stepLengthFuse, features.stepCount)
+    if (positionRatio >= thresholds.diversityCollapsePositionGate) {
+      const window = entries.slice(-thresholds.diversityCollapseWindow)
+      const uniqueBases = new Set(window.map(e => e.base))
+      if (uniqueBases.size === 1 && window[0].base !== 'E') {
+        triggeredRules.push('diversity_collapse')
+        const dominantBase = window[0].base
+        injections.push(
+          `[状态观测] 最近 ${thresholds.diversityCollapseWindow} 步全是 ${dominantBase}。` +
+          `${formatTransitionHint(dominantBase, transitionStats)}。`
+        )
+      }
     }
   }
 
-  // 规则 5: 后期规划警告（默认禁用，可通过 UI 启用）
+  // 规则 5: 后期规划信号
+  // 数据: p_late SR=59.4%, no_p_late SR=97.6%，gap=38pp
   if (!disabledRules?.has('late_planning_warning')
     && features.stepCount > thresholds.stepLengthFuse * thresholds.latePlanningRatio
     && entries.length > 0 && entries[entries.length - 1].base === 'P') {
     triggeredRules.push('late_planning_warning')
     injections.push(
-      `[后期规划警告] 任务已执行 ${features.stepCount} 步（已过半），你仍在重新规划。` +
-      `后期规划的成功率显著低于早期规划，请直接利用已有信息执行，而非再次调整方案。`
+      `[状态观测] 第 ${features.stepCount} 步仍在规划(P)。` +
+      `历史数据: 后半段出现 P 的成功率 59%，不出现 P 的成功率 98%。` +
+      `从 P 出发: →E(SR=72%), →X(SR=71%), →V(SR=71%)。P→E 是当前最优路径。`
     )
   }
 
-  // 规则 6: 验证缺失（默认禁用，可通过 UI 启用）
-  if (!disabledRules?.has('missing_verification')
-    && entries.length >= thresholds.missingVerificationSteps) {
-    const recent = entries.slice(-thresholds.missingVerificationSteps)
-    const hasV = recent.some(e => e.base === 'V')
-    if (!hasV && recent.some(e => e.base === 'E')) {
-      triggeredRules.push('missing_verification')
+  // 规则 6: 规划循环检测
+  // 数据: P-X-P cycle SR=51.4%, P≥3 SR=54.9%
+  if (!disabledRules?.has('plan_cycle_detection')
+    && features.stepCount >= thresholds.planCycleMinSteps) {
+    const bases = entries.map(e => e.base)
+    let pxpCount = 0
+    for (let i = 0; i < bases.length - 2; i++) {
+      if (bases[i] === 'P' && bases[i + 2] === 'P') pxpCount++
+    }
+    const pCount = bases.filter(b => b === 'P').length
+    if (pxpCount >= 1 || pCount >= 3) {
+      triggeredRules.push('plan_cycle_detection')
       injections.push(
-        `[验证缺失提醒] 最近 ${thresholds.missingVerificationSteps} 步执行中没有验证(V)步骤。` +
-        `建议在执行操作后添加验证确认结果正确。`
+        `[状态观测] 检测到规划循环（P 出现 ${pCount} 次，P-?-P 循环 ${pxpCount} 次）。` +
+        `历史数据: P-X-P 循环的成功率 51%，P≥3 次的成功率 55%。` +
+        `无 P 的任务成功率 98%。当前最优路径: 立即执行(E)，SR=84%。`
       )
     }
   }
 
-  // 规则 7: 探索过度（默认禁用，可通过 UI 启用）
+  // 规则 7: 探索比例信号
   if (!disabledRules?.has('explore_dominance')
     && features.stepCount >= thresholds.exploreDominanceMinSteps
     && features.xeRatio > thresholds.exploreDominanceRatio) {
     triggeredRules.push('explore_dominance')
     injections.push(
-      `[探索过度] 探索与执行比 X/(X+E) = ${(features.xeRatio * 100).toFixed(0)}%，超过阈值 ${(thresholds.exploreDominanceRatio * 100).toFixed(0)}%。` +
-      `探索过多可能导致效率低下，建议减少探索、增加直接执行。`
+      `[状态观测] 探索占比 X/(X+E) = ${(features.xeRatio * 100).toFixed(0)}%，执行步骤较少。` +
+      `历史数据: X→E 转移的成功率 84%，X→X 为 84%（持平），X→P 为 69%（低）。` +
+      `将已探索的信息转化为执行动作，历史表现优于继续探索或重新规划。`
     )
   }
 
@@ -565,6 +673,40 @@ export function updateStats(
   // FIFO 淘汰
   if (stats.patternLibrary.length > MAX_PATTERN_LIBRARY_SIZE) {
     stats.patternLibrary = stats.patternLibrary.slice(-MAX_PATTERN_LIBRARY_SIZE)
+  }
+
+  // V5: 更新转移统计（每对相邻碱基的成功率）
+  if (!stats.transitionStats) stats.transitionStats = {}
+  for (let i = 0; i < bases.length - 1; i++) {
+    const key = `${bases[i]}->${bases[i + 1]}`
+    if (!stats.transitionStats[key]) {
+      stats.transitionStats[key] = { successCount: 0, totalCount: 0 }
+    }
+    stats.transitionStats[key].totalCount++
+    if (success) stats.transitionStats[key].successCount++
+  }
+
+  // V5: 更新信息注入响应追踪
+  if (!stats.injectionResponseStats) stats.injectionResponseStats = {}
+  for (const intervention of interventions) {
+    const rule = intervention.rule
+    if (!stats.injectionResponseStats[rule]) {
+      stats.injectionResponseStats[rule] = {
+        respondedCount: 0, ignoredCount: 0,
+        respondedSuccessCount: 0, ignoredSuccessCount: 0,
+      }
+    }
+    const irs = stats.injectionResponseStats[rule]
+    // 判断模型是否响应了建议方向
+    if (intervention.suggestedDirection && intervention.nextBaseAfterInjection) {
+      if (intervention.nextBaseAfterInjection === intervention.suggestedDirection) {
+        irs.respondedCount++
+        if (success) irs.respondedSuccessCount++
+      } else {
+        irs.ignoredCount++
+        if (success) irs.ignoredSuccessCount++
+      }
+    }
   }
 
   stats.totalTraceCount++
@@ -794,14 +936,14 @@ export function adaptThresholds(stats: GovernorStats): string[] {
   })
   if (adj5) adjustments.push(adj5)
 
-  // 规则 6: missing_verification
-  const adj6 = adaptSingleRule(stats, 'missing_verification', (dir) => {
-    if (dir === 'tighten' && t.missingVerificationSteps > 2) {
-      t.missingVerificationSteps = Math.max(2, t.missingVerificationSteps - 1)
-      return `missing_verification: 收紧步数到 ${t.missingVerificationSteps}`
-    } else if (dir === 'loosen' && t.missingVerificationSteps < 6) {
-      t.missingVerificationSteps = Math.min(6, t.missingVerificationSteps + 1)
-      return `missing_verification: 放宽步数到 ${t.missingVerificationSteps}`
+  // 规则 6: plan_cycle_detection
+  const adj6 = adaptSingleRule(stats, 'plan_cycle_detection', (dir) => {
+    if (dir === 'tighten' && t.planCycleMinSteps > 3) {
+      t.planCycleMinSteps = Math.max(3, t.planCycleMinSteps - 1)
+      return `plan_cycle_detection: 收紧到 ${t.planCycleMinSteps} 步`
+    } else if (dir === 'loosen' && t.planCycleMinSteps < 8) {
+      t.planCycleMinSteps = Math.min(8, t.planCycleMinSteps + 1)
+      return `plan_cycle_detection: 放宽到 ${t.planCycleMinSteps} 步`
     }
     return null
   })
@@ -895,9 +1037,9 @@ export function adaptDiscoveredRules(
 // V10: 规则层级分类
 // Safety: 阻止不可逆损害的规则
 const SAFETY_RULES = new Set(['consecutive_x_brake', 'step_length_fuse'])
-// Hard Behavior: 关键 artifact 操作后的强验证规则
-const HARD_BEHAVIOR_RULES = new Set(['diversity_collapse'])
-// 其余规则默认为 Soft Behavior: switch_rate_warning, late_planning_warning, missing_verification, explore_dominance
+// Hard Behavior: 关键行为约束规则
+const HARD_BEHAVIOR_RULES = new Set(['diversity_collapse', 'plan_cycle_detection'])
+// 其余规则默认为 Soft Behavior: switch_rate_warning, late_planning_warning, explore_dominance
 
 class BaseSequenceGovernor {
   private stats: GovernorStats = createEmptyStats()
@@ -911,6 +1053,10 @@ class BaseSequenceGovernor {
   private softBehaviorEnabled: boolean = true
   /** V10 Task 3: Shadow 记录——当 Soft Behavior 关闭时，记录 Soft 规则的虚拟触发结果 */
   private _shadowRecord: import('@/types').ControlTrackShadow | null = null
+  /** V5: 全局冷却——同 trace 内上次干预的步数 */
+  private lastInterventionStep: number = -999
+  /** V5: plan_cycle 每 trace 只触发一次 */
+  private planCycleFiredThisTrace: boolean = false
 
   /** V10: 获取 Soft Behavior 开关状态 */
   public isSoftBehaviorEnabled(): boolean {
@@ -992,10 +1138,16 @@ class BaseSequenceGovernor {
    *
    * V8: 可选接受 BaseLedger，利用 LedgerFacts 避免重复干预
    */
-  evaluate(entries: BaseEntry[], ledger?: { facts?: { failedApproaches?: string[] } }): GovernorSignal {
+  evaluate(entries: BaseEntry[], ledger?: { facts?: { failedApproaches?: string[] } }, recoveryHint?: { isAdaptive: boolean }): GovernorSignal {
+    // V5: 新 trace 开始时重置 per-trace 状态
+    if (entries.length <= 1) {
+      this.lastInterventionStep = -999
+      this.planCycleFiredThisTrace = false
+    }
+
     // V10: 当 Soft Behavior 关闭时，将 Soft 规则加入禁用集合（仅保留 Safety + Hard）
     let effectiveDisabledRules = this.disabledLegacyRules
-    const ALL_LEGACY_RULES = ['consecutive_x_brake', 'step_length_fuse', 'switch_rate_warning', 'diversity_collapse', 'late_planning_warning', 'missing_verification', 'explore_dominance']
+    const ALL_LEGACY_RULES = ['consecutive_x_brake', 'step_length_fuse', 'switch_rate_warning', 'diversity_collapse', 'late_planning_warning', 'plan_cycle_detection', 'explore_dominance']
     if (!this.softBehaviorEnabled) {
       effectiveDisabledRules = new Set(this.disabledLegacyRules)
       // 过滤掉所有非 Safety/Hard 的规则
@@ -1006,7 +1158,7 @@ class BaseSequenceGovernor {
       }
 
       // V10 Task 3: Shadow 评估 — 用完整规则集评估一次，记录 Soft 规则是否会触发
-      const shadowSignal = evaluateSequence(entries, this.stats.thresholds, this.disabledLegacyRules)
+      const shadowSignal = evaluateSequence(entries, this.stats.thresholds, this.disabledLegacyRules, this.stats.transitionStats)
       // 找出 shadow 中触发了但 effective 中被过滤掉的 Soft 规则
       const softOnlyRules = shadowSignal.triggeredRules.filter(
         r => !SAFETY_RULES.has(r) && !HARD_BEHAVIOR_RULES.has(r)
@@ -1021,7 +1173,7 @@ class BaseSequenceGovernor {
     }
 
     // 路径 1: Legacy 规则（受用户 UI 开关控制 + V10 Soft Behavior 开关）
-    const legacySignal = evaluateSequence(entries, this.stats.thresholds, effectiveDisabledRules)
+    const legacySignal = evaluateSequence(entries, this.stats.thresholds, effectiveDisabledRules, this.stats.transitionStats)
 
     // 路径 2: 数据发现规则（受 lifecycle 控制，evaluateWithRules 内部过滤 retired）
     let discoveredSignal: GovernorSignal | null = null
@@ -1044,12 +1196,60 @@ class BaseSequenceGovernor {
       _features: legacySignal._features,
     }
 
-    // 如果有足够的历史数据，附加预估成功率
+    // V5: 全局冷却 — 同 trace 内两次干预至少间隔 N 步（Safety 规则豁免）
+    if (signal.triggered) {
+      const cooldown = this.stats.thresholds.globalCooldownSteps
+      const stepsSinceLast = entries.length - this.lastInterventionStep
+      const onlySafetyTriggered = signal.triggeredRules.every(r => SAFETY_RULES.has(r))
+      if (stepsSinceLast < cooldown && !onlySafetyTriggered) {
+        signal.triggered = false
+        signal.promptInjection = ''
+        signal.triggeredRules = []
+      }
+    }
+
+    // V5/C: Recovery signal 抑制 — 模型正在自修复时不打断
+    if (signal.triggered && recoveryHint?.isAdaptive) {
+      const onlySafetyTriggered = signal.triggeredRules.every(r => SAFETY_RULES.has(r))
+      if (!onlySafetyTriggered) {
+        signal.triggered = false
+        signal.promptInjection = ''
+        signal.triggeredRules = []
+      }
+    }
+
+    // V5: plan_cycle_detection 每 trace 只触发一次
+    if (signal.triggered && signal.triggeredRules.includes('plan_cycle_detection')) {
+      if (this.planCycleFiredThisTrace) {
+        signal.triggeredRules = signal.triggeredRules.filter(r => r !== 'plan_cycle_detection')
+        if (signal.triggeredRules.length === 0) {
+          signal.triggered = false
+          signal.promptInjection = ''
+        }
+      } else {
+        this.planCycleFiredThisTrace = true
+      }
+    }
+
+    // V5: 更新冷却计时 + 附加建议方向
+    if (signal.triggered) {
+      this.lastInterventionStep = entries.length
+      const lastBase = entries.length > 0 ? entries[entries.length - 1].base : 'X'
+      signal.suggestedDirection = getSuggestedDirection(lastBase, this.stats.transitionStats)
+    }
+
+    // V5: 附加量化状态摘要（信息顾问核心——即使没触发规则也计算 SR）
     if (this.loaded && this.stats.totalTraceCount >= 10) {
       signal.estimatedSuccessRate = lookupSuccessRate(this.stats, entries)
     }
 
-    // v2: 模式库查询 — 为触发的规则附加历史恢复经验
+    // V5: 当触发干预时，附加当前预估成功率作为顶部元信息
+    if (signal.triggered && signal.estimatedSuccessRate >= 0) {
+      const srPct = (signal.estimatedSuccessRate * 100).toFixed(0)
+      signal.promptInjection = `[当前预估成功率: ${srPct}%]\n` + signal.promptInjection
+    }
+
+    // 模式库查询 — 提供历史成功恢复路径作为参考信息
     if (signal.triggered && this.stats.patternLibrary && this.stats.patternLibrary.length > 0) {
       const bucketKey = toBucketKey(signal._features)
       const patternHints: string[] = []
@@ -1058,7 +1258,7 @@ class BaseSequenceGovernor {
         const recoveryPath = queryPatternLibrary(this.stats.patternLibrary, rule, bucketKey)
         if (recoveryPath) {
           patternHints.push(
-            `[历史经验] 类似 ${rule} 情况下，通过 ${recoveryPath} 路径成功解决。`
+            `[历史参考] 相似状态下的成功路径: ${recoveryPath}`
           )
         }
       }
@@ -1068,10 +1268,10 @@ class BaseSequenceGovernor {
       }
     }
 
-    // V8: Ledger-aware 增强 — 利用 failedApproaches 去重干预提示
+    // Ledger 增强 — 提供已知失败路径作为决策信息
     if (signal.triggered && ledger?.facts?.failedApproaches && ledger.facts.failedApproaches.length > 0) {
       const failedSummary = ledger.facts.failedApproaches.slice(-3).join('; ')
-      signal.promptInjection = signal.promptInjection + `\n[Ledger] 已知失败路径: ${failedSummary}。请尝试不同的策略。`
+      signal.promptInjection = signal.promptInjection + `\n[已知无效路径] ${failedSummary}`
     }
 
     return signal
@@ -1098,6 +1298,14 @@ class BaseSequenceGovernor {
       } else {
         console.log('[Governor/L3] 自适应检查完成，无需调整')
       }
+    }
+
+    // V5: 自动触发规则发现（每 50 条新 trace）
+    const discoveryInterval = 50
+    const lastDiscovery = this.stats.lastDiscoveryCount || 0
+    if (this.stats.totalTraceCount - lastDiscovery >= discoveryInterval) {
+      this.stats.lastDiscoveryCount = this.stats.totalTraceCount
+      this.triggerRuleDiscovery()
     }
 
     // 异步持久化（不阻塞主流程）
@@ -1152,6 +1360,38 @@ class BaseSequenceGovernor {
    */
   getFullStats(): Readonly<GovernorStats> {
     return this.stats
+  }
+
+  // ---- V5: 自动规则发现 ----
+
+  private triggerRuleDiscovery(): void {
+    if (!this.serverUrl) return
+    fetch(`${this.serverUrl}/api/rule-discovery/run`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+      .then(res => {
+        if (res.ok) {
+          console.log('[Governor/V5] Rule discovery triggered successfully')
+          this.reloadDiscoveredRules()
+        } else {
+          console.warn(`[Governor/V5] Rule discovery returned ${res.status}`)
+        }
+      })
+      .catch(() => {
+        // 静默失败 — Python 服务可能暂时不可用
+      })
+  }
+
+  private reloadDiscoveredRules(): void {
+    if (!this.serverUrl) return
+    fetch(`${this.serverUrl}/api/discovered-rules`)
+      .then(res => res.ok ? res.json() : null)
+      .then(data => {
+        if (data?.rules) {
+          this.discoveredRules = data.rules
+          const active = this.discoveredRules.filter(isRuntimeDiscoveredRule).length
+          console.log(`[Governor/V5] Discovered rules reloaded: ${active} active`)
+        }
+      })
+      .catch(() => {})
   }
 
   // ---- 持久化 ----
@@ -1296,9 +1536,10 @@ function describeBucketAsWarning(parsed: ParsedBucketKey): string {
 const RULE_STRATEGY_LABELS: Record<string, string> = {
   consecutive_x_brake: '连续探索刹车',
   step_length_fuse: '序列长度熔断',
-  switch_rate_warning: '频繁切换警告',
+  switch_rate_warning: '极端切换警告',
   diversity_collapse: '多样性崩溃检测',
   late_planning_warning: '后期规划警告',
+  plan_cycle_detection: '规划循环检测',
   missing_verification: '验证缺失检测',
   explore_dominance: '探索过度检测',
 }
