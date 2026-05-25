@@ -6,8 +6,11 @@ on:
     paths:
       - 'src-tauri/**'
       - 'src/**'
+      - 'server/**'
       - 'package.json'
       - 'vite.config.*'
+      - 'duncrew-server.spec'
+      - '.github/workflows/tauri-build.yml'
   workflow_dispatch:
 
 env:
