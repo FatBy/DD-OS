@@ -1,2 +1,3 @@
+# Local dev: redirect target to bypass AppLocker (CI ignores this)
 [build]
 target-dir = "C:\\RustBuild\\duncrew-target"
