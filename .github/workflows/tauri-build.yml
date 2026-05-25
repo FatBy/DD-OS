@@ -1,0 +1,92 @@
+name: Tauri Build
+
+on:
+  push:
+    branches: [feat/sop-v2, main]
+    paths:
+      - 'src-tauri/**'
+      - 'src/**'
+      - 'package.json'
+      - 'vite.config.*'
+  workflow_dispatch:
+
+env:
+  PYTHON_VERSION: '3.10'
+  NODE_VERSION: '20'
+
+jobs:
+  build-tauri-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install Python deps
+        run: |
+          pip install pyinstaller pyyaml
+          pip install pdfplumber python-docx python-pptx pytesseract Pillow
+          pip install openpyxl beautifulsoup4 ebooklib striprtf trafilatura
+          pip install httpx onnxruntime tokenizers numpy
+          pip install mss pygetwindow
+
+      - name: Build Python backend (PyInstaller)
+        run: python -m PyInstaller duncrew-server.spec --clean --noconfirm
+
+      - name: Place sidecar binary
+        shell: pwsh
+        run: |
+          $target = "src-tauri/binaries/duncrew-server-x86_64-pc-windows-msvc.exe"
+          # PyInstaller outputs to dist/duncrew-server/duncrew-server.exe (onedir) or dist/duncrew-server.exe (onefile)
+          if (Test-Path "dist/duncrew-server/duncrew-server.exe") {
+            Copy-Item "dist/duncrew-server/duncrew-server.exe" $target -Force
+          } elseif (Test-Path "dist/duncrew-server.exe") {
+            Copy-Item "dist/duncrew-server.exe" $target -Force
+          } else {
+            # Fallback: find any exe in dist
+            $exe = Get-ChildItem -Path dist -Filter "*.exe" -Recurse | Select-Object -First 1
+            if ($exe) {
+              Copy-Item $exe.FullName $target -Force
+            } else {
+              Write-Error "No PyInstaller output found!"
+              exit 1
+            }
+          }
+          Write-Host "Sidecar placed: $target ($('{0:N1} MB' -f ((Get-Item $target).Length / 1MB)))"
+
+      - name: Install Node deps
+        run: npm ci
+
+      - name: Build Tauri app
+        run: npm run tauri build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ''
+
+      - name: Upload Tauri MSI/NSIS installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: DunCrew-Tauri-Windows
+          path: |
+            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: warn
+
+      - name: Upload Tauri executable (standalone)
+        uses: actions/upload-artifact@v4
+        with:
+          name: DunCrew-Tauri-Windows-exe
+          path: src-tauri/target/release/duncrew.exe
+          if-no-files-found: warn
